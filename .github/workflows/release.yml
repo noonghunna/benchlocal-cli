@@ -22,7 +22,12 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --latest --github-repo noonghunna/benchlocal-cli
+          # No --github-repo flag: git-cliff's GitHub API enrichment requires
+          # repo-level read access that isn't granted to GITHUB_TOKEN on
+          # private repos by default. Plain commit-link rendering works fine
+          # without it. If we flip the repo public later, add `--github-repo
+          # noonghunna/benchlocal-cli` back for PR/contributor enrichment.
+          args: --latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT: RELEASE_NOTES.md
