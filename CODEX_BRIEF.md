@@ -151,3 +151,97 @@ Specific things you might hit:
 - Some scenarios may use BenchLocal's "verifier server" pattern (separate Docker service); in our CLI those become `_stub` packs
 - Sampling defaults in `benchlocal.pack.json` may vary per pack; respect them per-pack (don't normalize to a global default)
 - Tool-call response shape varies per OpenAI-compatible endpoint (some emit `tool_calls` at top level, some inside `delta`); normalize to OpenAI's documented shape
+
+---
+
+## How to communicate back to Claude
+
+This work is being handed off to you (Codex) via a Claude+user collaboration. After this brief, the user runs you in their own terminal session and you're on your own until you have something to report back. Use the following async protocol so Claude can review your output without round-tripping through the user.
+
+### If you have questions BEFORE starting
+
+If anything in the docs is genuinely ambiguous and you can't resolve it from the spec alone:
+
+1. Write `docs/QUESTIONS.md` with your numbered questions, each including:
+   - The specific decision point
+   - The 2-3 reasonable interpretations
+   - Your recommended answer + reasoning (so Claude can ack-or-reject without re-doing your analysis)
+2. Commit + push: `git commit -m "docs: file questions for Claude review before Phase 1"` then `git push origin master`
+3. Stop. Don't start coding until questions are answered.
+
+The user will tell Claude when QUESTIONS.md is ready for review. Claude responds by committing answers directly to `docs/QUESTIONS.md` (in `## Answers` sections under each Q) and pushing. The user pings you to resume.
+
+### If you discover ambiguities mid-build
+
+Same pattern but inline: append to `docs/QUESTIONS.md`, commit, push, and either:
+- Block on the question (if the answer changes the architecture)
+- Make your best-guess decision with a comment in the code: `# DECISION: <choice>; see docs/QUESTIONS.md Q-N. Revisit if Claude prefers different.`
+
+Don't quietly commit a workaround for an ambiguity — flag it in QUESTIONS.md.
+
+### When v0.1 is done
+
+1. Run `pytest tests/` — must pass
+2. Run `pip install -e .` in a fresh venv — must succeed
+3. Run the manual smoke checks in "Phase 3 — Validation" above
+4. Update README.md status: `🚧 Pre-alpha` → `🚧 Alpha — quick mode functional`
+5. Write `docs/CODEX_REPORT.md` with the structured summary below
+6. Commit + push: `git commit -m "feat: v0.1 implementation complete; see docs/CODEX_REPORT.md"` then `git push origin master`
+7. Stop. The user will ping Claude to review.
+
+### `docs/CODEX_REPORT.md` template
+
+```markdown
+# Codex implementation report — benchlocal-cli v0.1
+
+**Status:** ✅ Done | ⚠️ Done with caveats | 🛑 Blocked
+**Date:** 2026-MM-DD
+**Total time:** ~N hours
+
+## Phases completed
+
+- [x] Phase 1 — Core runtime
+- [x] Phase 2 — Pack porting + verifiers
+- [x] Phase 3 — Validation
+
+## Test results
+
+- pytest: X/Y tests passed
+- pip install -e .: pass/fail
+- benchlocal-cli list: pass/fail
+- benchlocal-cli run --pack toolcall-15 --endpoint <mock>: pass/fail
+- benchlocal-cli run --quick --endpoint <mock>: pass/fail
+- ATTRIBUTION.md fully filled: yes/no
+
+## Pack porting summary
+
+| Pack | Scenarios ported | Scenarios dropped | Reason if dropped |
+|---|---|---|---|
+| ToolCall-15 | 15 | 0 | — |
+| InstructFollow-15 | 14 | 1 | scenario X used LLM-as-judge; not deterministic |
+| ... | | | |
+
+## Deviations from DESIGN.md (if any)
+
+- _none_ | _list each with rationale_
+
+## Open questions filed
+
+- _none_ | _list `docs/QUESTIONS.md` Q-numbers still pending Claude review_
+
+## Notes for Claude's review
+
+- _things to look at first_
+- _surprising discoveries during porting_
+- _bench-pack quality observations from upstream sources_
+```
+
+Once you push the report, the user will tell Claude. Claude will:
+
+1. `git pull` the repo
+2. Review your CODEX_REPORT.md + diff
+3. Validate against a real club-3090 endpoint (Qwen3.6-27B compose at port 8010 or 8020)
+4. Either: flip repo to public + merge into club-3090's quality-test.sh, OR file follow-up issues for fixes
+5. Reply to user with go/no-go
+
+You don't need to wait for that review — your job ends at "v0.1 pushed + report written". Future iterations come back to you via this same brief-update pattern.
