@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from benchlocal_cli.scoring.common import message, result
+from benchlocal_cli.scoring.common import content, message, result
 from benchlocal_cli.types import ScenarioResult
 
 
@@ -34,7 +34,12 @@ def _args(call: dict) -> dict[str, Any]:
 
 def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
     calls = _tool_calls(response)
-    if not calls and scenario.get("verifier", {}).get("asserts"):
+    assertions = scenario.get("verifier", {}).get("asserts", [])
+    allows_zero_calls = any(
+        assertion.get("kind") == "tool_call_count" and assertion.get("value") == 0
+        for assertion in assertions
+    ) or all(assertion.get("kind") in {"content_regex"} for assertion in assertions)
+    if not calls and assertions and not allows_zero_calls:
         return result(scenario, False, "wrong_answer", "response did not include tool_calls")
 
     try:
@@ -44,7 +49,7 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
 
     names = [_name(call) for call in calls]
     first_args = args_by_call[0] if args_by_call else {}
-    for assertion in scenario.get("verifier", {}).get("asserts", []):
+    for assertion in assertions:
         kind = assertion.get("kind")
         if kind == "exact_function_name":
             expected = assertion["value"]
@@ -57,6 +62,13 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
         elif kind == "tool_call_count":
             if len(calls) != assertion["value"]:
                 return result(scenario, False, "verifier_fail", f"expected {assertion['value']} tool calls, got {len(calls)}")
+        elif kind == "required_function_names":
+            missing = [name for name in assertion["values"] if name not in names]
+            if missing:
+                return result(scenario, False, "verifier_fail", f"missing required tools: {', '.join(missing)}")
+        elif kind == "content_regex":
+            if not re.search(assertion["pattern"], content(response), re.MULTILINE | re.DOTALL):
+                return result(scenario, False, "verifier_fail", "content regex did not match")
         elif kind == "required_args_present":
             missing = [arg for arg in assertion["args"] if arg not in first_args]
             if missing:

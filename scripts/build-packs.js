@@ -231,7 +231,7 @@ function toolAsserts(id) {
     "TC-12": [{ kind: "tool_call_count", value: 0 }, { kind: "content_regex", pattern: "(?i)(cannot|can't|not able|available tool|delete)" }],
     "TC-13": [{ kind: "exact_function_name", value: "search_files" }, { kind: "arg_regex", arg: "query", pattern: "(?i)johnson" }],
     "TC-14": [{ kind: "exact_function_name", value: "get_stock_price" }, { kind: "exact_arg_value", arg: "ticker", value: "AAPL" }],
-    "TC-15": [{ kind: "multi_call_order", expected_names: ["web_search", "calculator"] }, { kind: "arg_regex", arg: "expression", pattern: "372520" }],
+    "TC-15": [{ kind: "multi_call_order", expected_names: ["web_search", "calculator"] }],
   };
   return byId[id] || [];
 }

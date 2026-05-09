@@ -120,6 +120,9 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
                     return result(scenario, False, "wrong_structure", f"missing markdown header {header}")
             if positions != sorted(positions):
                 return result(scenario, False, "wrong_structure", "markdown headers out of order")
+        elif kind == "format_regex":
+            if not re.search(assertion["pattern"], text, re.MULTILINE | re.DOTALL):
+                return result(scenario, False, "wrong_structure", "format regex did not match")
         else:
             return result(scenario, False, "verifier_fail", f"unknown struct_output assertion: {kind}")
     return result(scenario, True, "passed", "all structured-output assertions passed")
