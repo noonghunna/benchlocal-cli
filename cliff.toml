@@ -1,0 +1,102 @@
+# git-cliff config for benchlocal-cli — generates GitHub Release notes from
+# commits since the last tag. Uses SemVer (vMAJOR.MINOR.PATCH) since this is
+# a published Python package.
+#
+# Workflow: tag with `git tag v0.5.0 && git push origin v0.5.0` →
+# .github/workflows/release.yml runs → git-cliff generates the body →
+# release published.
+
+[changelog]
+header = """
+"""
+
+body = """
+{% if version %}\
+## What's in {{ version }}
+
+{% else %}\
+## Unreleased
+
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+
+{% for commit in commits %}\
+- {{ commit.message | split(pat="\\n") | first | trim }}{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/noonghunna/benchlocal-cli/pull/{{ commit.github.pr_number }}) by @{{ commit.github.username }}){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/noonghunna/benchlocal-cli/commit/{{ commit.id }})){% endif %}
+{% endfor %}
+{% endfor %}
+
+---
+
+## Install
+
+```bash
+pip install git+https://github.com/noonghunna/benchlocal-cli.git@{{ version }}
+```
+
+{% if previous.version %}\
+**Full diff:** [{{ previous.version }}...{{ version }}](https://github.com/noonghunna/benchlocal-cli/compare/{{ previous.version }}...{{ version }})
+{% endif %}\
+"""
+
+footer = ""
+
+trim = true
+postprocessors = []
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+split_commits = false
+topo_order = false
+sort_commits = "newest"
+filter_commits = false
+
+# Patterns matched in order. PREFIX-BASED first (deterministic), then
+# keyword-based fallback for unprefixed messages.
+commit_parsers = [
+    # Skip merge headers
+    { message = "^Merge pull request", skip = true },
+    { message = "^Merge branch", skip = true },
+    { message = "^Merge remote-tracking", skip = true },
+
+    # Prefix-based — anchored to subject line
+    { message = "^feat[(:]", group = "✨ Features" },
+    { message = "^feature[(:]", group = "✨ Features" },
+
+    { message = "^fix[(:]", group = "🐛 Bug fixes" },
+    { message = "^bugfix[(:]", group = "🐛 Bug fixes" },
+    { message = "^hotfix[(:]", group = "🐛 Bug fixes" },
+
+    { message = "^docs?[(:]", group = "📝 Documentation" },
+    { message = "^README", group = "📝 Documentation" },
+
+    { message = "^test[(:]", group = "🧪 Tests" },
+    { message = "^tests?[(:]", group = "🧪 Tests" },
+
+    { message = "^ci[(:]", group = "🛠️ Tooling + CI" },
+    { message = "^build[(:]", group = "🛠️ Tooling + CI" },
+    { message = "^tools?[(:]", group = "🛠️ Tooling + CI" },
+
+    { message = "^perf[(:]", group = "⚡ Performance" },
+
+    { message = "^refactor[(:]", group = "🧹 Refactoring + maintenance" },
+    { message = "^chore[(:]", group = "🧹 Refactoring + maintenance" },
+    { message = "^style[(:]", group = "🧹 Refactoring + maintenance" },
+
+    { message = "^scaffolding[(:]", group = "🚧 Scaffolding" },
+
+    # Version-bump commits (e.g. "v0.5: ...") — group as features since they
+    # usually accompany substantive changes.
+    { message = "^v[0-9]+\\.[0-9]+", group = "✨ Features" },
+
+    # Catch-all
+    { message = ".*", group = "🧹 Other" },
+]
+
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+ignore_tags = ""
+
+[remote.github]
+owner = "noonghunna"
+repo = "benchlocal-cli"
