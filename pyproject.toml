@@ -40,8 +40,8 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
 ]
-# `sandbox` extra for execution-backed packs (BugFind/CLI-40). Adds Docker SDK
-# only when those packs are wired up; pure-deterministic packs don't need it.
+# `sandbox` extra for execution-backed packs. Current lifecycle uses the Docker
+# CLI; the SDK extra is retained for future richer container inspection.
 sandbox = [
     "docker>=7.0",
 ]

@@ -177,11 +177,13 @@ Scenario field reference:
 
 ### `verifier.type = "_stub"`
 
-For execution-backed packs (BugFind / HermesAgent / CLI). The runner returns `verifier_not_implemented` regardless of asserts, so the asserts can be empty or carry placeholder data:
+For execution-backed packs (BugFind / HermesAgent / CLI). Without `--enable-sandboxed-packs`, the runner returns `verifier_not_implemented` and skips these scenarios. With sandboxing enabled, the runner forwards the full scenario, model response, and conversation messages to the pack's Docker verifier over HTTP:
 
 ```json
 {"kind": "_stub", "reason": "BugFind requires Docker sandbox"}
 ```
+
+The `_stub` verifier type is therefore a dispatch marker rather than the final scorer for sandboxed runs.
 
 ## Adding new assertion primitives
 

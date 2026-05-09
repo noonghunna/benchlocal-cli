@@ -18,13 +18,15 @@ CLI tool that runs LLM behavioral evaluations against any OpenAI-compatible HTTP
 |---|---|---|---|
 | `--quick` | ToolCall-15 + InstructFollow-15 | ~10-15 min | Per-commit gate; pre-push smoke |
 | `--medium` (default) | + StructOutput-15 + DataExtract-15 | ~25-30 min | Pre-release; pin bumps; new compose authoring |
-| `--full` | + ReasonMath-15 + warn-skip for stubbed packs | ~45-60 min | Cross-rig comparison; quality A/B vs another quant |
+| `--full` | + ReasonMath-15 + BugFind/HermesAgent/CLI when sandboxed | ~45-60 min | Cross-rig comparison; quality A/B vs another quant |
 
 Mode ↔ pack mapping is hardcoded in the runner (not user-configurable), to keep `--quick` / `--medium` / `--full` as well-known semantics. Users wanting flexibility use `--pack <pack-id>` to run a single named pack.
 
 Reasoning-capable model handling is also standardized: requests default to `chat_template_kwargs.enable_thinking=false`. `--enable-thinking` flips it to true and raises the default token budget for diagnostic runs. JSON output records `thinking_enabled` at the top level so downstream compose quality lines can distinguish `thinking=off` from `thinking=on`.
 
-`BugFind-15` / `HermesAgent-20` / `CLI-40` are present in the repo as JSONL but their verifiers are stubbed — they emit `verifier_not_implemented` until sandbox infrastructure is wired up. Even at `--full` mode, the runner skips them with a warning by default. Users can opt-in via `--enable-sandboxed-packs` once the sandbox extra is installed.
+`BugFind-15` / `HermesAgent-20` / `CLI-40` are execution-backed packs. The runner skips them with a warning by default so users without Docker get deterministic behavior. When `--enable-sandboxed-packs` is set, the runner starts one Docker HTTP verifier per requested sandboxed pack and dispatches those scenarios through `benchlocal_cli.sandbox.SandboxClient`.
+
+The v0.4 sandboxes validate the shared HTTP lifecycle and pack dispatch path end-to-end. They are intentionally conservative first-pass verifiers: BugFind accepts solution-block shaped answers or explicit canonical pass markers, CLI accepts safe parseable commands or explicit canonical pass markers, and Hermes supports the multi-turn protocol endpoints plus a single-turn verifier path. Full upstream fixture execution parity remains future work.
 
 ## Architecture
 
@@ -57,6 +59,15 @@ Reasoning-capable model handling is also standardized: requests default to `chat
                         │                         │   OR JSON (machine readable)
                         └─────────────────────────┘
 ```
+
+Execution-backed packs add a side path:
+
+```
+runner.py ── SandboxClient ── docker run benchlocal-sandbox-<pack>:<tag>
+                              └─ HTTP POST /verify on internal port 9000
+```
+
+The runner owns container startup, health checks, per-pack dispatch, and cleanup on normal exit or SIGINT/SIGTERM.
 
 ## JSONL pack format
 
@@ -126,7 +137,7 @@ class ScenarioResult:
         "timeout",             # HTTP timeout exceeded --timeout-per-case
         "http_error",          # 4xx / 5xx response
         "server_error",        # 500 / model-internal error
-        "verifier_not_implemented",   # for stubbed packs
+        "verifier_not_implemented",   # skipped sandboxed pack or unavailable sandbox
     ]
     detail: str                # human-readable explanation
     latency_seconds: float
@@ -220,7 +231,7 @@ Storing the JSON enables `--previous-result PATH --emit-delta` for regression-tr
 | `verifier_fail` / `wrong_answer` / `invalid_json` / `missing_field` / `extra_fields` / `schema_violation` / `wrong_structure` / `no_answer_found` | Counted as fail; included in failure breakdown |
 | `timeout` | Counted as fail; flag separately ("3 timeouts on this pack — endpoint may need bigger --timeout-per-case") |
 | `http_error` / `server_error` | Counted as fail; flag separately ("endpoint instability — N requests got 5xx; investigate before trusting score") |
-| `verifier_not_implemented` | Skipped with warning (not counted in totals); shown in output as `⚠ stubbed` |
+| `verifier_not_implemented` | Skipped with warning (not counted in totals); shown only when a sandboxed pack is requested without `--enable-sandboxed-packs` or its container cannot start |
 
 ## Threshold policy
 

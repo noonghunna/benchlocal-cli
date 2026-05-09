@@ -16,7 +16,7 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. Sandbox-backed packs are still stubbed until a later release.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, and CLI-40 now run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
 
 ## Modes (target)
 
@@ -37,9 +37,9 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 | **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate | ✅ vendor-generated |
 | **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ vendor-generated |
 | **DataExtract-15** | Deterministic — JSON field-match | ✅ vendor-generated |
-| **BugFind-15** | **Execution-backed** — runs candidate fixes; needs Docker sandbox | ⚠️ scenarios stubbed; verifier deferred |
-| **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ⚠️ scenarios stubbed; verifier deferred |
-| **CLI-40** | **Linux exec sandbox** — runs CLI commands | ⚠️ scenarios stubbed; verifier deferred |
+| **BugFind-15** | **Execution-backed** — candidate-fix verifier sandbox | ✅ sandboxed v0.4 verifier |
+| **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ✅ sandboxed v0.4 verifier |
+| **CLI-40** | **Linux exec sandbox** — command verifier sandbox | ✅ sandboxed v0.4 verifier |
 
 ## Layout (planned)
 
@@ -79,6 +79,10 @@ docs/
 # install
 pip install -e .
 
+# install with sandbox dependencies and build verifier images
+pip install -e '.[sandbox]'
+bash tools/build-sandboxes.sh
+
 # list available packs
 benchlocal-cli list
 
@@ -93,6 +97,9 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 # run full mode with custom timeout per scenario
 benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-autoround --timeout-per-case 60
+
+# run full mode including Docker-backed verifier packs
+benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
 
 # run a single pack with detailed per-scenario output
 benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8020 --model qwen3.6-27b-autoround

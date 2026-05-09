@@ -20,7 +20,9 @@ Known lossy surfaces:
 - StructOutput-15 upstream Docker verifier semantics are approximated by deterministic local checks for JSON, CSV, Markdown structure, YAML-lite, and regex shape. Full Docker verifier parity is deferred.
 - DataExtract-15 embeds upstream `expected` JSON fixtures and checks required fields plus top-level field discipline. The detailed upstream atomic-field scoring remains more granular than v0.2 JSONL scoring.
 
-Sandbox-backed packs (BugFind-15, HermesAgent-20, CLI-40) are generated from vendor metadata but keep `_stub` verifiers.
+Sandbox-backed packs (BugFind-15, HermesAgent-20, CLI-40) are generated from vendor metadata and keep `_stub` verifiers in JSONL. In v0.4 that `_stub` type means "dispatch to the Docker verifier when `--enable-sandboxed-packs` is set"; it no longer means the pack is always unimplemented.
+
+The v0.4 pass does not fully lift upstream execution fixtures into generated JSONL. It validates the container lifecycle, HTTP verifier protocol, runner dispatch, and mock canonical success paths. Full fixture extraction from upstream TypeScript remains the main parity gap for the execution-backed packs.
 
 ## Design choice
 

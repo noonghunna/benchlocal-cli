@@ -22,9 +22,20 @@ node tools/build-packs.js --all
 pytest tests/
 ```
 
+## Sandbox verifier workflow
+
+BugFind-15, HermesAgent-20, and CLI-40 require Docker verifier containers for full runs.
+
+```bash
+pip install -e '.[sandbox]'
+bash tools/build-sandboxes.sh
+bash tools/test-sandboxes.sh
+benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8020 --model local-model
+```
+
 ## Rules
 
 - Keep Python runtime dependencies minimal: `httpx` and `jsonschema` only.
 - Treat `vendor/` as the source of truth for pack content.
 - Document lossy callback-to-assert translations in `docs/EXTRACTOR_NOTES.md`.
-- Sandbox-backed packs stay `_stub` until the sandbox verifier runtime lands.
+- Sandbox-backed packs keep `_stub` in JSONL as the runner dispatch marker; do not hand-edit generated pack files to point at container internals.

@@ -13,7 +13,7 @@ Target UX (subject to refinement):
         → run medium mode (quick + StructOutput-15 + DataExtract-15)
 
     benchlocal-cli run --full --endpoint URL --model NAME
-        → run full mode (medium + ReasonMath-15 + warn-skip for stubbed packs)
+        → run full mode (medium + ReasonMath-15 + optional sandboxed packs)
 
     benchlocal-cli run --pack PACK_ID --endpoint URL --model NAME
         → run a single named pack (ignores mode flag)
@@ -71,7 +71,7 @@ def _print_list() -> None:
     print("Pack | Version | Scenarios | Verifier | Status")
     print("---|---:|---:|---|---")
     for meta in list_packs():
-        status = "sandboxed stub" if meta.get("supports_sandboxed_only") else "ready"
+        status = "sandboxed" if meta.get("supports_sandboxed_only") else "ready"
         print(
             f"{meta['pack_id']} | {meta['version']} | {meta['scenario_count']} | "
             f"{meta['verifier_module']} | {status}"

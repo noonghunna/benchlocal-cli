@@ -13,6 +13,10 @@ pip install benchlocal-cli
 # or from source
 pip install -e /path/to/benchlocal-cli
 
+# include sandbox support for BugFind/HermesAgent/CLI full runs
+pip install -e '/path/to/benchlocal-cli[sandbox]'
+bash /path/to/benchlocal-cli/tools/build-sandboxes.sh
+
 # or as a git dependency in pyproject.toml / requirements.txt
 pip install git+https://github.com/noonghunna/benchlocal-cli.git
 ```
@@ -53,6 +57,16 @@ benchlocal-cli run "$MODE" \
 echo
 echo "Run saved to: $JSON_OUT"
 echo "For delta vs previous run, use: benchlocal-cli run $MODE --previous-result $JSON_OUT --emit-delta"
+```
+
+For a full run that includes execution-backed packs, build the sandbox images once and add `--enable-sandboxed-packs`:
+
+```bash
+bash /path/to/benchlocal-cli/tools/build-sandboxes.sh
+benchlocal-cli run --full --enable-sandboxed-packs \
+  --endpoint "$URL" \
+  --model "$MODEL" \
+  --save-json "$JSON_OUT"
 ```
 
 ## Output format for club-3090's `Quality:` schema field
