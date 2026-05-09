@@ -1,0 +1,12 @@
+{
+  "commit": "b97632020fa373c52ba92373dbe5dc58b744ce48",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/llm-client.ts",
+    "lib/models.ts",
+    "lib/orchestrator.ts"
+  ],
+  "source_url": "https://github.com/stevibe/ReasonMath-15"
+}

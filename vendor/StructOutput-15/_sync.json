@@ -1,0 +1,13 @@
+{
+  "commit": "00de86e9bfc9dd3d86ba397d0cf35bcbc04efd1c",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/llm-client.ts",
+    "lib/models.ts",
+    "lib/orchestrator.ts",
+    "lib/sandbox-client.ts"
+  ],
+  "source_url": "https://github.com/stevibe/StructOutput-15"
+}

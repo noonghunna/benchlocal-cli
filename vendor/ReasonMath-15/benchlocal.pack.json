@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "reasonmath-15",
+  "name": "ReasonMath-15",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Practical reasoning and math benchmark with 15 fixed scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#0f766e"
+  },
+  "capabilities": {
+    "tools": false,
+    "multiTurn": false,
+    "streamingProgress": true,
+    "verification": false
+  }
+}

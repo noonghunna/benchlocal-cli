@@ -1,0 +1,12 @@
+{
+  "commit": "187af97cb2b892ad57de176b16a254aba7565a65",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/llm-client.ts",
+    "lib/models.ts",
+    "lib/orchestrator.ts"
+  ],
+  "source_url": "https://github.com/stevibe/InstructFollow-15"
+}

@@ -1,0 +1,11 @@
+{
+  "commit": "3b95f86e6edac47183348381a9bb211ffaf09404",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/orchestrator.ts",
+    "verification/scenario-data.json"
+  ],
+  "source_url": "https://github.com/stevibe/CLI-40"
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "hermesagent-20",
+  "name": "HermesAgent-20",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Executable Hermes agent benchmark with deterministic artifact, trace, memory, browser, cron, and verifier-backed evaluation across 20 scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "requirements": {
+    "benchlocal": {
+      "minVersion": "0.2.0"
+    },
+    "hostFeatures": ["inferenceEndpoints", "dockerInferenceEndpoints"]
+  },
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#7b5cff"
+  },
+  "capabilities": {
+    "tools": true,
+    "multiTurn": true,
+    "streamingProgress": true,
+    "verification": true
+  },
+  "verifiers": [
+    {
+      "id": "verifier",
+      "transport": "http",
+      "required": true,
+      "defaultMode": "docker",
+      "docker": {
+        "buildContext": "./verification",
+        "listenPort": 4010,
+        "healthcheckPath": "/health"
+      }
+    }
+  ]
+}

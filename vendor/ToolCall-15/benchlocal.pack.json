@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "toolcall-15",
+  "name": "ToolCall-15",
+  "author": "stevibe",
+  "version": "1.0.1",
+  "description": "Tool-use benchmark with 15 fixed scenarios and tool-call loop scoring.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#c96b4a"
+  },
+  "capabilities": {
+    "tools": true,
+    "multiTurn": false,
+    "streamingProgress": true,
+    "verification": false
+  }
+}

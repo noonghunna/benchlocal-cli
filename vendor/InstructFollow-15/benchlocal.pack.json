@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "instructfollow-15",
+  "name": "InstructFollow-15",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Constraint-heavy instruction-following benchmark with 15 fixed scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#b45309"
+  },
+  "capabilities": {
+    "tools": false,
+    "multiTurn": false,
+    "streamingProgress": true,
+    "verification": false
+  }
+}

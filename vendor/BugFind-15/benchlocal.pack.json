@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "bugfind-15",
+  "name": "BugFind-15",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Execution-backed debugging benchmark with verifier-backed scoring across 15 fixed scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#1f5f78"
+  },
+  "capabilities": {
+    "tools": false,
+    "multiTurn": true,
+    "streamingProgress": true,
+    "verification": true
+  },
+  "verifiers": [
+    {
+      "id": "verifier",
+      "transport": "http",
+      "required": true,
+      "defaultMode": "docker",
+      "docker": {
+        "buildContext": "./verification",
+        "listenPort": 4010,
+        "healthcheckPath": "/health"
+      }
+    }
+  ]
+}

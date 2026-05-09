@@ -1,0 +1,12 @@
+{
+  "commit": "00d90bf7506a1d7ffe98943d9ffd8c6eb795dbdb",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/llm-client.ts",
+    "lib/models.ts",
+    "lib/orchestrator.ts"
+  ],
+  "source_url": "https://github.com/stevibe/DataExtract-15"
+}

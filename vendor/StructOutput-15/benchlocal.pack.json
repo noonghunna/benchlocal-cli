@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "structoutput-15",
+  "name": "StructOutput-15",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Structured output benchmark with validator-backed scoring across 15 fixed scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#3f6c8f"
+  },
+  "capabilities": {
+    "tools": false,
+    "multiTurn": false,
+    "streamingProgress": true,
+    "verification": true
+  },
+  "verifiers": [
+    {
+      "id": "verifier",
+      "transport": "http",
+      "required": true,
+      "defaultMode": "docker",
+      "docker": {
+        "buildContext": "./verification",
+        "listenPort": 4010,
+        "healthcheckPath": "/health"
+      }
+    }
+  ]
+}

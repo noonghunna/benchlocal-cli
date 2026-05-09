@@ -1,0 +1,12 @@
+{
+  "commit": "edd6cefe4261b67e8166e9f6d77d671042560294",
+  "fetched_at": "2026-05-09T00:00:00Z",
+  "source_files": [
+    "benchlocal.pack.json",
+    "lib/benchmark.ts",
+    "lib/llm-client.ts",
+    "lib/models.ts",
+    "lib/orchestrator.ts"
+  ],
+  "source_url": "https://github.com/stevibe/ToolCall-15"
+}

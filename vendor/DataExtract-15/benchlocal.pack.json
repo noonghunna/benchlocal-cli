@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "dataextract-15",
+  "name": "DataExtract-15",
+  "author": "stevibe",
+  "version": "1.0.0",
+  "description": "Deterministic LLM data extraction benchmark with 15 fixed scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "samplingDefaults": {
+    "temperature": 0
+  },
+  "theme": {
+    "accent": "#0891b2"
+  },
+  "capabilities": {
+    "tools": false,
+    "multiTurn": false,
+    "streamingProgress": true,
+    "verification": false
+  }
+}

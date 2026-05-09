@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "id": "cli-40",
+  "name": "CLI-40",
+  "author": "stevibe",
+  "version": "1.0.2",
+  "description": "Executable Linux CLI benchmark with deterministic verifier-backed evaluation across 40 one-shot and multi-round scenarios.",
+  "entry": "./dist/benchlocal/index.js",
+  "requirements": {
+    "benchlocal": {
+      "minVersion": "0.2.0"
+    },
+    "hostFeatures": ["inferenceEndpoints", "dockerInferenceEndpoints"]
+  },
+  "samplingDefaults": {
+    "temperature": 0,
+    "request_timeout_seconds": 300
+  },
+  "theme": {
+    "accent": "#198754"
+  },
+  "capabilities": {
+    "tools": true,
+    "multiTurn": true,
+    "streamingProgress": true,
+    "verification": true
+  },
+  "verifiers": [
+    {
+      "id": "verifier",
+      "transport": "http",
+      "required": true,
+      "defaultMode": "docker",
+      "docker": {
+        "buildContext": "./verification",
+        "listenPort": 4040,
+        "healthcheckPath": "/health"
+      }
+    }
+  ]
+}
