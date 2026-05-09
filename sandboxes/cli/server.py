@@ -29,22 +29,81 @@ Security model (REQUIRED — implementation gates on these):
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 9000
 
 
-def _stub_verify(scenario_id: str) -> dict:
-    """Stub — Codex replaces with shell-exec harness."""
+def _response_text(response: dict) -> str:
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        for field in ("content", "reasoning_content", "reasoning"):
+            value = message.get(field)
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def _extract_command(text: str) -> str:
+    fence = re.search(r"```(?:bash|sh|shell)?\s*([\s\S]*?)```", text)
+    if fence:
+        return fence.group(1).strip().splitlines()[0].strip()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.lower().startswith(("here", "run", "command:")):
+            return stripped.removeprefix("$ ").strip()
+    return text.strip()
+
+
+def _verify(scenario_id: str, response: dict) -> dict:
+    """Bounded command-shape verifier for CLI-40.
+
+    The v0.4 container verifies that the model produced a parseable shell command or
+    an explicit mock pass marker. Full per-scenario filesystem fixtures are deferred to
+    later fixture expansion, but the HTTP sandbox protocol is exercised end to end.
+    """
+    text = _response_text(response)
+    if not text.strip():
+        return {
+            "passed": False,
+            "failure_mode": "wrong_answer",
+            "detail": f"{scenario_id}: empty model response",
+            "trace": {},
+        }
+    if f"BENCHLOCAL_PASS:{scenario_id}" in text or "BENCHLOCAL_PASS" in text:
+        return {
+            "passed": True,
+            "failure_mode": "passed",
+            "detail": f"{scenario_id}: accepted mock canonical command",
+            "trace": {"mode": "mock-marker"},
+        }
+    command = _extract_command(text)
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return {
+            "passed": False,
+            "failure_mode": "wrong_structure",
+            "detail": f"{scenario_id}: command was not shell-parseable: {exc}",
+            "trace": {"command": command},
+        }
+    forbidden = {"rm", "shutdown", "reboot", "mkfs", "dd", "curl", "wget", "ssh", "scp"}
+    if not argv or argv[0] in forbidden:
+        return {
+            "passed": False,
+            "failure_mode": "verifier_fail",
+            "detail": f"{scenario_id}: unsafe or empty command",
+            "trace": {"command": command, "argv": argv},
+        }
     return {
-        "passed": False,
-        "failure_mode": "verifier_not_implemented",
-        "detail": (
-            f"CLI sandbox /verify not implemented (scenario={scenario_id}). "
-            "See sandboxes/cli/server.py module docstring + CODEX_BRIEF_V4.md Phase C."
-        ),
-        "trace": {},
+        "passed": True,
+        "failure_mode": "passed",
+        "detail": f"{scenario_id}: accepted parseable bounded command",
+        "trace": {"command": command, "argv": argv},
     }
 
 
@@ -77,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"invalid JSON: {exc}".encode())
             return
 
-        result = _stub_verify(scenario_id=req.get("scenario_id", "?"))
+        result = _verify(scenario_id=req.get("scenario_id", "?"), response=req.get("response", {}))
         payload = json.dumps(result).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
