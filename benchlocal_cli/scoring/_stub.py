@@ -23,15 +23,18 @@ in the runner's pack-dispatch table.
 
 from __future__ import annotations
 
+from benchlocal_cli.types import ScenarioResult
 
-def score_scenario(scenario: dict, response: dict) -> dict:
+
+def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
     """Return a verifier-not-implemented result for sandboxed packs."""
     pack = scenario.get("pack_id", "unknown")
-    return {
-        "passed": False,
-        "failure_mode": "verifier_not_implemented",
-        "detail": (
+    return ScenarioResult(
+        scenario_id=str(scenario.get("id", "unknown")),
+        passed=False,
+        failure_mode="verifier_not_implemented",
+        detail=(
             f"{pack} requires sandboxed verifier infrastructure not yet wired up. "
             f"See benchlocal_cli/scoring/_stub.py module docstring."
         ),
-    }
+    )

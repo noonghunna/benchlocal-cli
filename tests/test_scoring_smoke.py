@@ -1,65 +1,61 @@
-"""Smoke tests — confirm scoring modules import + stub raises NotImplementedError.
-
-TODO (Codex): replace these with real unit tests as scoring modules are implemented.
-Each scoring module should have its own test file:
-
-    test_scoring_tool_call.py
-    test_scoring_instruct_follow.py
-    test_scoring_struct_output.py
-    test_scoring_reason_math.py
-    test_scoring_data_extract.py
-    test_scoring_stub.py
-
-Each should:
-1. Import the scoring module
-2. Call score_scenario() with handcrafted scenario + response fixtures
-3. Assert the returned ScenarioResult matches expectations for each failure mode
-4. Cover ALL assertion primitives documented in docs/PACK_FORMAT.md
-"""
-
 from __future__ import annotations
 
-import pytest
+import json
+
+from benchlocal_cli.scoring import (
+    _stub,
+    data_extract,
+    instruct_follow,
+    reason_math,
+    struct_output,
+    tool_call,
+)
 
 
-def test_scoring_modules_importable():
-    """All scoring modules should at least import without syntax errors."""
-    from benchlocal_cli.scoring import (  # noqa: F401
-        _stub,
-        data_extract,
-        instruct_follow,
-        reason_math,
-        struct_output,
-        tool_call,
-    )
+def _response(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}], "usage": {"completion_tokens": 3}}
 
 
-def test_stub_returns_verifier_not_implemented():
-    """The _stub module should always return verifier_not_implemented."""
-    from benchlocal_cli.scoring import _stub
-
-    result = _stub.score_scenario(
-        scenario={"id": "bugfind-15-001", "pack_id": "bugfind-15"},
-        response={},
-    )
-    assert result["passed"] is False
-    assert result["failure_mode"] == "verifier_not_implemented"
-    assert "bugfind-15" in result["detail"]
+def _tool(name: str, args: dict) -> dict:
+    return {
+        "choices": [
+            {"message": {"tool_calls": [{"function": {"name": name, "arguments": json.dumps(args)}}]}}
+        ]
+    }
 
 
-def test_pre_alpha_scoring_modules_raise():
-    """Scoring modules raise NotImplementedError until Codex fills them in."""
-    from benchlocal_cli.scoring import (
-        data_extract,
-        instruct_follow,
-        reason_math,
-        struct_output,
-        tool_call,
-    )
+def test_stub_returns_dataclass_result():
+    result = _stub.score_scenario({"id": "BF-01", "pack_id": "bugfind-15"}, {})
+    assert result.passed is False
+    assert result.failure_mode == "verifier_not_implemented"
 
-    fake_scenario = {"id": "x"}
-    fake_response = {}
 
-    for module in [tool_call, instruct_follow, struct_output, reason_math, data_extract]:
-        with pytest.raises(NotImplementedError):
-            module.score_scenario(fake_scenario, fake_response)
+def test_tool_call_pass_and_fail():
+    scenario = {"id": "TC", "verifier": {"asserts": [{"kind": "exact_function_name", "value": "get_weather"}, {"kind": "exact_arg_value", "arg": "location", "value": "Berlin"}]}}
+    assert tool_call.score_scenario(scenario, _tool("get_weather", {"location": "Berlin"})).passed
+    fail = tool_call.score_scenario(scenario, _tool("web_search", {"query": "Berlin weather"}))
+    assert fail.failure_mode == "verifier_fail"
+
+
+def test_instruct_follow_pass_and_fail():
+    scenario = {"id": "IF", "verifier": {"asserts": [{"kind": "exact_length_words", "value": 3}, {"kind": "required_phrase", "value": "red"}]}}
+    assert instruct_follow.score_scenario(scenario, _response("red blue green")).passed
+    assert instruct_follow.score_scenario(scenario, _response("blue green")).failure_mode == "verifier_fail"
+
+
+def test_struct_output_pass_and_fail():
+    scenario = {"id": "SO", "verifier": {"asserts": [{"kind": "json_parse_required"}, {"kind": "jsonpath_assertion", "path": "$.user.email", "regex": r"@"}]}}
+    assert struct_output.score_scenario(scenario, _response('{"user":{"email":"a@example.com"}}')).passed
+    assert struct_output.score_scenario(scenario, _response('{"user":{}')).failure_mode == "invalid_json"
+
+
+def test_reason_math_pass_and_fail():
+    scenario = {"id": "RM", "verifier": {"asserts": [{"kind": "tolerance_numeric", "value": 3.14, "tolerance": 0.01}]}}
+    assert reason_math.score_scenario(scenario, _response("ANSWER: 3.141")).passed
+    assert reason_math.score_scenario(scenario, _response("ANSWER: 4")).failure_mode == "wrong_answer"
+
+
+def test_data_extract_pass_and_fail():
+    scenario = {"id": "DE", "verifier": {"asserts": [{"kind": "field_exact_value", "field": "email", "value": "a@example.com"}, {"kind": "no_extra_fields", "allowed": ["email"]}]}}
+    assert data_extract.score_scenario(scenario, _response('{"email":"a@example.com"}')).passed
+    assert data_extract.score_scenario(scenario, _response('{"email":"b@example.com"}')).failure_mode == "verifier_fail"
