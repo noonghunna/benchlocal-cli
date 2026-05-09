@@ -22,6 +22,8 @@ CLI tool that runs LLM behavioral evaluations against any OpenAI-compatible HTTP
 
 Mode ↔ pack mapping is hardcoded in the runner (not user-configurable), to keep `--quick` / `--medium` / `--full` as well-known semantics. Users wanting flexibility use `--pack <pack-id>` to run a single named pack.
 
+Reasoning-capable model handling is also standardized: requests default to `chat_template_kwargs.enable_thinking=false`. `--enable-thinking` flips it to true and raises the default token budget for diagnostic runs. JSON output records `thinking_enabled` at the top level so downstream compose quality lines can distinguish `thinking=off` from `thinking=on`.
+
 `BugFind-15` / `HermesAgent-20` / `CLI-40` are present in the repo as JSONL but their verifiers are stubbed — they emit `verifier_not_implemented` until sandbox infrastructure is wired up. Even at `--full` mode, the runner skips them with a warning by default. Users can opt-in via `--enable-sandboxed-packs` once the sandbox extra is installed.
 
 ## Architecture
@@ -63,7 +65,7 @@ Each pack is one file at `benchlocal_cli/packs/<pack-id>.jsonl`. Each line is on
 Required first line: a metadata line with `__meta__: true`:
 
 ```json
-{"__meta__": true, "pack_id": "toolcall-15", "version": "1.0.1", "upstream_repo": "stevibe/ToolCall-15", "upstream_commit": "abc123def456", "scenario_count": 15, "sampling_defaults": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 1024, "tool_choice": "auto"}, "default_max_seconds": 60}
+{"__meta__": true, "pack_id": "toolcall-15", "version": "1.0.1", "upstream_repo": "stevibe/ToolCall-15", "upstream_commit": "abc123def456", "scenario_count": 15, "sampling_defaults": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 1024, "tool_choice": "auto", "chat_template_kwargs": {"enable_thinking": false}}, "default_max_seconds": 60}
 ```
 
 Subsequent lines: scenarios. Schema:
@@ -166,6 +168,7 @@ Full structured result blob:
   "runner_version": "0.0.1",
   "endpoint": "http://localhost:8020",
   "model": "qwen3.6-27b-autoround",
+  "thinking_enabled": false,
   "started_at": "2026-05-09T10:30:00Z",
   "finished_at": "2026-05-09T10:55:42Z",
   "mode": "medium",

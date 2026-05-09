@@ -18,7 +18,8 @@ Every pack file at `benchlocal_cli/packs/<pack-id>.jsonl` follows this format. E
     "temperature": 0.0,
     "top_p": 1.0,
     "max_tokens": 1024,
-    "tool_choice": "auto"
+    "tool_choice": "auto",
+    "chat_template_kwargs": {"enable_thinking": false}
   },
   "default_max_seconds": 60,
   "verifier_module": "tool_call",
@@ -40,7 +41,7 @@ Field reference:
 | `scenario_count` | yes | int | Number of scenario lines in this file |
 | `license` | yes | string | Usually "MIT" (matches BenchLocal upstream) |
 | `license_text_path` | no | string | Path to attribution doc; defaults to `ATTRIBUTION.md` |
-| `sampling_defaults` | yes | object | Applied to every scenario unless overridden |
+| `sampling_defaults` | yes | object | Applied to every scenario unless overridden; generated packs include `chat_template_kwargs: {"enable_thinking": false}` so reasoning models default to answer-only mode |
 | `default_max_seconds` | yes | int | Default per-scenario timeout |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI; runner skips with warning unless `--enable-sandboxed-packs` |

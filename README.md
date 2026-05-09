@@ -16,7 +16,7 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, all 5 deterministic packs working.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Sandbox-backed packs are still stubbed until v0.3+.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. Sandbox-backed packs are still stubbed until a later release.
 
 ## Modes (target)
 
@@ -82,8 +82,14 @@ pip install -e .
 # list available packs
 benchlocal-cli list
 
-# run quick mode against a local club-3090 endpoint
+# run quick mode against a local club-3090 endpoint; thinking is off by default
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
+
+# diagnostic run with reasoning/thinking enabled and a larger token budget
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --enable-thinking
+
+# pass vendor-specific request body fields
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --extra-body '{"foo":"bar"}'
 
 # run full mode with custom timeout per scenario
 benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-autoround --timeout-per-case 60
@@ -94,6 +100,11 @@ benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8020 --model q
 # emit machine-readable JSON instead of markdown
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --output json > results.json
 ```
+
+
+## Reasoning models
+
+`benchlocal-cli` sends `chat_template_kwargs: {"enable_thinking": false}` by default. This keeps BenchLocal-style quality prompts comparable on reasoning-capable models such as Qwen3.6, where default thinking can exhaust `max_tokens` before the final answer is emitted. Use `--enable-thinking` for diagnostic runs; it sets `enable_thinking=true` and bumps `max_tokens` to `--thinking-max-tokens` (default `4096`) unless a scenario explicitly overrides `max_tokens`. Use `--extra-body` to pass any other OpenAI-compatible server extension fields.
 
 ## Output (target format)
 
