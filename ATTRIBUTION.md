@@ -22,9 +22,9 @@ Each ported pack file (`benchlocal_cli/packs/<name>.jsonl`) carries a header lin
 For each pack we lift:
 
 - **Scenario IDs** — preserved verbatim so cross-comparison with BenchLocal desktop runs stays valid
-- **Prompts** — system / user / tool definitions, preserved directly where deterministic scoring was practical and summarized for v0.1 sandbox stubs
+- **Prompts** — generated from vendored upstream TypeScript/JSON mirrors; deterministic pack system and user prompts are preserved verbatim
 - **Sampling defaults** — temperature, top_p, max_tokens (per-pack)
-- **Verifier intent** — assertion primitives are deterministic Python equivalents for v0.1; sandbox-backed verifiers remain deferred
+- **Verifier intent** — deterministic Python assertion primitives generated from upstream callback intent where practical; sandbox-backed verifiers remain deferred
 
 ## What was NOT ported
 
@@ -32,6 +32,16 @@ For each pack we lift:
 - The TypeScript runtime adapter layer (`benchlocal/index.ts` per pack) — replaced by our Python runner
 - The Bench Pack registry/install protocol — we vendor packs directly rather than fetch via the BenchLocal install flow
 - Pack-specific Electron UI surfaces — N/A in a CLI
+
+## How to re-sync with upstream
+
+```bash
+bash scripts/sync-vendor.sh ToolCall-15
+node scripts/build-packs.js ToolCall-15
+git diff vendor/ToolCall-15 benchlocal_cli/packs/toolcall-15.jsonl
+```
+
+Run `node scripts/build-packs.js --all` after broad upstream syncs. The generated JSONL metadata records `_synced_from_commit` for traceability.
 
 ## Reporting drift / issues
 

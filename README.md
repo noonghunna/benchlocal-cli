@@ -16,7 +16,7 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 
 ## Status
 
-🚧 **Alpha — quick mode functional.** Core runner, deterministic scorers, JSONL packs, and mock-response smoke path are implemented. Sandbox-backed packs are still stubbed.
+🟢 **Beta — full BenchLocal prompt fidelity, all 5 deterministic packs working.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Sandbox-backed packs are still stubbed until v0.3+.
 
 ## Modes (target)
 
@@ -32,11 +32,11 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 
 | Pack | Verifier type | Status |
 |---|---|---|
-| **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | ✅ ported |
-| **InstructFollow-15** | Deterministic — constraint validators | ✅ ported |
-| **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate | ✅ ported |
-| **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ ported |
-| **DataExtract-15** | Deterministic — JSON field-match | ✅ ported |
+| **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | ✅ vendor-generated |
+| **InstructFollow-15** | Deterministic — constraint validators | ✅ vendor-generated |
+| **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate | ✅ vendor-generated |
+| **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ vendor-generated |
+| **DataExtract-15** | Deterministic — JSON field-match | ✅ vendor-generated |
 | **BugFind-15** | **Execution-backed** — runs candidate fixes; needs Docker sandbox | ⚠️ scenarios stubbed; verifier deferred |
 | **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ⚠️ scenarios stubbed; verifier deferred |
 | **CLI-40** | **Linux exec sandbox** — runs CLI commands | ⚠️ scenarios stubbed; verifier deferred |
@@ -135,4 +135,4 @@ MIT — same as upstream BenchLocal. See [`LICENSE`](./LICENSE).
 
 ## Contributing
 
-Pre-alpha; design + implementation in flight. Open an issue if you want to discuss the design before contributing code.
+Beta. Pack updates should go through `scripts/sync-vendor.sh` and `scripts/build-packs.js`; see `CONTRIBUTING.md`.

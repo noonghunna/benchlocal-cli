@@ -115,7 +115,9 @@ Scenario field reference:
 ```json
 {"kind": "exact_function_name", "value": "get_weather"}
 {"kind": "function_name_in", "values": ["get_weather", "lookup_weather"]}
+{"kind": "required_function_names", "values": ["get_weather", "get_stock_price"]}
 {"kind": "tool_call_count", "value": 1}
+{"kind": "content_regex", "pattern": "1945"}
 {"kind": "required_args_present", "args": ["location", "date"]}
 {"kind": "forbidden_args_absent", "args": ["api_key"]}
 {"kind": "exact_arg_value", "arg": "location", "value": "Paris"}
