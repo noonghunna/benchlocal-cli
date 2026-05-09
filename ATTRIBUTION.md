@@ -36,12 +36,12 @@ For each pack we lift:
 ## How to re-sync with upstream
 
 ```bash
-bash scripts/sync-vendor.sh ToolCall-15
-node scripts/build-packs.js ToolCall-15
+bash tools/sync-vendor.sh ToolCall-15
+node tools/build-packs.js ToolCall-15
 git diff vendor/ToolCall-15 benchlocal_cli/packs/toolcall-15.jsonl
 ```
 
-Run `node scripts/build-packs.js --all` after broad upstream syncs. The generated JSONL metadata records `_synced_from_commit` for traceability.
+Run `node tools/build-packs.js --all` after broad upstream syncs. The generated JSONL metadata records `_synced_from_commit` for traceability.
 
 ## Reporting drift / issues
 

@@ -135,4 +135,4 @@ MIT — same as upstream BenchLocal. See [`LICENSE`](./LICENSE).
 
 ## Contributing
 
-Beta. Pack updates should go through `scripts/sync-vendor.sh` and `scripts/build-packs.js`; see `CONTRIBUTING.md`.
+Beta. Pack updates should go through `tools/sync-vendor.sh` and `tools/build-packs.js`; see `CONTRIBUTING.md`.

@@ -3,8 +3,8 @@ set -euo pipefail
 
 PACK="${1:-}"
 if [[ -z "$PACK" ]]; then
-  echo "usage: bash scripts/sync-vendor.sh <PackName>" >&2
-  echo "example: bash scripts/sync-vendor.sh ToolCall-15" >&2
+  echo "usage: bash tools/sync-vendor.sh <PackName>" >&2
+  echo "example: bash tools/sync-vendor.sh ToolCall-15" >&2
   exit 2
 fi
 

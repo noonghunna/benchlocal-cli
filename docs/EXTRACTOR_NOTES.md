@@ -1,6 +1,6 @@
 # Extractor notes
 
-`node scripts/build-packs.js` is the canonical v0.2 pack generator. It reads vendored upstream sources from `vendor/<PackName>/` and writes JSONL to `benchlocal_cli/packs/`.
+`node tools/build-packs.js` is the canonical v0.2 pack generator. It reads vendored upstream sources from `vendor/<PackName>/` and writes JSONL to `benchlocal_cli/packs/`.
 
 ## Source of truth
 

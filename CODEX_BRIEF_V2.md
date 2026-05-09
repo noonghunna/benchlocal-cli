@@ -40,10 +40,10 @@ benchlocal-cli/
 │   ├── HermesAgent-20/
 │   └── CLI-40/
 │
-├── scripts/
-│   ├── sync-vendor.sh                       # NEW — `gh api` fetch upstream → vendor/<pack>/
-│   ├── build-packs.js                       # NEW — Node extractor: parse vendor TS → emit JSONL
-│   └── extractor/                           # NEW — supporting Node code if needed
+├── tools/                                   # NEW — maintainer-only tooling (NOT shipped in pip package)
+│   ├── sync-vendor.sh                       # `gh api` fetch upstream → vendor/<pack>/
+│   ├── build-packs.js                       # Node extractor: parse vendor TS → emit JSONL
+│   └── extractor/                           # supporting Node code if needed
 │       ├── package.json
 │       └── ...
 │
@@ -57,7 +57,7 @@ benchlocal-cli/
 ### Phase A — Vendor scaffold + sync script (~1 hr)
 
 1. Create `vendor/<PackName>/` for all 8 packs
-2. Write `scripts/sync-vendor.sh <PackName>`:
+2. Write `tools/sync-vendor.sh <PackName>`:
    - Fetches `lib/` directory contents from `stevibe/<PackName>` via `gh api`
    - Saves files to `vendor/<PackName>/lib/<file>`
    - Saves `benchlocal.pack.json` to `vendor/<PackName>/`
@@ -68,7 +68,7 @@ benchlocal-cli/
 
 ### Phase B — Node-based extractor (~1.5 hr)
 
-`scripts/build-packs.js` is the canonical extractor. Architecture:
+`tools/build-packs.js` is the canonical extractor. Architecture:
 
 1. Import the upstream pack module via `tsx` or `ts-node` so TypeScript executes natively
 2. Reach into the imported namespace — extract:
@@ -77,8 +77,8 @@ benchlocal-cli/
    - For multi-turn scenarios, capture `handleToolCall` outcomes by replaying expected tool invocations
    - For `evaluate(state)` verifier callbacks, port the logic into JSONL `verifier.asserts[]` array using the assertion primitives from `docs/PACK_FORMAT.md`
 3. Emit JSONL with the metadata line first, then one scenario per line
-4. CLI: `node scripts/build-packs.js <PackName>` regenerates `benchlocal_cli/packs/<pack-id>.jsonl` from `vendor/<PackName>/`
-5. CLI: `node scripts/build-packs.js --all` regenerates all 8 packs
+4. CLI: `node tools/build-packs.js <PackName>` regenerates `benchlocal_cli/packs/<pack-id>.jsonl` from `vendor/<PackName>/`
+5. CLI: `node tools/build-packs.js --all` regenerates all 8 packs
 
 **Key constraint:** the extractor must include the upstream `SYSTEM_PROMPT` verbatim as the system message in EVERY scenario of that pack. The current v0.1 pack files have a simplified system prompt that needs to be replaced with upstream's verbatim version.
 
@@ -90,7 +90,7 @@ For `evaluate(state)` callbacks that compute pass/fail: port the logic to determ
 
 ### Phase C — Replace v0.1 JSONL with v0.2 extractor output (~30 min)
 
-1. Run `node scripts/build-packs.js --all`
+1. Run `node tools/build-packs.js --all`
 2. The 8 JSONL files in `benchlocal_cli/packs/` will be overwritten with verbatim-from-upstream versions
 3. `git diff` should show:
    - Updated metadata lines (extractor-generated, with `_synced_from_commit` field)
@@ -109,11 +109,11 @@ For `evaluate(state)` callbacks that compute pass/fail: port the logic to determ
    - Drop the "non-canonical" caveats; explicitly state scores ARE comparable to BenchLocal desktop runs since prompts are byte-for-byte identical to upstream
 2. Update `ATTRIBUTION.md`:
    - Drop the "summarized assertions" caveat
-   - Add a "How to re-sync with upstream" section pointing at `scripts/sync-vendor.sh` + `scripts/build-packs.js`
+   - Add a "How to re-sync with upstream" section pointing at `tools/sync-vendor.sh` + `tools/build-packs.js`
 3. Create `CONTRIBUTING.md` with the upstream-sync workflow:
    ```bash
-   bash scripts/sync-vendor.sh ToolCall-15
-   node scripts/build-packs.js ToolCall-15
+   bash tools/sync-vendor.sh ToolCall-15
+   node tools/build-packs.js ToolCall-15
    git diff benchlocal_cli/packs/toolcall-15.jsonl
    git commit -am "feat: sync ToolCall-15 to upstream commit X"
    ```
@@ -158,8 +158,8 @@ When done, write `docs/CODEX_REPORT.md` (overwriting v0.1's) with the v0.2 summa
 ## Validation gate before declaring v0.2 done
 
 - [ ] All 8 vendor/ dirs scaffolded with upstream lib/ files mirrored
-- [ ] `scripts/sync-vendor.sh <PackName>` is idempotent + records commit SHA
-- [ ] `scripts/build-packs.js [--all|<PackName>]` regenerates JSONL from vendor
+- [ ] `tools/sync-vendor.sh <PackName>` is idempotent + records commit SHA
+- [ ] `tools/build-packs.js [--all|<PackName>]` regenerates JSONL from vendor
 - [ ] All 5 deterministic packs (toolcall, instructfollow, structoutput, reasonmath, dataextract) have verbatim upstream system prompts in their JSONL
 - [ ] BENCHMARK_REFERENCE_DATE (and any other shared constants) inlined into scenario prompts where referenced
 - [ ] Multi-turn scenarios have handleToolCall fixtures captured (or the lossy translation is documented in EXTRACTOR_NOTES)

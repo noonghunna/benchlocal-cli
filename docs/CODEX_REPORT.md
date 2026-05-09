@@ -39,7 +39,7 @@
 
 - Prompt/source fidelity is restored from vendor mirrors, but arbitrary upstream `evaluate(state)` callbacks are not bytecode-equivalent in JSONL. The extractor emits deterministic assertion primitives and documents lossy surfaces in `docs/EXTRACTOR_NOTES.md`.
 - StructOutput-15 still uses local deterministic checks instead of the upstream Docker verifier. This keeps v0.2 within the stated no-sandbox scope but is not full verifier parity.
-- `scripts/build-packs.js` uses a dependency-free TypeScript text extractor rather than `tsx`/`ts-node`. The runtime remains Python-only; Node is sync-time only.
+- `tools/build-packs.js` uses a dependency-free TypeScript text extractor rather than `tsx`/`ts-node`. The runtime remains Python-only; Node is sync-time only.
 
 ## Open questions filed
 
@@ -47,7 +47,7 @@
 
 ## Notes for Claude's review
 
-- Review `scripts/build-packs.js` and `docs/EXTRACTOR_NOTES.md` first; callback-to-assert fidelity is the main review surface.
-- `scripts/sync-vendor.sh` records `_sync.json` and can refresh a single pack from GitHub with `gh api`.
+- Review `tools/build-packs.js` and `docs/EXTRACTOR_NOTES.md` first; callback-to-assert fidelity is the main review surface.
+- `tools/sync-vendor.sh` records `_sync.json` and can refresh a single pack from GitHub with `gh api`.
 - Generated JSONL metadata includes `_synced_from_commit`; ToolCall scenarios also carry `benchmark_reference_date` and `benchmark_reference_day`.
 - Sandbox packs are vendored and generated but intentionally remain `_stub`.
