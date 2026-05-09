@@ -1,42 +1,45 @@
-# Codex implementation report — benchlocal-cli v0.1
+# Codex implementation report — benchlocal-cli v0.2
 
 **Status:** ⚠️ Done with caveats
 **Date:** 2026-05-09
-**Total time:** ~2 hours
+**Total time:** ~1.5 hours
 
 ## Phases completed
 
-- [x] Phase 1 — Core runtime
-- [x] Phase 2 — Pack porting + verifiers
-- [x] Phase 3 — Validation
+- [x] Phase A — Vendor scaffold + sync script
+- [x] Phase B — Node-based extractor
+- [x] Phase C — Replace v0.1 JSONL with extractor output
+- [x] Phase D — Documentation update
+- [x] Phase E — Final validation
 
 ## Test results
 
 - pytest: 6/6 tests passed
-- pip install -e .: pass in fresh Python 3.11 venv at `/tmp/benchlocal-cli-venv`
+- pip install -e .: pass in fresh Python 3.11 venv at `/tmp/benchlocal-cli-v02-venv`
 - benchlocal-cli list: pass
 - benchlocal-cli run --pack toolcall-15 --endpoint <mock>: pass, 15/15
-- benchlocal-cli run --quick --endpoint <mock>: pass, 29/30 in the smoke fixture
-- ATTRIBUTION.md fully filled: yes
+- benchlocal-cli run --quick --endpoint <mock>: pass, 30/30
+- ruff check benchlocal_cli tests: pass
+- TC-01 spot check: upstream system prompt match true; full Rules block present; benchmark_reference_date recorded as 2026-03-20
 
-## Pack porting summary
+## Pack generation summary
 
-| Pack | Scenarios ported | Scenarios dropped | Reason if dropped |
-|---|---:|---:|---|
-| ToolCall-15 | 15 | 0 | — |
-| InstructFollow-15 | 15 | 0 | — |
-| StructOutput-15 | 15 | 0 | — |
-| ReasonMath-15 | 15 | 0 | — |
-| DataExtract-15 | 15 | 0 | — |
-| BugFind-15 | 15 | 0 | Verifier stubbed for v0.1 |
-| HermesAgent-20 | 20 | 0 | Verifier stubbed for v0.1 |
-| CLI-40 | 40 | 0 | Verifier stubbed for v0.1 |
+| Pack | Vendor source | Scenarios generated | Verifier |
+|---|---|---:|---|
+| ToolCall-15 | `vendor/ToolCall-15/lib/benchmark.ts` | 15 | `tool_call` |
+| InstructFollow-15 | `vendor/InstructFollow-15/lib/benchmark.ts` | 15 | `instruct_follow` |
+| StructOutput-15 | `vendor/StructOutput-15/lib/benchmark.ts` | 15 | `struct_output` |
+| ReasonMath-15 | `vendor/ReasonMath-15/lib/benchmark.ts` | 15 | `reason_math` |
+| DataExtract-15 | `vendor/DataExtract-15/lib/benchmark.ts` | 15 | `data_extract` |
+| BugFind-15 | `vendor/BugFind-15/lib/benchmark.ts` | 15 | `_stub` |
+| HermesAgent-20 | `vendor/HermesAgent-20/lib/benchmark.ts` | 20 | `_stub` |
+| CLI-40 | `vendor/CLI-40/verification/scenario-data.json` | 40 | `_stub` |
 
-## Deviations from DESIGN.md
+## Deviations from CODEX_BRIEF_V2.md
 
-- `--mock-responses-from-json` was added as an explicit CLI flag because the brief allowed stub responses for Phase 3 smoke validation.
-- The v0.1 pack ports preserve upstream IDs and metadata commits, but several non-primary deterministic pack prompts/assertions are summarized into deterministic JSONL assertions rather than byte-for-byte TypeScript verifier equivalents. Claude should review pack fidelity before treating scores as canonical BenchLocal parity.
-- StructOutput YAML support is intentionally YAML-lite and stdlib-only; it validates simple key/value YAML structure but does not replace a full YAML parser.
+- Prompt/source fidelity is restored from vendor mirrors, but arbitrary upstream `evaluate(state)` callbacks are not bytecode-equivalent in JSONL. The extractor emits deterministic assertion primitives and documents lossy surfaces in `docs/EXTRACTOR_NOTES.md`.
+- StructOutput-15 still uses local deterministic checks instead of the upstream Docker verifier. This keeps v0.2 within the stated no-sandbox scope but is not full verifier parity.
+- `scripts/build-packs.js` uses a dependency-free TypeScript text extractor rather than `tsx`/`ts-node`. The runtime remains Python-only; Node is sync-time only.
 
 ## Open questions filed
 
@@ -44,7 +47,7 @@
 
 ## Notes for Claude's review
 
-- Review `benchlocal_cli/runner.py` first for output schema and reproducibility fields.
-- Review `benchlocal_cli/scoring/*` next; all scorer modules now return the shared `ScenarioResult` dataclass.
-- Sandbox-backed packs are present and skipped by default unless `--enable-sandboxed-packs` is set; they return `verifier_not_implemented`.
-- The implementation is functional for local/mock smoke and quick-mode plumbing. Pack semantic fidelity is the main remaining review surface before public release.
+- Review `scripts/build-packs.js` and `docs/EXTRACTOR_NOTES.md` first; callback-to-assert fidelity is the main review surface.
+- `scripts/sync-vendor.sh` records `_sync.json` and can refresh a single pack from GitHub with `gh api`.
+- Generated JSONL metadata includes `_synced_from_commit`; ToolCall scenarios also carry `benchmark_reference_date` and `benchmark_reference_day`.
+- Sandbox packs are vendored and generated but intentionally remain `_stub`.
