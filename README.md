@@ -104,7 +104,7 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 ## Reasoning models
 
-`benchlocal-cli` sends `chat_template_kwargs: {"enable_thinking": false}` by default. This keeps BenchLocal-style quality prompts comparable on reasoning-capable models such as Qwen3.6, where default thinking can exhaust `max_tokens` before the final answer is emitted. Use `--enable-thinking` for diagnostic runs; it sets `enable_thinking=true` and bumps `max_tokens` to `--thinking-max-tokens` (default `4096`) unless a scenario explicitly overrides `max_tokens`. Use `--extra-body` to pass any other OpenAI-compatible server extension fields.
+`benchlocal-cli` sends `chat_template_kwargs: {"enable_thinking": false}` by default. This keeps BenchLocal-style quality prompts comparable on reasoning-capable models such as Qwen3.6, where default thinking can exhaust `max_tokens` before the final answer is emitted. Use `--enable-thinking` for diagnostic runs; it sets `enable_thinking=true` and bumps request `max_tokens` to `--thinking-max-tokens` (default `4096`) so diagnostic thinking runs have enough budget. Use `--extra-body` to pass any other OpenAI-compatible server extension fields.
 
 ## Output (target format)
 
