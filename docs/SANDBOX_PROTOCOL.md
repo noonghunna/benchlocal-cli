@@ -4,7 +4,11 @@ Each sandboxed pack (BugFind-15, CLI-40, HermesAgent-20) ships a Docker containe
 
 ## Status
 
-🚧 **Pre-alpha (scaffolding).** All 3 containers expose a working `/health` endpoint and accept `/verify` requests, but `/verify` returns `verifier_not_implemented`. Codex implements per [`CODEX_BRIEF_V4.md`](../CODEX_BRIEF_V4.md).
+🟡 **v0.6 verifier lift.** All 3 containers expose `/health` with `stage="v0.6"` and return real verifier result shapes. The current vendored upstream mirrors do not contain the fixture trees assumed by `CODEX_BRIEF_V6.md`, so v0.6 uses upstream-derived `raw_scenario` metadata rather than hidden fixture files:
+
+- BugFind validates strict solution-block structure, trap/no-bug discipline, and per-scenario rubric evidence.
+- CLI executes safe single commands with `shell=False` inside a cleared temporary workspace, rejects network/destructive commands, and compares explicit expected stdout/stderr/exit-code fields when present.
+- Hermes tracks scenario state across `/verify-start` and `/verify-turn`, simulates deterministic memory/artifact/trace tools, and checks final responses against success-case evidence.
 
 | Pack | Host port | Verifier endpoint(s) | Multi-turn? |
 |---|---|---|---|
@@ -24,7 +28,7 @@ bash tools/test-sandboxes.sh     # confirms /health responds on all 3
 ```http
 GET /health
 → 200 OK
-  {"status": "ok", "pack": "<pack-id>", "stage": "scaffold|alpha|beta|production"}
+  {"status": "ok", "pack": "<pack-id>", "stage": "v0.6"}
 
 POST /verify
 Content-Type: application/json
@@ -110,8 +114,22 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 | `wrong_answer` | Model emitted unexpected response shape (e.g., text instead of tool call) |
 | `invalid_json` | Tool call arguments didn't parse, or fix wasn't valid Python, etc |
 | `timeout` | Hit per-scenario time limit (10s for CLI commands; 20-turn limit for HermesAgent) |
-| `server_error` | Sandbox infra issue (fixture missing, container OOM, etc) |
-| `verifier_not_implemented` | Scaffolding state — Codex hasn't implemented the verifier yet |
+| `server_error` | Sandbox infra issue (state id missing, fixture missing, container OOM, etc) |
+| `verifier_not_implemented` | Runner-side skip when a sandboxed pack is requested without sandbox support or a sandbox cannot start |
+
+## CLI safety model
+
+The v0.6 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates:
+
+- container runs as non-root `verifier`
+- commands are parsed with `shlex.split`
+- `subprocess.run(..., shell=False)` is mandatory
+- network and destructive executables/tokens are rejected before execution
+- each scenario gets a fresh temporary workspace
+- timeout is capped at 10s
+- stdout/stderr are truncated to 64 KiB
+
+`CODEX_BRIEF_V6.md` recommended Unix-domain sockets plus Docker `--network none`, but the local `SandboxClient` still uses HTTP over a host-mapped port. This is a documented parity gap rather than a silent claim of full isolation.
 
 This mirrors the deterministic-pack `ScenarioResult` taxonomy — verifiers in sandbox containers produce the same shape as in-process verifiers, so the runner can treat them uniformly.
 

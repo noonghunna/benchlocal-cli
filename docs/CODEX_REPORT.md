@@ -1,69 +1,52 @@
-# Codex implementation report — benchlocal-cli v0.4
+# Codex implementation report — benchlocal-cli v0.6
 
-**Status:** Done with v0.4 verifier-parity caveats
+**Status:** Implemented with explicit fixture-parity gap
 **Date:** 2026-05-09
 
 ## Phases completed
 
-- [x] Phase A — Shared Docker HTTP sandbox client and runner integration
-- [x] Phase B — BugFind-15 sandbox verifier endpoint
-- [x] Phase C — CLI-40 sandbox verifier endpoint
-- [x] Phase D — HermesAgent-20 sandbox verifier endpoint and lifecycle endpoints
-- [x] Phase E — Tests, docs, sandbox image build, and mock full-run validation
+- [x] Phase A — BugFind verifier replaced with strict solution-block + upstream-rubric checks
+- [x] Phase B — CLI verifier replaced with safe `shell=False` command execution, workspace reset, timeout, output capture, and safety rejects
+- [x] Phase C — Hermes verifier replaced with stateful mocked-tool trace handling and final success-case checks
+- [x] Phase D — Docs, version bump, changelog, tests, sandbox build/smoke validation
 
-## Test results
+## Important gap
 
-- `python3 -m py_compile benchlocal_cli/*.py sandboxes/bugfind/server.py sandboxes/cli/server.py sandboxes/hermes/server.py`: pass
-- `bash tools/build-sandboxes.sh`: pass
-- `bash tools/test-sandboxes.sh`: pass
-- `/tmp/benchlocal-cli-v03-venv/bin/pytest tests/`: 14/14 passed
-- `/tmp/benchlocal-cli-v03-venv/bin/ruff check benchlocal_cli tests`: pass
-- Fresh install: `/tmp/benchlocal-cli-v04-venv/bin/pip install -e '.[sandbox]'`: pass
+`CODEX_BRIEF_V6.md` assumes upstream fixture assets that are not present in the local mirrors:
 
-## Sandbox image sizes
+- `vendor/BugFind-15` has rubric callbacks in `lib/benchmark.ts`, but no `lib/scenarios/<id>/buggy.py` or `test_fix.py` fixture tree.
+- `vendor/CLI-40` has `verification/scenario-data.json`, but no workspace input files or expected output files.
+- `vendor/HermesAgent-20` has scenario metadata, but no browser/cron/memory/artifact trace fixtures.
 
-| Image | Size |
-|---|---:|
-| `benchlocal-sandbox-bugfind:latest` | 208 MB |
-| `benchlocal-sandbox-cli:latest` | 172 MB |
-| `benchlocal-sandbox-hermes:latest` | 177 MB |
-
-## Mock validation
-
-Mock response fixture: `/tmp/benchlocal-v04-full-mock.json`
-
-| Run | Result |
-|---|---:|
-| `--pack bugfind-15 --enable-sandboxed-packs` | 15 / 15 |
-| `--pack cli-40 --enable-sandboxed-packs` | 40 / 40 |
-| `--pack hermesagent-20 --enable-sandboxed-packs` | 20 / 20 |
-| `--full --enable-sandboxed-packs` | 150 / 150 |
-
-The brief text says full mode covers 110 scenarios, but the generated pack inventory currently totals 150 scenarios: five deterministic packs at 15 each, plus BugFind-15, HermesAgent-20, and CLI-40.
+So v0.6 is a real verifier lift from the available vendored data, not literal hidden-fixture parity. The pack generator now embeds `raw_scenario.fixture_status` to make this visible at runtime.
 
 ## Implementation summary
 
-- `benchlocal_cli/sandbox.py` now manages Docker container lifecycle, health checks, HTTP `/verify` dispatch, Hermes lifecycle endpoint helpers, and cleanup.
-- `benchlocal_cli/runner.py` starts required sandbox clients when `--enable-sandboxed-packs` is set, dispatches sandboxed scenarios through HTTP verifiers, and stops containers on normal exit or SIGINT/SIGTERM.
-- `benchlocal_cli/cli.py` adds `--sandbox-image-tag` for image version testing.
-- BugFind, CLI, and Hermes sandbox servers now expose working `/health` and verifier endpoints.
-- `tests/test_sandbox_runner.py` covers runner dispatch and default skip behavior.
-- Docs now describe installing sandbox extras, building images, and running `--full --enable-sandboxed-packs`.
+- `tools/build-packs.js` emits `raw_scenario` metadata for BugFind, CLI, and Hermes.
+- `sandboxes/bugfind/server.py` validates candidate structure, trap/no-bug discipline, known failure patterns, and per-scenario rubric evidence.
+- `sandboxes/cli/server.py` extracts one command, rejects unsafe/network/destructive commands, runs it with `shell=False` in a fresh temp workspace, caps timeout/output, and compares explicit expectations when present.
+- `sandboxes/hermes/server.py` supports `/verify`, `/verify-start`, `/verify-turn`, and `/verify-end` with scenario-scoped memory/artifact/trace state.
+- All sandbox `/health` endpoints now report `stage="v0.6"`.
+- Version bumped to `0.6.0`; `CHANGELOG.md` added.
 
-## Deviations and caveats
+## Validation
 
-- BugFind v0.4 does not yet run lifted pytest fixtures against candidate patches. It validates solution-block shaped answers or explicit canonical pass markers.
-- CLI v0.4 does not yet execute fixture-backed command comparisons. It validates explicit canonical pass markers or parseable bounded commands while rejecting obvious unsafe/network commands.
-- Hermes v0.4 does not yet perform the full upstream mocked-tool agent loop. It exposes `/verify-start`, `/verify-turn`, `/verify-end`, and a single-turn `/verify` path for runner integration.
-- Upstream execution fixtures were not fully lifted into `sandboxes/*/fixtures/` or generated JSONL `raw_scenario` fields in this pass.
-- The CLI sandbox is not launched with `--network none`; Docker port publishing and `--network none` conflict for this HTTP verifier pattern. Network-capable commands are rejected by the verifier instead.
+- `python3 -m py_compile benchlocal_cli/*.py sandboxes/bugfind/server.py sandboxes/cli/server.py sandboxes/hermes/server.py`: pass
+- `/tmp/benchlocal-cli-v03-venv/bin/pytest tests/`: pass
+- `/tmp/benchlocal-cli-v03-venv/bin/ruff check benchlocal_cli tests`: pass
+- `bash tools/build-sandboxes.sh`: pass
+- `bash tools/test-sandboxes.sh`: pass, all three `/health` endpoints report `stage="v0.6"`
+- Mock validation with mixed pass/fail responses:
+  - `--full --enable-sandboxed-packs --mock-responses-from-json /tmp/benchlocal-v06-mixed-mock.json`: 19 / 150 overall
+  - sandbox distributions in that run: BugFind 2 / 15, CLI 1 / 40, Hermes 1 / 20
+  - deterministic packs intentionally received generic mock pass markers in this mixed fixture, so they mostly failed their normal in-process verifiers; the acceptance point was that sandbox packs no longer trivially return 150 / 150
+
+## Deviations from the brief
+
+- Did not implement BugFind pytest execution because no pytest fixtures are present in the vendored mirror.
+- Did not implement CLI UDS + `--network none`; the runner protocol remains HTTP over a mapped port. Command execution itself is non-root, `shell=False`, timeout-limited, temp-workspace scoped, and network/destructive commands are rejected before execution.
+- Did not implement full Hermes browser/cron fixture simulation because no flow fixtures are present locally. The server implements deterministic memory/artifact/trace mocks and stateful lifecycle semantics.
 
 ## Open questions filed
 
-- none
-
-## Notes for Claude's review
-
-- Review `benchlocal_cli/sandbox.py` for lifecycle and cleanup behavior.
-- Review `benchlocal_cli/runner.py` for the `--enable-sandboxed-packs` dispatch path.
-- Treat this as v0.4 infrastructure closure, not final upstream verifier parity for the execution-backed packs.
+- none. The missing fixture trees are documented as an implementation gap rather than a design blocker.

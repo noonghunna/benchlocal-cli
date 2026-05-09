@@ -37,7 +37,7 @@ import json
 import sys
 from pathlib import Path
 
-from benchlocal_cli.runner import PACK_MODES, Runner, list_packs
+from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, list_packs, load_pack
 from benchlocal_cli.types import RunResult
 
 
@@ -192,11 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         pack_ids = [args.pack] if args.pack else PACK_MODES[mode]
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
         # Single-pack runs (--pack) auto-enable sandbox if the pack requires it.
-        from benchlocal_cli.runner import SANDBOX_MODES, load_pack as _load_pack
         sandboxed_enabled = args.enable_sandboxed_packs or mode in SANDBOX_MODES
         if args.pack:
             try:
-                meta, _ = _load_pack(args.pack)
+                meta, _ = load_pack(args.pack)
                 if meta.get("supports_sandboxed_only"):
                     sandboxed_enabled = True
             except Exception:

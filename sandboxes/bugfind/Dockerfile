@@ -1,11 +1,8 @@
-# BugFind-15 verifier sandbox — scaffolding builds + runs /health.
-# Codex implements /verify per CODEX_BRIEF_V4.md Phase B.
+# BugFind-15 verifier sandbox — v0.6 deterministic rubric verifier.
 
 FROM python:3.12-slim
 
-# pytest + pytest-timeout for the eventual verifier (Phase B implementation).
-# Even at scaffold stage, install them so the image doesn't need a rebuild
-# later just to add deps.
+# Retained for future pytest fixture parity when upstream fixture trees are mirrored.
 RUN pip install --no-cache-dir pytest==8.* pytest-timeout==2.*
 
 # Server + fixtures

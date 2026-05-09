@@ -1,5 +1,4 @@
-# CLI-40 verifier sandbox — scaffolding builds + runs /health.
-# Codex implements /verify per CODEX_BRIEF_V4.md Phase C.
+# CLI-40 verifier sandbox — v0.6 safe command execution verifier.
 
 FROM debian:trixie-slim
 

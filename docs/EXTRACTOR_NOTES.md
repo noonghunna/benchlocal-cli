@@ -22,7 +22,7 @@ Known lossy surfaces:
 
 Sandbox-backed packs (BugFind-15, HermesAgent-20, CLI-40) are generated from vendor metadata and keep `_stub` verifiers in JSONL. In v0.4 that `_stub` type means "dispatch to the Docker verifier when `--enable-sandboxed-packs` is set"; it no longer means the pack is always unimplemented.
 
-The v0.4 pass does not fully lift upstream execution fixtures into generated JSONL. It validates the container lifecycle, HTTP verifier protocol, runner dispatch, and mock canonical success paths. Full fixture extraction from upstream TypeScript remains the main parity gap for the execution-backed packs.
+The v0.6 pass adds `raw_scenario` payloads for BugFind-15, HermesAgent-20, and CLI-40. These payloads carry upstream IDs, categories/kinds, success/failure cases, and deterministic keyword/rubric metadata. The current local upstream mirrors do not include the pytest fixture trees, CLI workspace fixtures, or Hermes browser/cron/tool-flow fixtures assumed by the v0.6 brief, so full hidden-fixture extraction remains the main parity gap for execution-backed packs.
 
 ## Design choice
 

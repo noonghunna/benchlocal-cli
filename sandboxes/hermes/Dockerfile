@@ -1,11 +1,9 @@
-# HermesAgent-20 verifier sandbox — scaffolding builds + runs /health.
-# Codex implements multi-turn loop + 5 mocked tools per CODEX_BRIEF_V4.md Phase D.
+# HermesAgent-20 verifier sandbox — v0.6 deterministic state/trace verifier.
 
 FROM python:3.12-slim
 
 # No external runtime deps for the mocked-tools approach — stdlib http.server
-# is enough. If Codex's implementation prefers Flask or aiohttp, add here.
-# (Intentionally NOT installing Playwright or Chromium — mocks-only by design.)
+# is enough. Intentionally NOT installing Playwright or Chromium — mocks-only.
 
 WORKDIR /app
 COPY server.py /app/server.py
