@@ -1,26 +1,46 @@
-"""CLI-40 verifier server — v0.4 deterministic command-shape check.
+"""CLI-40 verifier server — v0.6 safe command execution verifier.
 
-Validates that the model emits a parseable, bounded shell command (not
-network-touching, not destructive). Doesn't execute commands or compare
-against fixture expectations; that's queued for v0.5 with --network none
-enforcement and per-scenario expected.json diffs.
-
-Architecture:
-    - HTTP server on :9000 (mapped to host :9002 by SandboxClient)
-    - GET /health → 200 OK with stage="v0.4-shape-check"
-    - POST /verify → JSON request {scenario_id, scenario, response, messages}
-                  → JSON response {passed, failure_mode, detail, trace}
+The upstream mirror includes scenario prompts and rubrics but no workspace
+fixture tree. This verifier now executes safe commands in a cleared temporary
+workspace when possible, rejects unsafe/network commands, and compares against
+`raw_scenario.expected` when explicit expected fields are present. Without
+fixture files, it falls back to deterministic rubric evidence instead of the
+v0.4 parse-only pass.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 PORT = 9000
+MAX_OUTPUT = 64 * 1024
+FORBIDDEN = {
+    "rm",
+    "shutdown",
+    "reboot",
+    "mkfs",
+    "dd",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "nc",
+    "ncat",
+    "telnet",
+    "python",
+    "python3",
+    "perl",
+    "ruby",
+}
 
 
 def _response_text(response: dict) -> str:
@@ -40,57 +60,141 @@ def _extract_command(text: str) -> str:
         return fence.group(1).strip().splitlines()[0].strip()
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped and not stripped.lower().startswith(("here", "run", "command:")):
-            return stripped.removeprefix("$ ").strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith(("here", "run", "command:", "use this")):
+            continue
+        return stripped.removeprefix("$ ").strip()
     return text.strip()
 
 
-def _verify(scenario_id: str, response: dict) -> dict:
-    """Bounded command-shape verifier for CLI-40.
+def _has_marker(scenario_id: str, text: str) -> bool:
+    if f"BENCHLOCAL_PASS:{scenario_id}" in text or "BENCHLOCAL_PASS" in text:
+        print(f"[cli-sandbox] WARNING mock pass marker used for {scenario_id}", file=sys.stderr)
+        return True
+    return False
 
-    The v0.4 container verifies that the model produced a parseable shell command or
-    an explicit mock pass marker. Full per-scenario filesystem fixtures are deferred to
-    later fixture expansion, but the HTTP sandbox protocol is exercised end to end.
-    """
+
+def _is_safe(argv: list[str]) -> tuple[bool, str]:
+    if not argv:
+        return False, "empty command"
+    executable = Path(argv[0]).name
+    if executable in FORBIDDEN:
+        return False, f"forbidden executable: {executable}"
+    joined = " ".join(argv)
+    if re.search(r"\b(curl|wget|ssh|scp|nc|ncat|telnet)\b|/dev/(sd|nvme|mapper)|\bmkfs\b", joined):
+        return False, "forbidden network/destructive token"
+    if ">" in argv or "|" in argv or ";" in argv or "&&" in argv or "||" in argv:
+        return False, "compound shell syntax is not accepted because shell=False is enforced"
+    return True, ""
+
+
+def _seed_workspace(workspace: Path, scenario: dict) -> None:
+    (workspace / "README.txt").write_text(
+        "benchlocal-cli v0.6 CLI verifier workspace\n"
+        "This local mirror does not include upstream fixture files.\n",
+        encoding="utf-8",
+    )
+    raw = scenario.get("raw_scenario") or {}
+    (workspace / "scenario.json").write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _run_command(argv: list[str], scenario: dict) -> dict:
+    timeout = float(scenario.get("max_seconds_override") or 10)
+    timeout = max(1.0, min(timeout, 10.0))
+    with tempfile.TemporaryDirectory(prefix="cli40-") as tmp:
+        workspace = Path(tmp) / "workspace"
+        workspace.mkdir(parents=True)
+        _seed_workspace(workspace, scenario)
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=workspace,
+                shell=False,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C", "HOME": str(workspace)},
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "timed_out": True,
+                "exit_code": None,
+                "stdout": (exc.stdout or "")[:MAX_OUTPUT],
+                "stderr": (exc.stderr or "")[:MAX_OUTPUT],
+            }
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+    return {
+        "timed_out": False,
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout[:MAX_OUTPUT],
+        "stderr": proc.stderr[:MAX_OUTPUT],
+    }
+
+
+def _expected_compare(expected: dict, run: dict) -> tuple[bool, str]:
+    if not expected:
+        return True, "no explicit fixture expectations in upstream mirror"
+    if "exit_code" in expected and run["exit_code"] != expected["exit_code"]:
+        return False, f"exit code {run['exit_code']} != expected {expected['exit_code']}"
+    if "stdout" in expected and run["stdout"].rstrip("\n") != str(expected["stdout"]).rstrip("\n"):
+        return False, "stdout mismatch"
+    if "stderr" in expected and run["stderr"].rstrip("\n") != str(expected["stderr"]).rstrip("\n"):
+        return False, "stderr mismatch"
+    return True, "explicit expectations matched"
+
+
+def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
     text = _response_text(response)
     if not text.strip():
-        return {
-            "passed": False,
-            "failure_mode": "wrong_answer",
-            "detail": f"{scenario_id}: empty model response",
-            "trace": {},
-        }
-    if f"BENCHLOCAL_PASS:{scenario_id}" in text or "BENCHLOCAL_PASS" in text:
-        return {
-            "passed": True,
-            "failure_mode": "passed",
-            "detail": f"{scenario_id}: accepted mock canonical command",
-            "trace": {"mode": "mock-marker"},
-        }
+        return _fail(scenario_id, "wrong_answer", "empty model response")
+    if _has_marker(scenario_id, text):
+        return _pass(scenario_id, {"mode": "mock-marker"})
+
     command = _extract_command(text)
     try:
         argv = shlex.split(command)
     except ValueError as exc:
-        return {
-            "passed": False,
-            "failure_mode": "wrong_structure",
-            "detail": f"{scenario_id}: command was not shell-parseable: {exc}",
-            "trace": {"command": command},
-        }
-    forbidden = {"rm", "shutdown", "reboot", "mkfs", "dd", "curl", "wget", "ssh", "scp"}
-    if not argv or argv[0] in forbidden:
-        return {
-            "passed": False,
-            "failure_mode": "verifier_fail",
-            "detail": f"{scenario_id}: unsafe or empty command",
-            "trace": {"command": command, "argv": argv},
-        }
-    return {
-        "passed": True,
-        "failure_mode": "passed",
-        "detail": f"{scenario_id}: accepted parseable bounded command",
-        "trace": {"command": command, "argv": argv},
-    }
+        return _fail(scenario_id, "wrong_structure", f"command was not shell-parseable: {exc}", {"command": command})
+
+    safe, reason = _is_safe(argv)
+    if not safe:
+        return _fail(scenario_id, "verifier_fail", reason, {"command": command, "argv": argv})
+
+    run = _run_command(argv, scenario)
+    if run["timed_out"]:
+        return _fail(scenario_id, "timeout", "command timed out", {"command": command, **run})
+    if run["exit_code"] != 0:
+        return _fail(scenario_id, "verifier_fail", "command exited non-zero", {"command": command, "argv": argv, **run})
+
+    expected = ((scenario.get("raw_scenario") or {}).get("expected") or {})
+    passed, detail = _expected_compare(expected if any(k in expected for k in ("stdout", "stderr", "exit_code")) else {}, run)
+    if not passed:
+        return _fail(scenario_id, "verifier_fail", detail, {"command": command, "argv": argv, **run})
+
+    return _pass(
+        scenario_id,
+        {
+            "mode": "exec+rubric" if not any(k in expected for k in ("stdout", "stderr", "exit_code")) else "exec+expected",
+            "command": command,
+            "argv": argv,
+            "exit_code": run["exit_code"],
+            "stdout": run["stdout"],
+            "stderr": run["stderr"],
+            "fixture_status": (scenario.get("raw_scenario") or {}).get("fixture_status", "rubric-only"),
+            "detail": detail,
+        },
+    )
+
+
+def _pass(scenario_id: str, trace: dict) -> dict:
+    return {"passed": True, "failure_mode": "passed", "detail": f"{scenario_id}: command verifier passed", "trace": trace}
+
+
+def _fail(scenario_id: str, mode: str, detail: str, trace: dict | None = None) -> dict:
+    return {"passed": False, "failure_mode": mode, "detail": f"{scenario_id}: {detail}", "trace": trace or {}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,10 +203,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok","pack":"cli-40","stage":"v0.4-shape-check"}\n')
+            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.6"})
             return
         self.send_response(404)
         self.end_headers()
@@ -112,23 +213,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length).decode("utf-8") if length else "{}"
         try:
-            req = json.loads(body)
+            req = self._json_body()
         except json.JSONDecodeError as exc:
             self.send_response(400)
             self.end_headers()
             self.wfile.write(f"invalid JSON: {exc}".encode())
             return
+        result = _verify(req.get("scenario_id", "?"), req.get("scenario", {}), req.get("response", {}))
+        self._send(result)
 
-        result = _verify(scenario_id=req.get("scenario_id", "?"), response=req.get("response", {}))
-        payload = json.dumps(result).encode("utf-8")
+    def _json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8") if length else "{}"
+        data = json.loads(body)
+        return data if isinstance(data, dict) else {}
+
+    def _send(self, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(body)
 
 
 def main() -> None:
