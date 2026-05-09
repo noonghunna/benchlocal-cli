@@ -16,7 +16,7 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 
 ## Status
 
-🚧 **Pre-alpha.** Scaffolding only. Implementation in progress.
+🚧 **Alpha — quick mode functional.** Core runner, deterministic scorers, JSONL packs, and mock-response smoke path are implemented. Sandbox-backed packs are still stubbed.
 
 ## Modes (target)
 
@@ -32,14 +32,14 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 
 | Pack | Verifier type | Status |
 |---|---|---|
-| **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | 🚧 to port |
-| **InstructFollow-15** | Deterministic — constraint validators | 🚧 to port |
-| **StructOutput-15** | Deterministic — JSON / grammar schema validate | 🚧 to port |
-| **ReasonMath-15** | Deterministic — numeric extract + compare | 🚧 to port |
-| **DataExtract-15** | Deterministic — field-match | 🚧 to port |
-| **BugFind-15** | **Execution-backed** — runs candidate fixes; needs Docker sandbox | 🚧 scenarios only; verifier stubbed |
-| **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | 🚧 scenarios only; verifier stubbed |
-| **CLI-40** | **Linux exec sandbox** — runs CLI commands | 🚧 scenarios only; verifier stubbed |
+| **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | ✅ ported |
+| **InstructFollow-15** | Deterministic — constraint validators | ✅ ported |
+| **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate | ✅ ported |
+| **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ ported |
+| **DataExtract-15** | Deterministic — JSON field-match | ✅ ported |
+| **BugFind-15** | **Execution-backed** — runs candidate fixes; needs Docker sandbox | ⚠️ scenarios stubbed; verifier deferred |
+| **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ⚠️ scenarios stubbed; verifier deferred |
+| **CLI-40** | **Linux exec sandbox** — runs CLI commands | ⚠️ scenarios stubbed; verifier deferred |
 
 ## Layout (planned)
 
@@ -86,13 +86,13 @@ benchlocal-cli list
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
 
 # run full mode with custom timeout per scenario
-benchlocal-cli run --full --endpoint http://localhost:8010 --timeout-per-case 60
+benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-autoround --timeout-per-case 60
 
 # run a single pack with detailed per-scenario output
-benchlocal-cli run --pack toolcall-15 --verbose
+benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
 
 # emit machine-readable JSON instead of markdown
-benchlocal-cli run --quick --output json > results.json
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --output json > results.json
 ```
 
 ## Output (target format)
