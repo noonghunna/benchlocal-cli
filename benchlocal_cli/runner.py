@@ -82,7 +82,6 @@ def build_request(
 ) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
     scenario_overrides = scenario.get("sampling_overrides") or {}
-    scenario_overrides_max_tokens = "max_tokens" in scenario_overrides
     if extra_body:
         sampling.update(extra_body)
     if thinking_enabled:
@@ -90,14 +89,14 @@ def build_request(
             **dict(sampling.get("chat_template_kwargs") or {}),
             "enable_thinking": True,
         }
-        if not scenario_overrides_max_tokens:
-            sampling["max_tokens"] = thinking_max_tokens
     else:
         sampling["chat_template_kwargs"] = {
             **dict(sampling.get("chat_template_kwargs") or {}),
             "enable_thinking": False,
         }
     sampling.update(scenario_overrides)
+    if thinking_enabled:
+        sampling["max_tokens"] = thinking_max_tokens
     request = {"model": model, "messages": scenario["messages"], **sampling}
     if scenario.get("tools"):
         request["tools"] = scenario["tools"]

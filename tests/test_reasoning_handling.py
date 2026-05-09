@@ -43,6 +43,18 @@ def test_build_request_enable_thinking_bumps_tokens():
     assert request["max_tokens"] == 4096
 
 
+def test_build_request_enable_thinking_overrides_scenario_token_budget():
+    request, _ = build_request(
+        _scenario({"max_tokens": 512}),
+        _meta(),
+        "fake",
+        thinking_enabled=True,
+        thinking_max_tokens=4096,
+    )
+
+    assert request["max_tokens"] == 4096
+
+
 def test_extra_body_wins_over_defaults_but_loses_to_scenario_overrides():
     request, _ = build_request(
         _scenario({"foo": "scenario"}),
