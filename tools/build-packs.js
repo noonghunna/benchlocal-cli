@@ -123,6 +123,30 @@ function extractStringField(block, field) {
   return parseJsStringAt(block, i).value;
 }
 
+function extractBareField(block, field) {
+  const match = new RegExp(`${field}\\s*:`).exec(block);
+  if (!match) {
+    return "";
+  }
+  let i = match.index + match[0].length;
+  while (/\s/.test(block[i])) i += 1;
+  const start = i;
+  while (i < block.length && /[A-Za-z0-9_.$-]/.test(block[i])) i += 1;
+  return block.slice(start, i).split(".").pop() || "";
+}
+
+function keywordsFromText(text) {
+  const stop = new Set([
+    "the", "and", "for", "with", "that", "this", "from", "into", "must", "should",
+    "case", "model", "output", "correct", "expected", "using", "instead", "only",
+    "exact", "real", "after", "before", "without", "through", "every", "there",
+  ]);
+  const words = String(text)
+    .toLowerCase()
+    .match(/[a-z0-9_+.-]{4,}/g) || [];
+  return [...new Set(words.filter((word) => !stop.has(word)))].slice(0, 18);
+}
+
 function matching(source, start, open, close) {
   let depth = 0;
   let stringQuote = null;
@@ -364,8 +388,24 @@ function buildBugFind() {
       userMessage: extractStringField(block, "userMessage"),
       successCase: extractStringField(block, "successCase"),
       failureCase: extractStringField(block, "failureCase"),
+      language: extractStringField(block, "language") || extractBareField(block, "language"),
+      category: extractStringField(block, "category") || extractBareField(block, "category"),
+      difficulty: extractStringField(block, "difficulty") || extractBareField(block, "difficulty"),
     };
-    return Object.assign(baseScenario(system, spec, "_stub", [{ kind: "_stub", reason: "BugFind requires Docker sandbox verifier" }]), { supports_sandboxed_only: true });
+    const scenario = Object.assign(baseScenario(system, spec, "_stub", [{ kind: "_stub", reason: "BugFind requires Docker sandbox verifier" }]), { supports_sandboxed_only: true });
+    scenario.raw_scenario = {
+      id: spec.id,
+      title: spec.title,
+      language: spec.language,
+      category: spec.category,
+      difficulty: spec.difficulty,
+      success_case: spec.successCase,
+      failure_case: spec.failureCase,
+      rubric_keywords: keywordsFromText(`${spec.successCase} ${spec.failureCase}`),
+      source: "vendor/BugFind-15/lib/benchmark.ts",
+      fixture_status: "rubric-only; upstream mirror has no pytest fixture tree",
+    };
+    return scenario;
   });
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
 }
@@ -385,6 +425,20 @@ function buildHermes() {
     upstream_title: spec.title,
     success_case: spec.successCase,
     failure_case: spec.failureCase,
+    raw_scenario: {
+      id: spec.id,
+      kind: spec.kind,
+      category: spec.category,
+      success_case: spec.successCase,
+      failure_case: spec.failureCase,
+      expected: {
+        success_case: spec.successCase,
+        failure_case: spec.failureCase,
+        required_keywords: keywordsFromText(spec.successCase),
+      },
+      tool_fixtures: [],
+      fixture_status: "rubric-only; upstream mirror has no Hermes tool-flow fixtures",
+    },
   }));
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
 }
@@ -403,6 +457,19 @@ function buildCli40() {
     upstream_title: spec.title,
     success_case: spec.successCase,
     failure_case: spec.failureCase,
+    raw_scenario: {
+      id: spec.id,
+      kind: spec.kind,
+      category_id: spec.categoryId,
+      category: spec.category,
+      expected: {
+        success_case: spec.successCase,
+        failure_case: spec.failureCase,
+        required_keywords: keywordsFromText(spec.successCase),
+      },
+      input_fixtures: [],
+      fixture_status: "rubric-only; upstream mirror has no workspace fixture tree",
+    },
   }));
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
 }
