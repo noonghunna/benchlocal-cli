@@ -97,6 +97,11 @@ commit_parsers = [
 tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
 ignore_tags = ""
 
-[remote.github]
-owner = "noonghunna"
-repo = "benchlocal-cli"
+# [remote.github] commented out: while the repo is private, git-cliff's
+# GitHub API enrichment hits 403 on closed-PR listings even with GITHUB_TOKEN.
+# Re-enable when the repo is flipped public (gives PR/contributor links in
+# rendered release notes).
+#
+# [remote.github]
+# owner = "noonghunna"
+# repo = "benchlocal-cli"
