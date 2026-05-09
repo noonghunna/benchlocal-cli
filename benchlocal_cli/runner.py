@@ -19,8 +19,17 @@ from benchlocal_cli.scoring.common import content_with_source
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
 PACK_MODES = {
+    # quick — 30 scenarios, no Docker, ~5-10 min
     "quick": ["toolcall-15", "instructfollow-15"],
-    "medium": ["toolcall-15", "instructfollow-15", "structoutput-15", "dataextract-15"],
+    # medium — 75 scenarios = full deterministic suite, no Docker, ~15-25 min
+    "medium": [
+        "toolcall-15",
+        "instructfollow-15",
+        "structoutput-15",
+        "dataextract-15",
+        "reasonmath-15",
+    ],
+    # full — 150 scenarios = medium + sandboxed packs, requires Docker, ~25-40 min
     "full": [
         "toolcall-15",
         "instructfollow-15",
@@ -32,6 +41,10 @@ PACK_MODES = {
         "cli-40",
     ],
 }
+
+# Modes that require Docker sandbox containers. The runner will auto-enable
+# sandboxed packs (no flag needed) and fail loud if Docker isn't available.
+SANDBOX_MODES = {"full"}
 
 
 def _utc_now() -> str:
@@ -106,9 +119,20 @@ def build_request(
 
 
 def _chat_url(endpoint: str) -> str:
+    """Normalize an endpoint URL to the OpenAI chat-completions path.
+
+    Accepts any of these and returns the same final URL:
+        http://host:port
+        http://host:port/
+        http://host:port/v1
+        http://host:port/v1/
+        http://host:port/v1/chat/completions
+    """
     endpoint = endpoint.rstrip("/")
     if endpoint.endswith("/v1/chat/completions"):
         return endpoint
+    if endpoint.endswith("/v1"):
+        return f"{endpoint}/chat/completions"
     return f"{endpoint}/v1/chat/completions"
 
 
@@ -189,13 +213,17 @@ class Runner:
             signal.signal(signal.SIGTERM, old_sigterm)
 
     def _start_sandboxes(self, pack_ids: list[str], warnings: list[str]) -> None:
+        import sys
+
         if not self.enable_sandboxed_packs:
             return
         for pack_id in pack_ids:
             try:
                 meta, _ = load_pack(pack_id)
             except Exception as exc:
-                warnings.append(f"could not inspect {pack_id} for sandbox use: {exc}")
+                msg = f"could not inspect {pack_id} for sandbox use: {exc}"
+                warnings.append(msg)
+                print(f"⚠️  {msg}", file=sys.stderr, flush=True)
                 continue
             if not meta.get("supports_sandboxed_only") or pack_id in self._sandbox_clients:
                 continue
@@ -204,7 +232,13 @@ class Runner:
                 client.start()
                 self._sandbox_clients[pack_id] = client
             except Exception as exc:
-                warnings.append(f"skipping {pack_id}: sandbox unavailable ({exc})")
+                msg = (
+                    f"skipping {pack_id}: sandbox unavailable ({exc}). "
+                    f"Hint: ensure Docker is running and `bash tools/build-sandboxes.sh` has been run; "
+                    f"or use --medium for the deterministic-only subset (no Docker needed)."
+                )
+                warnings.append(msg)
+                print(f"⚠️  {msg}", file=sys.stderr, flush=True)
 
     def _stop_sandboxes(self) -> None:
         for client in list(self._sandbox_clients.values()):

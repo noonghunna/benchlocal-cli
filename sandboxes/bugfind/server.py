@@ -1,25 +1,16 @@
-"""BugFind-15 verifier server — runs candidate code fixes through pytest.
+"""BugFind-15 verifier server — v0.4 deterministic shape-check.
 
-🚧 SCAFFOLDING ONLY — /health endpoint works for SandboxClient detection;
-/verify is a STUB that returns verifier_not_implemented.
-
-TODO (Codex per CODEX_BRIEF_V4.md Phase B):
-    - Replace _stub_verify() with real implementation
-    - Lift fixtures from upstream stevibe/BugFind-15 into ./fixtures/
-    - Update tools/build-packs.js to extract scenario.code into raw_scenario
+Validates that the model's response contains either an explicit
+`<solution verdict="fix|no_bug">...</solution>` block or a canonical
+mock-pass marker. Real upstream pytest-against-fixture verification is
+queued for v0.5 (lift fixtures from upstream stevibe/BugFind-15 into
+./fixtures/, run pytest with timeout against candidate patches).
 
 Architecture:
     - HTTP server on :9000 (inside container; mapped to host :9001 by SandboxClient)
-    - GET /health → 200 OK (used by SandboxClient.start() to detect ready state)
+    - GET /health → 200 OK with stage="v0.4-shape-check"
     - POST /verify → JSON request {scenario_id, scenario, response, messages}
                   → JSON response {passed, failure_mode, detail, trace}
-
-Verification flow per scenario (when implemented):
-    1. Extract candidate fix from response.choices[0].message.content
-    2. Locate fixture dir: /app/fixtures/<scenario_id>/
-    3. Apply candidate fix to a tmp copy of buggy.py
-    4. Run pytest against test_fix.py with --timeout=10
-    5. Pass if pytest exits 0; fail otherwise
 """
 
 from __future__ import annotations
@@ -85,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"status":"ok","pack":"bugfind-15","stage":"scaffold"}\n')
+            self.wfile.write(b'{"status":"ok","pack":"bugfind-15","stage":"v0.4-shape-check"}\n')
             return
         self.send_response(404)
         self.end_headers()

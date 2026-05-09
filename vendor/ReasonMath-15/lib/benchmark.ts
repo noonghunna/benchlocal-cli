@@ -4,7 +4,7 @@ Rules:
 - Show concise visible work using equations, short bullet points, or numbered steps.
 - Do not write a long essay.
 - End with exactly one line that starts with "ANSWER: ".
-- If the question asks for more than one value, format the final line as semicolon-separated key=value pairs.
+- Always format the final answer as \`key=value\` pairs (semicolon-separated when multiple values). Use a descriptive key name even for single values. Generic shape: \`ANSWER: <key>=<value>\` — e.g. \`ANSWER: total_widgets=42\` or \`ANSWER: speed=15 m/s; distance=120 m\`.
 - Use exact arithmetic when possible.
 - Round only the final result when the problem context requires it.
 - If the constraints are inconsistent, say so explicitly in the final answer.`;

@@ -42,28 +42,60 @@ from benchlocal_cli.types import RunResult
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="benchlocal-cli")
+    parser = argparse.ArgumentParser(
+        prog="benchlocal-cli",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Run BenchLocal-style behavioral quality packs against any "
+            "OpenAI-compatible endpoint."
+        ),
+        epilog=(
+            "Modes:\n"
+            "  --quick    2 packs, 30 scenarios, no Docker        (~5-10 min)\n"
+            "  --medium   5 packs, 75 scenarios, no Docker        (~15-25 min)\n"
+            "  --full     8 packs, 150 scenarios, requires Docker (~25-40 min)\n"
+            "\n"
+            "Examples:\n"
+            "  benchlocal-cli run --quick --endpoint http://localhost:8010 --model qwen3.6-27b\n"
+            "  benchlocal-cli run --full  --endpoint http://localhost:8010 --model qwen3.6-27b\n"
+            "  benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8010 --model qwen3.6-27b\n"
+            "  benchlocal-cli list         # show all available packs\n"
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="list available packs")
 
-    run = sub.add_parser("run", help="run benchmark packs")
+    run = sub.add_parser(
+        "run",
+        help="run benchmark packs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     mode = run.add_mutually_exclusive_group()
-    mode.add_argument("--quick", action="store_true")
-    mode.add_argument("--medium", action="store_true")
-    mode.add_argument("--full", action="store_true")
-    run.add_argument("--pack", help="run a single named pack")
-    run.add_argument("--endpoint", required=True)
-    run.add_argument("--model", required=True)
-    run.add_argument("--timeout-per-case", type=float, default=60.0)
-    run.add_argument("--output", choices=["markdown", "json"], default="markdown")
-    run.add_argument("--save-json")
-    run.add_argument("--repeat", type=int, default=1)
-    run.add_argument("--enable-sandboxed-packs", action="store_true")
-    run.add_argument("--sandbox-image-tag", default="latest")
-    run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled")
+    mode.add_argument("--quick", action="store_true", help="2 packs, ~5-10 min, no Docker")
+    mode.add_argument("--medium", action="store_true", help="5 packs (default), ~15-25 min, no Docker")
+    mode.add_argument("--full", action="store_true", help="8 packs incl. sandboxed, ~25-40 min, requires Docker")
+    run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
+    run.add_argument("--endpoint", required=True, help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
+    run.add_argument("--model", required=True, help="model id served by the endpoint")
+    run.add_argument("--timeout-per-case", type=float, default=60.0, help="per-scenario HTTP timeout (default: 60s)")
+    run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
+    run.add_argument("--save-json", help="also save raw JSON results to this path")
+    run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
+    run.add_argument(
+        "--enable-sandboxed-packs",
+        action="store_true",
+        help="DEPRECATED: --full enables sandboxed packs by default; kept for backwards compat",
+    )
+    run.add_argument(
+        "--no-sandboxed-packs",
+        action="store_true",
+        help="opt out of sandboxed packs even on --full (use --medium for clean deterministic-only)",
+    )
+    run.add_argument("--sandbox-image-tag", default="latest", help="Docker tag for sandbox images (default: latest)")
+    run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
-    run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response")
+    run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
     return parser
 
 
@@ -158,11 +190,24 @@ def main(argv: list[str] | None = None) -> int:
 
         mode = _mode_from_args(args)
         pack_ids = [args.pack] if args.pack else PACK_MODES[mode]
+        # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
+        # Single-pack runs (--pack) auto-enable sandbox if the pack requires it.
+        from benchlocal_cli.runner import SANDBOX_MODES, load_pack as _load_pack
+        sandboxed_enabled = args.enable_sandboxed_packs or mode in SANDBOX_MODES
+        if args.pack:
+            try:
+                meta, _ = _load_pack(args.pack)
+                if meta.get("supports_sandboxed_only"):
+                    sandboxed_enabled = True
+            except Exception:
+                pass  # let Runner surface the unknown-pack error
+        if args.no_sandboxed_packs:
+            sandboxed_enabled = False
         runner = Runner(
             endpoint=args.endpoint,
             model=args.model,
             timeout_per_case=args.timeout_per_case,
-            enable_sandboxed_packs=args.enable_sandboxed_packs,
+            enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
             thinking_enabled=args.enable_thinking,
             thinking_max_tokens=args.thinking_max_tokens,

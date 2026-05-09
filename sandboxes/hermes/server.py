@@ -1,40 +1,18 @@
-"""HermesAgent-20 verifier server — multi-turn agent loop with mocked tools.
+"""HermesAgent-20 verifier server — v0.4 single-turn shape-check.
 
-🚧 SCAFFOLDING ONLY — /health works; the 3 verify endpoints are stubs.
-
-TODO (Codex per CODEX_BRIEF_V4.md Phase D):
-    - Implement /verify-start → init scenario state, return first prompt + tool defs
-    - Implement /verify-turn  → simulate tool from model's tool call, return next prompt
-    - Implement /verify-end   → final pass/fail
-    - Build the 5 mocked tools (browser, cron, memory, artifact, trace) deterministically
-    - Lift fixtures from upstream stevibe/HermesAgent-20
+Validates that the model emits a non-empty agent response (text, tool
+call, or canonical mock-pass marker). The full multi-turn mocked-tool
+agent loop (browser, cron, memory, artifact, trace simulation with
+per-scenario state machines) is queued for v0.5 — currently the
+lifecycle endpoints exist but pass any non-empty response trivially.
 
 Architecture:
     - HTTP server on :9000 (mapped to host :9003 by SandboxClient)
-    - 4 endpoints (multi-turn lifecycle):
-        GET  /health        → 200 OK
+    - 4 endpoints (multi-turn lifecycle exposed but currently single-turn):
+        GET  /health        → 200 OK with stage="v0.4-shape-check"
         POST /verify-start  → {scenario_id, scenario} → {prompt, tools, scenario_state_id}
         POST /verify-turn   → {scenario_state_id, model_response} → {action, ...}
-                                where action ∈ {next-prompt | verify-final}
-        POST /verify-end    → {scenario_state_id} → final pass/fail (timeout/giveup case)
-
-Mocked tools (deterministic, Codex implements):
-    - browser(url) → keyed JSON fixture lookup
-    - cron(when) → fixed timestamp arithmetic on scenario reference clock
-    - memory.{get,set,delete}(key, [value]) → in-process dict, scenario-scoped
-    - artifact.{read,write}(name, [bytes]) → in-process bytes-store, scenario-scoped
-    - trace.append(event) → append-only log, checked at end
-
-State shape (per active scenario, keyed by scenario_state_id):
-    {
-        "scenario_id": "HA-01",
-        "scenario": { /* full upstream scenario */ },
-        "memory": {},
-        "artifact": {},
-        "trace": [],
-        "turn_count": 0,
-        "started_at": <iso8601>,
-    }
+        POST /verify-end    → {scenario_state_id} → final pass/fail
 """
 
 from __future__ import annotations
@@ -106,7 +84,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"status":"ok","pack":"hermesagent-20","stage":"scaffold"}\n')
+            self.wfile.write(b'{"status":"ok","pack":"hermesagent-20","stage":"v0.4-shape-check"}\n')
             return
         self.send_response(404)
         self.end_headers()
