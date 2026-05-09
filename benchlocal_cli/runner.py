@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import signal
 import statistics
 import time
 from dataclasses import replace
@@ -13,6 +14,7 @@ from importlib import resources
 import httpx
 
 from benchlocal_cli import __version__
+from benchlocal_cli.sandbox import SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
@@ -134,6 +136,7 @@ class Runner:
         thinking_enabled: bool = False,
         thinking_max_tokens: int = 4096,
         extra_body: dict | None = None,
+        sandbox_image_tag: str = "latest",
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -143,27 +146,70 @@ class Runner:
         self.thinking_enabled = thinking_enabled
         self.thinking_max_tokens = thinking_max_tokens
         self.extra_body = extra_body or {}
+        self.sandbox_image_tag = sandbox_image_tag
+        self._sandbox_clients: dict[str, SandboxClient] = {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
         started_at = _utc_now()
         warnings: list[str] = []
-        pack_results = [self.run_pack(pack_id, repeat=repeat, warnings=warnings) for pack_id in pack_ids]
-        total = sum(pack.total for pack in pack_results)
-        passed = sum(pack.passed for pack in pack_results)
-        finished_at = _utc_now()
-        return RunResult(
-            schema_version="1",
-            runner_version=__version__,
-            endpoint=self.endpoint,
-            model=self.model,
-            mode=mode,
-            started_at=started_at,
-            finished_at=finished_at,
-            packs=pack_results,
-            totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
-            thinking_enabled=self.thinking_enabled,
-            warnings=warnings,
-        )
+        old_sigint = signal.getsignal(signal.SIGINT)
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _cleanup_and_raise(signum, frame):  # type: ignore[no-untyped-def]
+            self._stop_sandboxes()
+            previous = old_sigint if signum == signal.SIGINT else old_sigterm
+            if callable(previous):
+                previous(signum, frame)
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGINT, _cleanup_and_raise)
+        signal.signal(signal.SIGTERM, _cleanup_and_raise)
+        try:
+            self._start_sandboxes(pack_ids, warnings)
+            pack_results = [self.run_pack(pack_id, repeat=repeat, warnings=warnings) for pack_id in pack_ids]
+            total = sum(pack.total for pack in pack_results)
+            passed = sum(pack.passed for pack in pack_results)
+            finished_at = _utc_now()
+            return RunResult(
+                schema_version="1",
+                runner_version=__version__,
+                endpoint=self.endpoint,
+                model=self.model,
+                mode=mode,
+                started_at=started_at,
+                finished_at=finished_at,
+                packs=pack_results,
+                totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
+                thinking_enabled=self.thinking_enabled,
+                warnings=warnings,
+            )
+        finally:
+            self._stop_sandboxes()
+            signal.signal(signal.SIGINT, old_sigint)
+            signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _start_sandboxes(self, pack_ids: list[str], warnings: list[str]) -> None:
+        if not self.enable_sandboxed_packs:
+            return
+        for pack_id in pack_ids:
+            try:
+                meta, _ = load_pack(pack_id)
+            except Exception as exc:
+                warnings.append(f"could not inspect {pack_id} for sandbox use: {exc}")
+                continue
+            if not meta.get("supports_sandboxed_only") or pack_id in self._sandbox_clients:
+                continue
+            try:
+                client = SandboxClient(config_for_pack(pack_id, self.sandbox_image_tag))
+                client.start()
+                self._sandbox_clients[pack_id] = client
+            except Exception as exc:
+                warnings.append(f"skipping {pack_id}: sandbox unavailable ({exc})")
+
+    def _stop_sandboxes(self) -> None:
+        for client in list(self._sandbox_clients.values()):
+            client.stop()
+        self._sandbox_clients.clear()
 
     def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
         meta, scenarios = load_pack(pack_id)
@@ -183,6 +229,24 @@ class Runner:
                 scenarios=[],
                 skipped=True,
                 status="stubbed",
+                warnings=[warning],
+            )
+        if meta.get("supports_sandboxed_only") and pack_id not in self._sandbox_clients:
+            warning = f"skipping {pack_id}: sandbox unavailable"
+            if warnings is not None:
+                warnings.append(warning)
+            return PackResult(
+                pack_id=pack_id,
+                version=meta["version"],
+                upstream_commit=meta["upstream_commit"],
+                scenario_count=len(scenarios),
+                passed=0,
+                total=0,
+                score=0.0,
+                latency=_latency([]),
+                scenarios=[],
+                skipped=True,
+                status="sandbox-unavailable",
                 warnings=[warning],
             )
 
@@ -253,9 +317,16 @@ class Runner:
 
         assert raw_response is not None
         response_field_used = content_with_source(raw_response)[1]
-        module_name = scenario.get("verifier", {}).get("type") or meta.get("verifier_module")
-        module = importlib.import_module(f"benchlocal_cli.scoring.{module_name}")
-        result = module.score_scenario(scenario, raw_response)
+        if meta.get("supports_sandboxed_only") and scenario.get("pack_id") in self._sandbox_clients:
+            result = self._sandbox_clients[scenario["pack_id"]].verify(
+                scenario,
+                raw_response,
+                request["messages"],
+            )
+        else:
+            module_name = scenario.get("verifier", {}).get("type") or meta.get("verifier_module")
+            module = importlib.import_module(f"benchlocal_cli.scoring.{module_name}")
+            result = module.score_scenario(scenario, raw_response)
         latency = time.perf_counter() - started if scenario["id"] in self.mock_responses else latency
         tokens = None
         usage = raw_response.get("usage") if isinstance(raw_response, dict) else None

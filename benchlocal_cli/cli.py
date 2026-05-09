@@ -59,6 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--save-json")
     run.add_argument("--repeat", type=int, default=1)
     run.add_argument("--enable-sandboxed-packs", action="store_true")
+    run.add_argument("--sandbox-image-tag", default="latest")
     run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
@@ -166,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             thinking_enabled=args.enable_thinking,
             thinking_max_tokens=args.thinking_max_tokens,
             extra_body=_load_extra_body(args.extra_body),
+            sandbox_image_tag=args.sandbox_image_tag,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
         result_dict = result.to_dict()
