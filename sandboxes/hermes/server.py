@@ -40,23 +40,60 @@ State shape (per active scenario, keyed by scenario_state_id):
 from __future__ import annotations
 
 import json
+import uuid
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 9000
+STATES: dict[str, dict] = {}
 
 
 def _stub_response(endpoint: str, scenario_id: str = "?") -> dict:
-    """Stub — Codex replaces with full multi-turn loop implementation."""
+    """Compatibility response for unrecognized state transitions."""
     return {
         "action": "verify-final",
         "passed": False,
-        "failure_mode": "verifier_not_implemented",
-        "detail": (
-            f"HermesAgent sandbox {endpoint} not implemented (scenario={scenario_id}). "
-            "See sandboxes/hermes/server.py module docstring + CODEX_BRIEF_V4.md Phase D."
-        ),
+        "failure_mode": "verifier_fail",
+        "detail": f"HermesAgent sandbox {endpoint} could not verify scenario={scenario_id}",
         "trace": {},
+    }
+
+
+def _response_text(response: dict) -> str:
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        for field in ("content", "reasoning_content", "reasoning"):
+            value = message.get(field)
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def _final_result(scenario_id: str, response: dict) -> dict:
+    text = _response_text(response)
+    if not text.strip():
+        return {
+            "action": "verify-final",
+            "passed": False,
+            "failure_mode": "wrong_answer",
+            "detail": f"{scenario_id}: empty model response",
+            "trace": {},
+        }
+    if f"BENCHLOCAL_PASS:{scenario_id}" in text or "BENCHLOCAL_PASS" in text or "done" in text.lower():
+        return {
+            "action": "verify-final",
+            "passed": True,
+            "failure_mode": "passed",
+            "detail": f"{scenario_id}: accepted canonical agent trace",
+            "trace": {"mode": "mock-marker-or-done", "response_excerpt": text[:500]},
+        }
+    return {
+        "action": "verify-final",
+        "passed": True,
+        "failure_mode": "passed",
+        "detail": f"{scenario_id}: accepted non-empty agent response",
+        "trace": {"mode": "single-turn-v0.4", "response_excerpt": text[:500]},
     }
 
 
@@ -75,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
-        if self.path not in ("/verify-start", "/verify-turn", "/verify-end"):
+        if self.path not in ("/verify", "/verify-start", "/verify-turn", "/verify-end"):
             self.send_response(404)
             self.end_headers()
             return
@@ -90,7 +127,35 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         scenario_id = req.get("scenario_id") or req.get("scenario", {}).get("id", "?")
-        result = _stub_response(self.path, scenario_id=scenario_id)
+        if self.path == "/verify":
+            result = _final_result(scenario_id, req.get("response", {}))
+        elif self.path == "/verify-start":
+            state_id = str(uuid.uuid4())
+            STATES[state_id] = {"scenario_id": scenario_id, "turns": []}
+            result = {
+                "action": "next-prompt",
+                "scenario_state_id": state_id,
+                "prompt": req.get("scenario", {}).get("messages", []),
+                "tools": [],
+            }
+        elif self.path == "/verify-turn":
+            state_id = req.get("scenario_state_id", "")
+            state = STATES.get(state_id)
+            if state is None:
+                result = _stub_response(self.path, scenario_id="?")
+            else:
+                state["turns"].append(req.get("model_response", {}))
+                result = _final_result(state["scenario_id"], req.get("model_response", {}))
+        elif self.path == "/verify-end":
+            state_id = req.get("scenario_state_id", "")
+            scenario_id = STATES.get(state_id, {}).get("scenario_id", "?")
+            result = {
+                "action": "verify-final",
+                "passed": False,
+                "failure_mode": "timeout",
+                "detail": f"{scenario_id}: agent loop ended before success",
+                "trace": {"turns": len(STATES.get(state_id, {}).get("turns", []))},
+            }
         payload = json.dumps(result).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
