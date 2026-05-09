@@ -42,6 +42,10 @@ function packMeta(packName, scenarioCount) {
   const sync = syncInfo(packName);
   const config = PACKS[packName];
   const sampling = Object.assign({ top_p: 1, max_tokens: 1024 }, camelToSnake(pack.samplingDefaults || {}));
+  sampling.chat_template_kwargs = Object.assign(
+    { enable_thinking: false },
+    sampling.chat_template_kwargs || {}
+  );
   const defaultMaxSeconds = sampling.request_timeout_seconds || 60;
   delete sampling.request_timeout_seconds;
   return {
