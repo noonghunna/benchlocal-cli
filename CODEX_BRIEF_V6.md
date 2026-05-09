@@ -29,6 +29,27 @@ You start from `master` HEAD with these committed:
 
 The HTTP verifier protocol (`/health`, `/verify`, `/verify-{start,turn,end}`) is unchanged. **You're replacing the verifier *implementation* inside each sandbox container, not the wire protocol.**
 
+### What changed between v0.4 and v0.6 (don't undo these)
+
+v0.5 (commit `eb7ddb0`) shipped a UX patch between v0.4 and this v0.6 brief. Specifics Codex needs to preserve:
+
+1. **Mode taxonomy was reshuffled.** `PACK_MODES` in `benchlocal_cli/runner.py`:
+   - `--quick` (2 packs, no Docker) — unchanged
+   - `--medium` (5 packs, no Docker) — gained `reasonmath-15` (was in `--full` only)
+   - `--full` (8 packs, requires Docker) — unchanged set, but **auto-enables sandboxed packs** (no flag needed)
+   - New `SANDBOX_MODES = {"full"}` constant — modes that imply sandbox
+2. **`--full` now defaults `enable_sandboxed_packs=True`.** The `--enable-sandboxed-packs` CLI flag is kept as a deprecated no-op for back-compat. New `--no-sandboxed-packs` opt-out for users on `--full` who want deterministic-only (or use `--medium`).
+3. **Loud sandbox failures.** `Runner._start_sandboxes` emits `⚠️ ` on stderr at the moment a sandbox bring-up fails, with an actionable hint pointing at `bash tools/build-sandboxes.sh` and `--medium` fallback. Don't silently accumulate failures into the warnings list — keep the stderr line.
+4. **Endpoint URL normalization.** `_chat_url()` accepts `http://host:port`, `http://host:port/v1`, and `http://host:port/v1/chat/completions` (all converge to the same final URL). Don't break this — there's no test for it yet but `_chat_url` is unit-checked in `runner.py`.
+5. **ReasonMath prompt is locally patched.** `vendor/ReasonMath-15/lib/benchmark.ts` line 7 has been edited (synthetic `key=value` example, no test-data leak). `tools/build-packs.js` regenerates `benchlocal_cli/packs/reasonmath-15.jsonl` from this. **If you re-sync from upstream during v0.6, re-apply this patch** — see upstream issue [stevibe/ReasonMath-15#1](https://github.com/stevibe/ReasonMath-15/issues/1) for the rationale.
+6. **`/health` stage label is `"v0.4-shape-check"` on all three sandboxes** (was `"scaffold"` pre-v0.5). Bump to `"v0.6"` as part of Phase D when verifiers reach real upstream parity.
+7. **Module docstrings on `sandboxes/*/server.py`** were rewritten in v0.5 to drop `🚧 SCAFFOLDING ONLY` markers. They now describe the v0.4 shape-check honestly. Rewrite again for v0.6.
+8. **Versioning**: `pyproject.toml` and `benchlocal_cli/__init__.py` are at `0.5.0`. Bump to `0.6.0` at end.
+9. **Release-notes infrastructure** in place: `cliff.toml` + `.github/workflows/release.yml` + git-cliff. **Don't break the workflow** — the regex-based commit parsers will categorize your commits if you stick to `feat:` / `fix:` / `docs:` / `test:` / `refactor:` prefixes (already the convention here). Tagging `v0.6.0` after merge auto-publishes the GitHub release.
+10. **club-3090 wrapper compatibility.** Downstream `noonghunna/club-3090`'s `scripts/quality-test.sh` calls this CLI with the new `--full` semantics + `--pack` + `--no-sandboxed-packs` + `--list-packs`. Don't change those flag names or their defaults.
+
+If anything in v0.5 looks wrong to you mid-implementation, file a question rather than reverting.
+
 ## Architecture
 
 ### Recap of the HTTP verifier protocol (v0.4 — unchanged)
