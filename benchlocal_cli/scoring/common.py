@@ -36,14 +36,21 @@ def message(response: dict) -> dict:
     return {}
 
 
-def content(response: dict) -> str:
-    if "content" in response and isinstance(response["content"], str):
-        return response["content"]
+def content_with_source(response: dict) -> tuple[str, str | None]:
+    for field in ("content", "reasoning_content", "reasoning"):
+        value = response.get(field)
+        if isinstance(value, str) and value:
+            return value, field
     msg = message(response)
-    value = msg.get("content")
-    if isinstance(value, str):
-        return value
-    return ""
+    for field in ("content", "reasoning_content", "reasoning"):
+        value = msg.get(field)
+        if isinstance(value, str) and value:
+            return value, f"message.{field}"
+    return "", None
+
+
+def content(response: dict) -> str:
+    return content_with_source(response)[0]
 
 
 def strip_code_fence(text: str) -> str:

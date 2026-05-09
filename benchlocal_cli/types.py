@@ -45,6 +45,7 @@ class ScenarioRun:
     sampling_params: dict
     status_code: int | None
     repeat_index: int = 1
+    response_field_used: str | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -99,6 +100,7 @@ class RunResult:
     finished_at: str
     packs: list[PackResult]
     totals: dict[str, float | int]
+    thinking_enabled: bool = False
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -112,5 +114,6 @@ class RunResult:
             "finished_at": self.finished_at,
             "packs": [pack.to_dict() for pack in self.packs],
             "totals": self.totals,
+            "thinking_enabled": self.thinking_enabled,
             "warnings": self.warnings,
         }

@@ -59,6 +59,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--save-json")
     run.add_argument("--repeat", type=int, default=1)
     run.add_argument("--enable-sandboxed-packs", action="store_true")
+    run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled")
+    run.add_argument("--thinking-max-tokens", type=int, default=4096)
+    run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response")
     return parser
 
@@ -85,8 +88,9 @@ def _mode_from_args(args: argparse.Namespace) -> str:
 
 
 def _markdown(result: RunResult) -> str:
+    thinking = "on" if result.thinking_enabled else "off"
     lines = [
-        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, {result.started_at}) ===",
+        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}) ===",
         "",
         "Pack | Pass / Total | Score | p50 latency | p95 latency | Status",
         "---|---:|---:|---:|---:|---",
@@ -133,6 +137,15 @@ def _load_mock(path: str | None) -> dict[str, dict] | None:
     return data
 
 
+def _load_extra_body(value: str | None) -> dict | None:
+    if not value:
+        return None
+    data = json.loads(value)
+    if not isinstance(data, dict):
+        raise ValueError("--extra-body must be a JSON object")
+    return data
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _parser()
@@ -150,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
             timeout_per_case=args.timeout_per_case,
             enable_sandboxed_packs=args.enable_sandboxed_packs,
             mock_responses=_load_mock(args.mock_responses_from_json),
+            thinking_enabled=args.enable_thinking,
+            thinking_max_tokens=args.thinking_max_tokens,
+            extra_body=_load_extra_body(args.extra_body),
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
         result_dict = result.to_dict()

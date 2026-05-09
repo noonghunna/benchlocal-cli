@@ -13,6 +13,7 @@ from importlib import resources
 import httpx
 
 from benchlocal_cli import __version__
+from benchlocal_cli.scoring.common import content_with_source
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
 PACK_MODES = {
@@ -70,9 +71,33 @@ def list_packs() -> list[dict]:
     return packs
 
 
-def build_request(scenario: dict, meta: dict, model: str) -> tuple[dict, dict]:
+def build_request(
+    scenario: dict,
+    meta: dict,
+    model: str,
+    *,
+    thinking_enabled: bool = False,
+    thinking_max_tokens: int = 4096,
+    extra_body: dict | None = None,
+) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
-    sampling.update(scenario.get("sampling_overrides") or {})
+    scenario_overrides = scenario.get("sampling_overrides") or {}
+    scenario_overrides_max_tokens = "max_tokens" in scenario_overrides
+    if extra_body:
+        sampling.update(extra_body)
+    if thinking_enabled:
+        sampling["chat_template_kwargs"] = {
+            **dict(sampling.get("chat_template_kwargs") or {}),
+            "enable_thinking": True,
+        }
+        if not scenario_overrides_max_tokens:
+            sampling["max_tokens"] = thinking_max_tokens
+    else:
+        sampling["chat_template_kwargs"] = {
+            **dict(sampling.get("chat_template_kwargs") or {}),
+            "enable_thinking": False,
+        }
+    sampling.update(scenario_overrides)
     request = {"model": model, "messages": scenario["messages"], **sampling}
     if scenario.get("tools"):
         request["tools"] = scenario["tools"]
@@ -107,12 +132,18 @@ class Runner:
         timeout_per_case: float = 60.0,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
+        thinking_enabled: bool = False,
+        thinking_max_tokens: int = 4096,
+        extra_body: dict | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
         self.timeout_per_case = timeout_per_case
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
+        self.thinking_enabled = thinking_enabled
+        self.thinking_max_tokens = thinking_max_tokens
+        self.extra_body = extra_body or {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
         started_at = _utc_now()
@@ -131,6 +162,7 @@ class Runner:
             finished_at=finished_at,
             packs=pack_results,
             totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
+            thinking_enabled=self.thinking_enabled,
             warnings=warnings,
         )
 
@@ -178,7 +210,14 @@ class Runner:
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
-        request, sampling = build_request(scenario, meta, self.model)
+        request, sampling = build_request(
+            scenario,
+            meta,
+            self.model,
+            thinking_enabled=self.thinking_enabled,
+            thinking_max_tokens=self.thinking_max_tokens,
+            extra_body=self.extra_body,
+        )
         scenario_timeout = scenario.get("max_seconds_override") or meta.get("default_max_seconds") or self.timeout_per_case
         timeout = min(float(scenario_timeout), float(self.timeout_per_case))
         started = time.perf_counter()
@@ -214,6 +253,7 @@ class Runner:
                 return self._scenario_run(scenario, None, request, sampling, None, result, repeat_index)
 
         assert raw_response is not None
+        response_field_used = content_with_source(raw_response)[1]
         module_name = scenario.get("verifier", {}).get("type") or meta.get("verifier_module")
         module = importlib.import_module(f"benchlocal_cli.scoring.{module_name}")
         result = module.score_scenario(scenario, raw_response)
@@ -223,7 +263,16 @@ class Runner:
         if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
             tokens = usage["completion_tokens"]
         result = replace(result, latency_seconds=latency, tokens_completion=tokens)
-        return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
+        return self._scenario_run(
+            scenario,
+            raw_response,
+            request,
+            sampling,
+            status_code,
+            result,
+            repeat_index,
+            response_field_used=response_field_used,
+        )
 
     @staticmethod
     def _scenario_run(
@@ -234,6 +283,7 @@ class Runner:
         status_code: int | None,
         result: ScenarioResult,
         repeat_index: int,
+        response_field_used: str | None = None,
     ) -> ScenarioRun:
         return ScenarioRun(
             id=scenario["id"],
@@ -244,4 +294,5 @@ class Runner:
             sampling_params=sampling,
             status_code=status_code,
             repeat_index=repeat_index,
+            response_field_used=response_field_used,
         )
