@@ -240,6 +240,8 @@ function buildToolCall() {
   const pack = "ToolCall-15";
   const source = readText(VENDOR, pack, "lib", "benchmark.ts");
   const system = extractConstTemplate(source, "SYSTEM_PROMPT");
+  const referenceDate = /BENCHMARK_REFERENCE_DATE\s*=\s*"([^"]+)"/.exec(source)?.[1] || null;
+  const referenceDay = /BENCHMARK_REFERENCE_DAY\s*=\s*"([^"]+)"/.exec(source)?.[1] || null;
   const tools = evalObjectArray(extractArray(source, "export const UNIVERSAL_TOOLS"));
   const blocks = scenarioBlocks(source, "export const SCENARIOS");
   const scenarios = blocks.map((block) => {
@@ -252,6 +254,8 @@ function buildToolCall() {
     const scenario = baseScenario(system, spec, "tool_call", toolAsserts(spec.id));
     scenario.tools = tools;
     scenario.sampling_overrides = { max_tokens: 512, tool_choice: "auto" };
+    scenario.benchmark_reference_date = referenceDate;
+    scenario.benchmark_reference_day = referenceDay;
     scenario.upstream_evaluate_summary = "Generated from vendored evaluate(state); dynamic tool fixtures remain in vendor/ToolCall-15/lib/benchmark.ts.";
     return scenario;
   });
