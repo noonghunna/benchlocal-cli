@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.1 (2026-05-10)
+
+Public-release patch — repo flips from private to public alongside this version.
+
+- `runner.py`: register `aider-polyglot-30` as a single-scoreboard pack
+  (`batch_finished_after_first_scenario=True`). Missing hook from 0.9.0;
+  the v0.9 sandbox already returns `verify-final` on first `/verify-start`,
+  so without this the runner would idle through the remaining 29
+  "scenarios" before terminating. No behavioral impact on result content —
+  cleaner termination on aider-polyglot batch.
+- `sandboxes/hermes/README.md`: dropped dev-rig `/home/wasif/` container
+  mount paths from the fast-iteration recipe (the baked image runs as
+  user `verifier`; mount targets shown now use neutral `/opt/*` paths
+  consistent with the Dockerfile).
+- `docs/HERMES_V073_AB.md`: shortened an absolute `/opt/ai/github/...`
+  path reference to repo-relative `club-3090/...`.
+
 ## 0.9.0
 
 First slice of the eval-expansion track: adds the `aider-polyglot-30`
