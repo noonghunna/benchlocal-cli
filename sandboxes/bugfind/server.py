@@ -166,11 +166,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"invalid JSON: {exc}".encode())
             return
-        result = _verify(
-            scenario_id=req.get("scenario_id", "?"),
-            scenario=req.get("scenario", {}),
-            response=req.get("response", {}),
-        )
+        scenario_id = req.get("scenario_id", "?")
+        try:
+            result = _verify(
+                scenario_id=scenario_id,
+                scenario=req.get("scenario", {}),
+                response=req.get("response", {}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            tb = traceback.format_exc()
+            sys.stderr.write(f"[bugfind-sandbox] verifier exception on {scenario_id}: {exc}\n{tb}\n")
+            result = {
+                "passed": False,
+                "failure_mode": "server_error",
+                "detail": f"{scenario_id}: verifier raised {type(exc).__name__}: {exc}",
+                "trace": {"traceback": tb[-2000:]},
+            }
         self._send(result)
 
     def _json_body(self) -> dict:

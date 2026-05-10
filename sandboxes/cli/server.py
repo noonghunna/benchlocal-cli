@@ -55,9 +55,23 @@ def _response_text(response: dict) -> str:
 
 
 def _extract_command(text: str) -> str:
+    """Extract the candidate command(s) from the model response.
+
+    Returns a string that may contain shell metacharacters (multi-line scripts,
+    `&&` chains, pipes). Caller decides whether to invoke via shlex+exec
+    (single command, no shell ops) or via `bash -c` (compound/multi-line).
+    """
     fence = re.search(r"```(?:bash|sh|shell)?\s*([\s\S]*?)```", text)
     if fence:
-        return fence.group(1).strip().splitlines()[0].strip()
+        block = fence.group(1).strip()
+        # Strip leading "$ " prompts on each line + drop shebang
+        lines = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#!"):
+                continue
+            lines.append(stripped.removeprefix("$ "))
+        return "\n".join(line for line in lines if line)
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -69,6 +83,13 @@ def _extract_command(text: str) -> str:
     return text.strip()
 
 
+def _needs_shell(command: str) -> bool:
+    """True if the command contains shell metacharacters that require bash -c."""
+    if "\n" in command.strip():
+        return True
+    return bool(re.search(r"&&|\|\||;|\||>(?!&)|<(?![<])|`|\$\(", command))
+
+
 def _has_marker(scenario_id: str, text: str) -> bool:
     if f"BENCHLOCAL_PASS:{scenario_id}" in text or "BENCHLOCAL_PASS" in text:
         print(f"[cli-sandbox] WARNING mock pass marker used for {scenario_id}", file=sys.stderr)
@@ -77,6 +98,12 @@ def _has_marker(scenario_id: str, text: str) -> bool:
 
 
 def _is_safe(argv: list[str]) -> tuple[bool, str]:
+    """Safety check for direct-exec commands (not bash -c).
+
+    Allowed: any executable not in FORBIDDEN, no network/destructive tokens.
+    Compound shell syntax in argv is rejected here — caller should route to
+    `_is_safe_shell` for bash -c style.
+    """
     if not argv:
         return False, "empty command"
     executable = Path(argv[0]).name
@@ -87,6 +114,24 @@ def _is_safe(argv: list[str]) -> tuple[bool, str]:
         return False, "forbidden network/destructive token"
     if ">" in argv or "|" in argv or ";" in argv or "&&" in argv or "||" in argv:
         return False, "compound shell syntax is not accepted because shell=False is enforced"
+    return True, ""
+
+
+def _is_safe_shell(command: str) -> tuple[bool, str]:
+    """Safety check for bash -c style compound commands.
+
+    Rejects forbidden tokens (rm, network tools, etc.) by word-boundary match
+    on the raw command string. Doesn't try to parse — the model gets one shot
+    at a clean shell expression.
+    """
+    if not command.strip():
+        return False, "empty command"
+    forbidden_pattern = r"\b(" + "|".join(re.escape(t) for t in FORBIDDEN) + r")\b"
+    forbidden_match = re.search(forbidden_pattern, command)
+    if forbidden_match:
+        return False, f"forbidden token in shell command: {forbidden_match.group(0)}"
+    if re.search(r"\b(curl|wget|ssh|scp|nc|ncat|telnet)\b|/dev/(sd|nvme|mapper)|\bmkfs\b", command):
+        return False, "forbidden network/destructive token"
     return True, ""
 
 
@@ -124,6 +169,22 @@ def _run_command(argv: list[str], scenario: dict) -> dict:
                 "stdout": (exc.stdout or "")[:MAX_OUTPUT],
                 "stderr": (exc.stderr or "")[:MAX_OUTPUT],
             }
+        except FileNotFoundError as exc:
+            return {
+                "timed_out": False,
+                "exit_code": 127,
+                "stdout": "",
+                "stderr": f"command not found in sandbox: {exc.filename or argv[0]}",
+                "not_found": True,
+            }
+        except (PermissionError, OSError) as exc:
+            return {
+                "timed_out": False,
+                "exit_code": 126,
+                "stdout": "",
+                "stderr": f"sandbox refused to execute: {exc}",
+                "exec_error": True,
+            }
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
     return {
@@ -154,14 +215,23 @@ def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
         return _pass(scenario_id, {"mode": "mock-marker"})
 
     command = _extract_command(text)
-    try:
-        argv = shlex.split(command)
-    except ValueError as exc:
-        return _fail(scenario_id, "wrong_structure", f"command was not shell-parseable: {exc}", {"command": command})
 
-    safe, reason = _is_safe(argv)
-    if not safe:
-        return _fail(scenario_id, "verifier_fail", reason, {"command": command, "argv": argv})
+    # Route to bash -c if command contains shell metacharacters (compound,
+    # piped, redirected, multi-line). Direct exec for simple single commands.
+    if _needs_shell(command):
+        safe, reason = _is_safe_shell(command)
+        if not safe:
+            return _fail(scenario_id, "verifier_fail", reason, {"command": command})
+        argv = ["bash", "-c", command]
+    else:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            return _fail(scenario_id, "wrong_structure", f"command was not shell-parseable: {exc}", {"command": command})
+
+        safe, reason = _is_safe(argv)
+        if not safe:
+            return _fail(scenario_id, "verifier_fail", reason, {"command": command, "argv": argv})
 
     run = _run_command(argv, scenario)
     if run["timed_out"]:
@@ -220,7 +290,19 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"invalid JSON: {exc}".encode())
             return
-        result = _verify(req.get("scenario_id", "?"), req.get("scenario", {}), req.get("response", {}))
+        scenario_id = req.get("scenario_id", "?")
+        try:
+            result = _verify(scenario_id, req.get("scenario", {}), req.get("response", {}))
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            tb = traceback.format_exc()
+            sys.stderr.write(f"[cli-sandbox] verifier exception on {scenario_id}: {exc}\n{tb}\n")
+            result = {
+                "passed": False,
+                "failure_mode": "server_error",
+                "detail": f"{scenario_id}: verifier raised {type(exc).__name__}: {exc}",
+                "trace": {"traceback": tb[-2000:]},
+            }
         self._send(result)
 
     def _json_body(self) -> dict:

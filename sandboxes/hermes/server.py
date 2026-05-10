@@ -224,10 +224,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"invalid JSON: {exc}".encode())
             return
 
-        if self.path == "/verify":
+        try:
+          if self.path == "/verify":
             scenario = req.get("scenario", {})
             result = _single_turn_verify(req.get("scenario_id") or scenario.get("id", "?"), scenario, req.get("response", {}))
-        elif self.path == "/verify-start":
+          elif self.path == "/verify-start":
             scenario = req.get("scenario", {})
             state_id = str(uuid.uuid4())
             STATES[state_id] = {
@@ -242,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 "turn_count": 0,
             }
             result = {"action": "next-prompt", "scenario_state_id": state_id, "prompt": scenario.get("messages", []), "tools": TOOLS}
-        elif self.path == "/verify-turn":
+          elif self.path == "/verify-turn":
             state_id = req.get("scenario_state_id", "")
             state = STATES.get(state_id)
             if state is None:
@@ -262,10 +263,21 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 else:
                     result = _verify_final(state, response)
-        else:
+          else:
             state_id = req.get("scenario_state_id", "")
             state = STATES.get(state_id, {"scenario_id": "?", "turn_count": 0, "raw_scenario": {}, "tool_names": [], "memory": {}, "artifact": {}, "events": []})
             result = _final(False, "timeout", f"{state.get('scenario_id', '?')}: agent loop ended before success", state)
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            tb = traceback.format_exc()
+            sys.stderr.write(f"[hermes-sandbox] verifier exception on {self.path}: {exc}\n{tb}\n")
+            result = {
+                "action": "verify-final",
+                "passed": False,
+                "failure_mode": "server_error",
+                "detail": f"hermes verifier raised {type(exc).__name__}: {exc}",
+                "trace": {"traceback": tb[-2000:]},
+            }
 
         self._send(result)
 
