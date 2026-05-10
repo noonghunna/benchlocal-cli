@@ -99,11 +99,14 @@ Brief TBD. Lands after v0.7 + ReasonMath follow-up. ~8-10 hr Codex chunk. **Now 
 
 BenchLocal stays the primary 30-45 min local quality gate. These are *complementary* additions — promote when the underlying need is real (typically: cross-rig comparisons that need depth on a specific axis, or new model classes that BenchLocal's surface doesn't exercise).
 
+Integration pattern: **delegate to upstream**. BenchLocal packs (BugFind/CLI/Hermes) call into upstream JS/Python runtimes via subprocess. The same pattern applies to any third-party bench we add — they all ship their own runners. We don't reimplement grading in our own framework.
+
 Recommended order if we expand:
 
-1. **lm-eval-harness calibration slice** — tiny subset (IFEval / GSM8K / MMLU / HellaSwag, ~50 prompts each) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Not a replacement; a calibration anchor.
-2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step scenarios add real depth when we need to compare function-calling fidelity across quants.
-3. **Inspect AI for NEW agent benchmarks beyond BenchLocal** — tau-bench, AgentBench, custom safety/agent evals that don't ship their own runtime. **Not a Hermes fix** — the BenchLocal Hermes pack already has its own upstream `agent-runner.py` runtime, which v0.7.3 delegates to directly. Putting BenchLocal Hermes through Inspect AI would just add an indirection layer over the same upstream code. Inspect AI's framework primitives (multi-turn loop, tool sim, trace verification) earn their keep when adding evals that DON'T have those primitives already.
+1. **lm-eval-harness calibration slice** — tiny subset (IFEval / GSM8K / MMLU / HellaSwag, ~50 prompts each) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Delegate to `EleutherAI/lm-evaluation-harness` upstream. Not a replacement; a calibration anchor.
+2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step / irrelevance-detection scenarios add real depth when we need to compare function-calling fidelity across quants. Delegate to `gorilla-llm/gorilla` upstream runner.
+
+Other benches considered + reason not on the roadmap today: tau-bench / AgentBench (no concrete need; would follow same delegate-to-upstream pattern when added).
 
 ### Mode naming for the expanded suite
 
@@ -140,6 +143,7 @@ Worth doing eventually but not urgent. Promote to a versioned milestone when the
 - **Pack version drift detection** — alert when our vendored packs lag upstream.
 - **Mock fixture library** — curated mocks for testing prompt/verifier changes without GPU time.
 - **CI integration in club-3090** — wire `quality-test.sh` into the canonical `verify-full → bench → quality-test → soak-test` pipeline as an enforced gate.
+- **Inspect AI** — promote when we want either (a) an Inspect-AI-native eval (UK AISI's safety library — WMDP, redteam evals, InspectAgentBench, etc — where Inspect AI IS the canonical home, not a port) or (b) we author a custom eval from scratch (club-3090-specific regression bench, internal safety eval) and want their framework primitives. **Not** the right path for IFEval/GSM8K/MMLU/HellaSwag/HumanEval/MBPP/SWE-bench/BFCL — those have stronger canonical homes (lm-eval-harness, gorilla, openai/human-eval, princeton-nlp/SWE-bench) and Inspect AI ships them as ports that may lag/drift from canonical upstream.
 
 ## Out of scope (upstream territory)
 
