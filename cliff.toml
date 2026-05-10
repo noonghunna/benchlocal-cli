@@ -70,6 +70,10 @@ commit_parsers = [
     { message = "^Merge branch", skip = true },
     { message = "^Merge remote-tracking", skip = true },
 
+    # Skip release-machinery noise: the workflow auto-commits a CHANGELOG.md
+    # regen after every tag with this subject. Pure machine traffic; hide.
+    { message = "^chore\\(changelog\\): regenerate for v", skip = true },
+
     # Prefix-based — anchored to subject line
     { message = "^feat[(:]", group = "✨ Features" },
     { message = "^feature[(:]", group = "✨ Features" },
