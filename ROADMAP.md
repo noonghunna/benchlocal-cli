@@ -15,7 +15,6 @@ Released: [v0.5.0](https://github.com/noonghunna/benchlocal-cli/releases/tag/v0.
 
 ## Next — v0.6: real verifier parity
 
-**Brief:** [`CODEX_BRIEF_V6.md`](CODEX_BRIEF_V6.md) (Codex hand-off, ~14-20 hr).
 
 Replace v0.4 shape-check verifiers with real upstream-fidelity verification:
 
@@ -23,7 +22,7 @@ Replace v0.4 shape-check verifiers with real upstream-fidelity verification:
 - **CLI:** real subprocess exec in `--network none` workspace (UDS for `/verify` transport)
 - **Hermes:** multi-turn agent loop with deterministic mocked-tool simulation (browser, cron, memory, artifact, trace)
 
-**Expected outcome:** evaluation quality goes up; raw scores will drop because today's shape-checks are inflated. See `CODEX_BRIEF_V6.md` for the score-drop estimate. Closing this gate is the prerequisite for flipping the repo public — at v0.6 the CLI is genuinely useful for outsiders.
+**Expected outcome:** evaluation quality goes up; raw scores will drop because today's shape-checks are inflated. Closing this gate is the prerequisite for flipping the repo public — at v0.6 the CLI is genuinely useful for outsiders.
 
 ## v0.6.1 — sandbox patches (shipped 2026-05-09)
 
@@ -38,7 +37,6 @@ Net: cli-40 went 0/40 → 5/40 on Qwen (still hitting fixture-gap floor; v0.7 li
 
 ## v0.7 — upstream verifier-runtime lift (candidate, 2026-05-10)
 
-**Brief:** [`CODEX_BRIEF_V7.md`](CODEX_BRIEF_V7.md).
 
 v0.6 verifiers work but the upstream fixture trees weren't in `vendor/` — so CLI verifier hit a 12% floor, BugFind used rubric heuristics, and Hermes used keyword-match on final answers instead of flow simulation.
 
@@ -51,7 +49,6 @@ v0.7 candidate closes the available part of this gap by syncing upstream `verifi
 
 ## v0.7.1 — runner-side multi-turn delegation (candidate, 2026-05-10)
 
-**Brief:** [`CODEX_BRIEF_V7_1.md`](CODEX_BRIEF_V7_1.md).
 
 v0.7 candidate exposed two pack classes stuck at 0% because the runner only sends one chat completion per scenario:
 - cli-40 multi-round (15/40 scenarios) — runner doesn't loop on tool calls
@@ -201,7 +198,7 @@ Same env-var pattern as today's `URL` / `MODEL` / `TIMEOUT_PER_CASE`.
 2. **`--audit` and `--swe` are presets**, not hardcoded paths. They expand to pack lists like `--full` does today. New presets cost nothing structural to add.
 3. **Composable flags + presets coexist.** Most users hit `--audit`; power users compose. Both paths supported.
 4. **Per-bench tuning via env-var.** Keeps CLI surface narrow.
-5. **Each external bench is one Codex brief** — `CODEX_BRIEF_V0_9_<bench>.md`-shaped, 2-4 hr each on average (most work is wrapping the upstream runner in our standard sandbox shape, not authoring scenarios).
+5. **Each external bench is one focused work-item** — 2-4 hr each on average (most work is wrapping the upstream runner in our standard sandbox shape, not authoring scenarios).
 
 ### Tools we evaluated and *don't* rank for inclusion
 
@@ -232,4 +229,3 @@ Worth doing eventually but not urgent. Promote to a versioned milestone when the
 
 - New idea? Check if it fits a tier above. If yes, append a bullet to that tier with a one-line rationale. If no, add to the parking lot.
 - Promoting parking-lot to versioned: pick the next minor (v0.7, v0.8…) and write a brief.
-- Briefs go in repo root as `CODEX_BRIEF_V<N>.md` to keep them discoverable next to this doc.

@@ -153,7 +153,7 @@ The v0.7.1 CLI sandbox keeps the HTTP verifier on the normal mapped port so the 
 - timeout is capped at 10s
 - stdout/stderr are truncated to 64 KiB
 
-Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment with scripting languages available, not a shell-builtins-only benchmark. `CODEX_BRIEF_V6.md` recommended Unix-domain sockets plus Docker `--network none`, but the local `SandboxClient` still uses HTTP over a host-mapped port. This is a documented parity gap rather than a silent claim of full isolation.
+Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment with scripting languages available, not a shell-builtins-only benchmark. The local `SandboxClient` uses HTTP over a host-mapped port (Unix-domain sockets plus Docker `--network none` would be tighter; documented parity gap rather than a silent claim of full isolation).
 
 This mirrors the deterministic-pack `ScenarioResult` taxonomy — verifiers in sandbox containers produce the same shape as in-process verifiers, so the runner can treat them uniformly.
 

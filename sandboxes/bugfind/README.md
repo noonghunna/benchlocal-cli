@@ -1,6 +1,6 @@
 # BugFind-15 sandbox
 
-🚧 Pre-alpha. To be implemented per [`CODEX_BRIEF_V4.md`](../../CODEX_BRIEF_V4.md) Phase B.
+✅ Sandboxed verifier (v0.4 lifecycle).
 
 ## What it does
 

@@ -1,26 +1,29 @@
 # benchlocal-cli
 
-CLI port of [BenchLocal](https://github.com/stevibe/BenchLocal) quality bench packs. Runs LLM behavioral evaluations (tool-call · instruction-follow · structured output · numeric reasoning · data extraction · debug · multi-tool agent · CLI exec) against any OpenAI-compatible endpoint, with deterministic verifier-backed scoring (no LLM-as-judge).
+CLI for running LLM behavioral evaluation packs against any OpenAI-compatible endpoint, with deterministic verifier-backed scoring (no LLM-as-judge). Two pack families today:
+
+- **BenchLocal** ports — tool-call · instruction-follow · structured output · numeric reasoning · data extraction · debug · multi-tool agent · CLI exec (8 packs from [stevibe/BenchLocal](https://github.com/stevibe/BenchLocal), MIT-licensed).
+- **Eval-expansion track** — additional packs vendored from upstream open-source benches. v0.9 ships `aider-polyglot-30` (multi-language code editing via [Aider-AI/aider](https://github.com/Aider-AI/aider)'s `benchmark.py`).
 
 Companion to [club-3090](https://github.com/noonghunna/club-3090) — primarily intended for measuring quality on quantized models served by club-3090's compose stack, but works against any OpenAI-compatible API.
 
 ## Why this exists
 
-BenchLocal is a great Electron desktop app, but our use case (validation gating compose releases on a headless inference rig) wants a CLI. This repo ports BenchLocal's MIT-licensed bench packs to a Python CLI that:
+We needed a headless, scriptable quality gate for compose-release validation on an inference rig. BenchLocal is a great Electron desktop app for human-in-the-loop quality A/B; this repo turns the same pack semantics into a CLI that:
 
 - Hits any OpenAI-compatible HTTP endpoint
-- Runs the canonical 8 BenchLocal pack scenarios with verifier-backed scoring
-- Supports `--quick` / `--medium` / `--full` modes targeting a 30-45 min total runtime budget
+- Runs BenchLocal's 8 deterministic-verifier packs + agentic eval packs (currently 1: `aider-polyglot-30`)
+- Supports `--quick` / `--medium` / `--full` budget modes for the BenchLocal packs (~30-45 min for `--full`); agentic packs run independently via `--pack <name>`
 - Outputs paste-ready markdown for benchmark tables + JSON for machine consumption
 - Keeps quantized-model quality measurement light enough to run as a CI gate
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** now run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
 
 **v0.9.0** added the eval-expansion track — `aider-polyglot-30` ships as the first non-BenchLocal sandboxed pack: 30-exercise multi-language code-editing bench across cpp/go/java/javascript/python/rust, vendored upstream from `Aider-AI/aider`'s `benchmark.py`. Run with `--pack aider-polyglot-30 --enable-sandboxed-packs`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md).
 
-## Modes (target)
+## Modes
 
 | Mode | Packs | Budget | Use case |
 |---|---|---|---|
@@ -45,22 +48,23 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 | **CLI-40** | **Linux exec sandbox** — command verifier sandbox | ✅ sandboxed v0.4 verifier |
 | **AiderPolyglot-30** | **Multi-language edit/test harness** — wraps upstream `Aider-AI/aider` `benchmark.py` over 30 curated exercises (cpp / go / java / js / python / rust, 5 each) | ✅ sandboxed v0.9 (single-scoreboard) |
 
-## Layout (planned)
+## Repo layout
 
 ```
-benchlocal_cli/
+benchlocal_cli/                 # Python package (CLI entry point + runner)
 ├── __init__.py
-├── cli.py                  # entry point: `benchlocal-cli run --quick ...`
-├── runner.py               # core: send prompts, score, aggregate, output
-├── scoring/                # verifier modules (one per pack dimension)
-│   ├── __init__.py
+├── cli.py                      # `benchlocal-cli run …` entry point
+├── runner.py                   # core: dispatch packs, score, aggregate, output
+├── sandbox.py                  # SandboxClient — Docker lifecycle for sandboxed packs
+├── types.py                    # ScenarioRun / ScenarioResult / PackRun shapes
+├── scoring/                    # verifier modules (one per deterministic pack)
 │   ├── tool_call.py
 │   ├── instruct_follow.py
 │   ├── struct_output.py
 │   ├── reason_math.py
 │   ├── data_extract.py
-│   └── _stub.py            # placeholder for execution-backed packs
-└── packs/                  # vendored JSONL pack data
+│   └── _stub.py                # dispatch to Docker verifier when --enable-sandboxed-packs
+└── packs/                      # vendored JSONL pack data
     ├── toolcall-15.jsonl
     ├── instructfollow-15.jsonl
     ├── structoutput-15.jsonl
@@ -68,16 +72,38 @@ benchlocal_cli/
     ├── dataextract-15.jsonl
     ├── bugfind-15.jsonl
     ├── hermesagent-20.jsonl
-    └── cli-40.jsonl
+    ├── cli-40.jsonl
+    └── aider-polyglot-30.jsonl
 
-tests/                      # pytest unit tests for scoring functions
+sandboxes/                      # Docker images for execution-backed verifier packs
+├── bugfind/                    # Python pytest harness for BugFind-15 candidate fixes
+├── cli/                        # Linux exec sandbox for CLI-40 commands
+├── hermes/                     # Hermes-agent runtime + Node grader for HermesAgent-20
+└── aider-polyglot/             # Aider + polyglot-benchmark for AiderPolyglot-30
+
+vendor/                         # vendored upstream sources for pack generation
+├── ToolCall-15/  …             # one dir per BenchLocal pack (TypeScript mirror)
+└── AiderPolyglot-30/           # exercise manifest + sync metadata
+
+tools/
+├── build-packs.js              # generates JSONL packs from vendor/ TypeScript mirrors
+├── build-sandboxes.sh          # builds the Docker images under sandboxes/
+└── sync-vendor.sh              # bumps vendored upstream pin
+
+tests/                          # pytest unit tests (33+ tests; runs against the JSONL packs)
+
 docs/
-├── DESIGN.md               # design rationale (why these choices)
-├── PACK_FORMAT.md          # JSONL schema each pack file follows
-└── INTEGRATION.md          # how club-3090 (or other repos) consume this CLI
+├── AIDER_POLYGLOT_30.md        # aider-polyglot-30 pack details + cross-rig run guide
+├── DESIGN.md                   # design rationale (why these choices)
+├── EXTRACTOR_NOTES.md          # how vendor/ → JSONL extraction works per pack
+├── HERMES_V073_AB.md           # forensic notes from the Hermes A/B run
+├── INTEGRATION.md              # how club-3090 (or other repos) consume this CLI
+├── PACK_FORMAT.md              # JSONL schema each pack file follows
+├── SANDBOX_PROTOCOL.md         # HTTP protocol the sandboxed packs implement
+└── VENDOR_SYNC.md              # how to bump vendored upstream pins
 ```
 
-## Quick start (target UX)
+## Quick start
 
 ```bash
 # install
@@ -105,19 +131,23 @@ benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-a
 # run full mode including Docker-backed verifier packs
 benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
 
-# run a single pack with detailed per-scenario output
+# run a single deterministic pack with detailed per-scenario output
 benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
+
+# run aider-polyglot-30 (multi-language code editing — not bundled in --quick/--medium/--full)
+benchlocal-cli run --pack aider-polyglot-30 --enable-sandboxed-packs \
+  --endpoint http://localhost:8010 --model qwen3.6-27b-autoround \
+  --timeout-per-case 2700
 
 # emit machine-readable JSON instead of markdown
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --output json > results.json
 ```
 
-
 ## Reasoning models
 
 `benchlocal-cli` sends `chat_template_kwargs: {"enable_thinking": false}` by default. This keeps BenchLocal-style quality prompts comparable on reasoning-capable models such as Qwen3.6, where default thinking can exhaust `max_tokens` before the final answer is emitted. Use `--enable-thinking` for diagnostic runs; it sets `enable_thinking=true` and bumps request `max_tokens` to `--thinking-max-tokens` (default `4096`) so diagnostic thinking runs have enough budget. Use `--extra-body` to pass any other OpenAI-compatible server extension fields.
 
-## Output (target format)
+## Output
 
 ```
 === benchlocal-cli --medium  (endpoint: http://localhost:8020, model: qwen3.6-27b-autoround, 2026-05-09T10:30) ===
@@ -136,6 +166,8 @@ Failure breakdown:
   DataExtract-15        2 missing-field, 1 wrong-format
 ```
 
+For agentic packs (e.g. `aider-polyglot-30`), the headline number is `pass_rate` over 30 exercises rather than per-scenario pass/fail; per-exercise breakdown is surfaced in the JSON `verifier_trace.upstream_per_exercise`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md) for the full output shape.
+
 ## Attribution
 
 This repo ports MIT-licensed bench pack scenarios from [stevibe/BenchLocal](https://github.com/stevibe/BenchLocal) and the individual pack repos:
@@ -148,6 +180,11 @@ This repo ports MIT-licensed bench pack scenarios from [stevibe/BenchLocal](http
 - [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) (v1.0.0)
 - [stevibe/HermesAgent-20](https://github.com/stevibe/HermesAgent-20) (v1.0.0)
 - [stevibe/CLI-40](https://github.com/stevibe/CLI-40) (v1.0.2)
+
+Eval-expansion track:
+
+- [Aider-AI/aider](https://github.com/Aider-AI/aider) (Apache-2.0) — `benchmark.py` harness for AiderPolyglot-30
+- [Aider-AI/polyglot-benchmark](https://github.com/Aider-AI/polyglot-benchmark) (CC-BY-SA-3.0 / various Exercism licenses) — exercise tree
 
 See [`ATTRIBUTION.md`](./ATTRIBUTION.md) for full attribution + license preservation per pack.
 

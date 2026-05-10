@@ -112,8 +112,7 @@ rebuild needed — pure Python additions on the runner side.
   `tests/test_history.py` (11).
 - **Phase B.5 deferred to v0.8.1**: `inspect --diff <other.json>` and
   `inspect --logs DIR` are explicit follow-ups; the v0.8.0 MVP covers
-  the common diagnostic flows. See `CODEX_BRIEF_V8.md` for the full
-  scope split.
+  the common diagnostic flows.
 
 ## 0.7.4
 
