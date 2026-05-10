@@ -7,7 +7,7 @@ and they'll render below in both this file and the
 
 ---
 
-## Unreleased
+## v0.9.2 — 2026-05-10
 
 
 ### 🐛 Bug fixes
@@ -68,7 +68,71 @@ a localhost-style URL is detected, so end users get this for free.
 
 
 
+### 🧹 Other
 
+- **release: v0.9.2 — hermes localhost fix + cliff Option A automation** ([22ad4e2](https://github.com/noonghunna/benchlocal-cli/commit/22ad4e2c75497ffeb4550ea2d3fc3cbd66d3c152))
+
+
+Tag rolls up two substantive commits since v0.9.1:
+
+- `9c1566f` fix(hermes): rewrite hermes sandbox endpoint via
+  resolve_endpoint_for_container() when BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1,
+  and drop the persist_session=True kwarg from the vendored agent-runner.py
+  (upstream verifier vs hermes-agent at pinned commit 44cdf555 had drifted).
+  Result: hermesagent-20 against localhost vLLM goes 0/20 → 10/20 on Qwen
+  3.6 27B, matching Gemma 4 31B v0.7.4 cross-rig score.
+
+- `5497b16` chore(changelog): automate CHANGELOG.md + GitHub Release notes
+  from commit messages via cliff. Hand-edits no longer needed.
+
+Bumps:
+- pyproject.toml:           0.9.1 → 0.9.2
+- benchlocal_cli/__init__:  0.9.1 → 0.9.2
+
+
+
+### 🧹 Refactoring + maintenance
+
+- **chore(changelog): automate CHANGELOG + release notes from commits via cliff (Option A)** ([5497b16](https://github.com/noonghunna/benchlocal-cli/commit/5497b16e3e7a09bc6367aca78815891d28e5fc51))
+
+
+CHANGELOG.md is now auto-generated from commit messages by git-cliff in
+the release workflow. Hand-edits below the static header will be
+overwritten on the next tag.
+
+Workflow (`.github/workflows/release.yml`):
+  - On tag push (`v[0-9]+.[0-9]+.[0-9]+`):
+    1. Render GitHub Release body: `git-cliff --latest --strip header`
+       → per-version section only, no repeated intro
+    2. Regenerate full CHANGELOG.md: `git-cliff` (all tags)
+       → preserves the static header + all historical sections
+    3. Commit CHANGELOG.md back to master with `[skip ci]`
+    4. Publish GitHub Release with the latest-only body
+
+Template (`cliff.toml`):
+  - `[changelog].header` holds the intro and pointer to GitHub Releases
+    (preserved across regens; stripped from Release bodies).
+  - `body` template renders the **full commit message** (subject as bold
+    bullet, body indented below) instead of just the subject line. Write
+    rich commit message bodies (subject + blank line + paragraphs/tables)
+    and they flow into both CHANGELOG.md and the GitHub Release.
+  - Per-version Install/Diff footer guarded with `{% if version %}` so
+    the Unreleased section doesn't emit empty links.
+  - `[remote.github]` re-enabled now that the repo is public — gives
+    PR/contributor enrichment in rendered output.
+
+CHANGELOG.md replaced with auto-gen output. Past hand-written narrative
+(Phase A/B/C/D/E breakdowns, etc.) replaced by the corresponding commit
+messages. Commits that mattered already have rich bodies; thin commits
+get thin entries (which matches their actual significance).
+
+Going forward: just write rich commit messages and tag. Both surfaces
+update automatically — no separate CHANGELOG.md hand-edit required.
+
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.2`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.1...v0.9.2)
 ## v0.9.1 — 2026-05-10
 
 
