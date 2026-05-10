@@ -23,7 +23,14 @@ from run_agent import AIAgent
 from tools.terminal_tool import set_approval_callback
 ```
 
-`hermes_state`, `run_agent`, `tools.*` are the **actual Hermes agent codebase**, not in our vendor tree. Phase A's first job is locating this upstream codebase (likely a sibling repo to `stevibe/HermesAgent-20`) and confirming it's installable. If it's not publicly available, file a question and pivot to Option B (lighter integration without full upstream).
+`hermes_state`, `run_agent`, `tools.*` are the **actual Hermes agent codebase**, not in our vendor tree. **Important: many dev rigs already have hermes-agent installed locally.** v0.7.3 prefers bind-mounting an existing host install over baking a fresh copy into the sandbox image.
+
+**Detection priority order** (Phase A's first job is wiring this):
+
+1. **`HERMES_AGENT_HOST_PATH` env var** (user-set) → bind-mount into sandbox container at `/opt/hermes-agent`
+2. **Common host paths** — auto-detect at runner startup. Check `/opt/hermes-agent`, `~/hermes-agent`, `~/.local/hermes-agent`. If exactly one is found, use it; if multiple are found, error and ask user to set `HERMES_AGENT_HOST_PATH` explicitly.
+3. **Image-baked fallback** — if no host install found AND `HERMES_AGENT_BAKED_INSTALL=1` env var is set, the Dockerfile cloned a copy at build time → use the baked version
+4. **Fail loud** — if none of the above, return clear error from `/health` endpoint and during `/verify-start`. Don't silently fall back to v0.6 keyword-match.
 
 ## Architecture — the integration shape
 
@@ -50,32 +57,52 @@ Runner: receives verify-final, builds ScenarioRun directly. No /verify-turn loop
 
 ## Phases
 
-### Phase A — Locate upstream Hermes agent codebase (~1-3 hr, GATING)
+### Phase A — Wire detection + bind-mount of host hermes-agent (~1-2 hr)
 
-**Deliverable**: confirmed install path for `hermes_state`, `run_agent`, `tools.*` modules.
+**Deliverable**: hermes sandbox container at `/opt/hermes-agent` is populated from one of: user-set bind mount, auto-detected host path, or baked-in clone.
 
-Steps:
-1. Check `stevibe/HermesAgent-20` README / setup docs for upstream agent repo reference
-2. Look for `hermes_state` / `run_agent` Python packages on PyPI or GitHub. Likely candidates:
-   - `stevibe/hermes-agent` (sibling repo)
-   - Some `Nous-Research/Hermes-*` project
-3. If found, document install pattern (clone repo into Dockerfile, pip install deps)
-4. If NOT publicly available: **file `docs/QUESTIONS.md`** with what you tried + recommend Option B (see fallback below). Don't proceed with Phase B until Claude+user reviews.
+The user already has `hermes-agent` installed somewhere on their host. Don't force a fresh clone; bind-mount theirs.
 
-**Fallback (Option B) — if upstream codebase isn't accessible:**
-- Implement minimum viable upstream behavior in our sandbox: copy upstream's prompts/tool definitions/grading from `core.mjs` + `manifest.mjs`, implement them in Python without the full `hermes-agent` install
-- Less faithful but unblocks v0.7.3
-- Document as intentional divergence
+Files to touch:
+- `benchlocal_cli/sandbox.py` — add `host_mount` field to `SandboxConfig` (None for non-Hermes packs). For Hermes, populate at `config_for_pack()` time:
+  ```python
+  def _detect_hermes_agent_host_path() -> str | None:
+      explicit = os.environ.get("HERMES_AGENT_HOST_PATH")
+      if explicit:
+          if not Path(explicit).is_dir():
+              raise RuntimeError(f"HERMES_AGENT_HOST_PATH={explicit} is not a directory")
+          return explicit
+      candidates = [
+          Path("/opt/hermes-agent"),
+          Path.home() / "hermes-agent",
+          Path.home() / ".local/hermes-agent",
+      ]
+      found = [str(p) for p in candidates if p.is_dir()]
+      if len(found) == 1:
+          return found[0]
+      if len(found) > 1:
+          raise RuntimeError(f"multiple hermes-agent installs found: {found}; set HERMES_AGENT_HOST_PATH")
+      return None  # caller decides whether to use baked-in fallback or fail
+  ```
+- `SandboxClient.start()` — when starting hermes container, if `config.host_mount` is set, add `-v {host_path}:/opt/hermes-agent:ro` to the `docker run` args. Read-only mount is fine since hermes-agent shouldn't need to mutate its own source.
+- `sandboxes/hermes/server.py` `/health` — report `hermes_agent_path` field showing which path is mounted (for debuggability)
+- `--list-packs` / quality-test wrapper — surface `HERMES_AGENT_HOST_PATH` in the env-var list
 
-### Phase B — Install upstream into hermes sandbox image (~1-2 hr)
+**Fail-loud policy**: if no hermes-agent path is mountable AND `HERMES_AGENT_BAKED_INSTALL=1` is unset (default), the hermes sandbox `/health` should report `status: "missing-hermes-agent"` and `/verify-start` should return a clear error. Don't silently fall back to v0.6 keyword-match — that hides whether v0.7.3 is actually engaged.
+
+### Phase B — Optional: bake a fallback clone into the sandbox image (~1-2 hr, opt-in)
 
 Files to touch:
 - `sandboxes/hermes/Dockerfile`:
-  - Install Python deps the upstream agent needs (openai-python, sqlite3 likely already present, anyio, httpx, etc.)
-  - Clone upstream Hermes agent into `/opt/hermes-agent`
+  - Install Python deps the upstream agent needs (openai-python, sqlite3 likely already present, anyio, httpx, etc.) — these install regardless of bake choice
+  - **Conditional clone**: behind a build arg `BAKE_HERMES_AGENT=1`, clone upstream Hermes agent repo into `/opt/hermes-agent`. Off by default to keep image size small for users who bind-mount.
   - Set `HERMES_HOME` to a writable verifier-owned directory
   - Pre-create `/tmp/hermes-runs/` with verifier ownership for per-scenario job dirs
-- Verify `tools/build-sandboxes.sh` still completes cleanly
+- `tools/build-sandboxes.sh` — pass `--build-arg BAKE_HERMES_AGENT=$BAKE_HERMES_AGENT` and document the env var
+
+Default Codex deliverable: image WITHOUT baked clone (smaller, relies on bind-mount). User who wants a self-contained image runs `BAKE_HERMES_AGENT=1 bash tools/build-sandboxes.sh`.
+
+**If upstream `hermes-agent` repo URL isn't determinable** (Phase A's secondary risk), file `docs/QUESTIONS.md` with what you found + recommend running with `HERMES_AGENT_HOST_PATH` only (skip the bake path). User confirmed at brief authoring time that they have a local install, so the bind-mount path is the primary working config either way.
 
 ### Phase C — Rewrite `sandboxes/hermes/server.py` to delegate (~2-3 hr)
 
@@ -161,7 +188,7 @@ Suggested approach for the timeout: add `timeout_s` parameter to `_post()` (defa
 ## Constraints
 
 - **Don't break BugFind / CLI sandbox.** Their `/verify` and CLI's `/verify-start/turn/end` work today; this round is Hermes-only.
-- **Backwards compat for keyword-evidence path.** If upstream codebase isn't available (Phase A failure), Option B implementation should produce ScenarioResults of the same shape as v0.7.2.
+- **Don't silently fall back to v0.6 keyword-match.** If hermes-agent isn't mountable AND not baked, the /health endpoint should report `status: "missing-hermes-agent"` with a clear "set HERMES_AGENT_HOST_PATH" message, and /verify-start should refuse with the same error. Hidden fallback to keyword-match would mask whether v0.7.3 is actually engaged on a given run.
 - **Mock-pass marker (`BENCHLOCAL_PASS:scenario_id`) still works.** Short-circuit before invoking upstream agent-runner.
 - **Verifier_trace populated** — the upstream `result.json` (toolEvents, messages, finalResponse, etc.) goes into `verifier_trace` for v0.7.2-style forensics.
 - **Sandbox needs network egress to call model endpoint.** Update `SandboxConfig` for hermes if needed (today `network_isolated=False` already, so this should just work, but verify).
@@ -179,13 +206,13 @@ Same as v0.4/v0.6/v0.7/v0.7.1: write `docs/CODEX_REPORT.md` with phase-by-phase 
 
 ## Estimated total effort
 
-- Phase A (locate upstream): 1-3 hr (RISK — could block)
-- Phase B (Dockerfile install): 1-2 hr
-- Phase C (server.py rewrite): 2-3 hr
+- Phase A (detect + bind-mount host hermes-agent): 1-2 hr ← user has local install, this is the primary path
+- Phase B (optional baked-clone build arg): 1-2 hr (skip the actual clone if upstream URL is unclear; just gate the Dockerfile lines behind the build-arg)
+- Phase C (server.py rewrite to delegate to upstream): 2-3 hr
 - Phase D (runner endpoint passthrough + timeout): 1 hr
 - Phase E (tests + docs + bump): 1 hr
 
-**Total: 6-10 hr** if upstream is reachable. Phase A failure → Option B path is +2-4 hr scope (less faithful, more code to write ourselves).
+**Total: 6-9 hr.** No gating Phase A risk anymore — user has a local install we bind-mount.
 
 ## When done
 
