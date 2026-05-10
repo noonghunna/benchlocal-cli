@@ -15,17 +15,20 @@
 header = """
 # Changelog
 
-Auto-generated from commit messages by [git-cliff](https://git-cliff.org/).
-Write rich commit message bodies (subject + blank line + multi-paragraph body)
-and they'll render below in both this file and the
-[GitHub Release pages](https://github.com/noonghunna/benchlocal-cli/releases).
+Auto-generated from commit subjects by [git-cliff](https://git-cliff.org/) on tag
+push. Click any commit SHA below to see the full message body (why / how /
+validation data) — those live in `git log`, not here. Don't hand-edit; the file
+is regenerated on every tag. See the
+[GitHub Release pages](https://github.com/noonghunna/benchlocal-cli/releases) for
+the same content per-version.
 
 ---
 
 """
 
-# Per-version body. Subject as bold bullet; commit message body (everything
-# after the subject + blank line) renders indented below for narrative.
+# Per-version body. **Subject-line only** — full commit body (why/how/
+# validation) lives in `git log` and is one click away via the SHA link.
+# Keeps CHANGELOG.md skim-readable.
 body = """
 {% if version %}\
 ## {{ version }}{% if timestamp %} — {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
@@ -38,16 +41,7 @@ body = """
 ### {{ group }}
 
 {% for commit in commits %}\
-- **{{ commit.message | split(pat="\\n") | first | trim }}**{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/noonghunna/benchlocal-cli/pull/{{ commit.github.pr_number }}) by @{{ commit.github.username }}){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/noonghunna/benchlocal-cli/commit/{{ commit.id }})){% endif %}
-{% set body_lines = commit.message | split(pat="\\n") %}\
-{% if body_lines | length > 1 %}\
-{% set body = body_lines | slice(start=1) | join(sep="\\n") | trim %}\
-{% if body %}
-
-  {{ body | replace(from="\\n", to="\\n  ") }}
-
-{% endif %}\
-{% endif %}\
+- {{ commit.message | split(pat="\\n") | first | trim }}{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/noonghunna/benchlocal-cli/pull/{{ commit.github.pr_number }}) by @{{ commit.github.username }}){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/noonghunna/benchlocal-cli/commit/{{ commit.id }})){% endif %}
 {% endfor %}
 {% endfor %}
 
