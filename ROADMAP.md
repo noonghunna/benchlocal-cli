@@ -36,20 +36,18 @@ Commit [`c5e1dbd`](https://github.com/noonghunna/benchlocal-cli/commit/c5e1dbd).
 
 Net: cli-40 went 0/40 → 5/40 on Qwen (still hitting fixture-gap floor; v0.7 lifts that).
 
-## Next — v0.7: close the fixture-gap (gates public release)
+## v0.7 — upstream verifier-runtime lift (candidate, 2026-05-10)
 
-**Brief:** [`CODEX_BRIEF_V7.md`](CODEX_BRIEF_V7.md) (Codex hand-off, ~15-22 hr).
+**Brief:** [`CODEX_BRIEF_V7.md`](CODEX_BRIEF_V7.md).
 
-v0.6 verifiers work but the upstream fixture trees aren't in `vendor/` — so CLI verifier hits a 12% floor (commands reference `/workspace/<file>` inputs that don't exist), BugFind uses rubric heuristics instead of real pytest, Hermes uses keyword-match on final answers instead of multi-turn flow simulation.
+v0.6 verifiers work but the upstream fixture trees weren't in `vendor/` — so CLI verifier hit a 12% floor, BugFind used rubric heuristics, and Hermes used keyword-match on final answers instead of flow simulation.
 
-v0.7 closes this:
-- Phase A — vendor fixture lift (sync upstream's actual fixture trees into `vendor/`)
-- Phase B — BugFind real pytest against lifted fixtures
-- Phase C — CLI workspace-input + expected-output comparison
-- Phase D — Hermes flow-driven multi-turn with real browser/cron mocks
-- Phase E — docs + validation + version bump
+v0.7 candidate closes the available part of this gap by syncing upstream `verification/` runtimes:
+- BugFind now delegates to upstream `verifyAnswer`
+- CLI now delegates to upstream one-shot and replay verifiers
+- Hermes upstream runtime is vendored, but full parity remains runner-level work because the upstream runtime owns the full model/agent loop
 
-**Acceptance gate** (gates public release): real-model A/B on Qwen + Gemma must show meaningful discrimination on each sandboxed pack (>40% on cli-40, stable in non-trivial range on bugfind/hermes).
+**Acceptance gate still pending** (gates public release): mock validation and real-model A/B on Qwen + Gemma must show meaningful discrimination on each sandboxed pack (>40% on cli-40, stable in non-trivial range on bugfind/hermes).
 
 ## After v0.7 — v0.7.x follow-ups
 

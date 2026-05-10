@@ -4,11 +4,11 @@ Each sandboxed pack (BugFind-15, CLI-40, HermesAgent-20) ships a Docker containe
 
 ## Status
 
-🟡 **v0.6 verifier lift.** All 3 containers expose `/health` with `stage="v0.6"` and return real verifier result shapes. The current vendored upstream mirrors do not contain the fixture trees assumed by `CODEX_BRIEF_V6.md`, so v0.6 uses upstream-derived `raw_scenario` metadata rather than hidden fixture files:
+🟡 **v0.7 upstream verifier-runtime lift.** All 3 containers expose `/health` with `stage="v0.7"` and return real verifier result shapes. The upstream repos do not expose the static fixture-tree layout imagined in the v0.7 brief; the fixture source available in practice is each pack's `verification/` runtime.
 
-- BugFind validates strict solution-block structure, trap/no-bug discipline, and per-scenario rubric evidence.
-- CLI executes safe single commands with `shell=False` inside a cleared temporary workspace, rejects network/destructive commands, and compares explicit expected stdout/stderr/exit-code fields when present.
-- Hermes tracks scenario state across `/verify-start` and `/verify-turn`, simulates deterministic memory/artifact/trace tools, and checks final responses against success-case evidence.
+- BugFind delegates to upstream `verifyAnswer`, with Python/Node/Go/Rust runtime tools available in the sandbox image.
+- CLI delegates one-shot scenarios to upstream `verifyOneShotSubmission` and command-block replays to `verifyMultiRoundReplay`.
+- Hermes carries the upstream verifier runtime in the image, but full parity still requires runner-side multi-turn delegation because upstream Hermes owns the complete agent/model loop.
 
 | Pack | Host port | Verifier endpoint(s) | Multi-turn? |
 |---|---|---|---|
@@ -28,7 +28,7 @@ bash tools/test-sandboxes.sh     # confirms /health responds on all 3
 ```http
 GET /health
 → 200 OK
-  {"status": "ok", "pack": "<pack-id>", "stage": "v0.6"}
+  {"status": "ok", "pack": "<pack-id>", "stage": "v0.7"}
 
 POST /verify
 Content-Type: application/json
@@ -119,17 +119,17 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 
 ## CLI safety model
 
-The v0.6 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates:
+The v0.7 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates and the upstream verifier runtime:
 
 - container runs as non-root `verifier`
-- commands are parsed with `shlex.split`
-- `subprocess.run(..., shell=False)` is mandatory
+- simple commands are parsed with `shlex.split`
+- compound shell syntax is routed through `bash -c` after raw-string safety checks
 - network and destructive executables/tokens are rejected before execution
 - each scenario gets a fresh temporary workspace
 - timeout is capped at 10s
 - stdout/stderr are truncated to 64 KiB
 
-`CODEX_BRIEF_V6.md` recommended Unix-domain sockets plus Docker `--network none`, but the local `SandboxClient` still uses HTTP over a host-mapped port. This is a documented parity gap rather than a silent claim of full isolation.
+Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment with scripting languages available, not a shell-builtins-only benchmark. `CODEX_BRIEF_V6.md` recommended Unix-domain sockets plus Docker `--network none`, but the local `SandboxClient` still uses HTTP over a host-mapped port. This is a documented parity gap rather than a silent claim of full isolation.
 
 This mirrors the deterministic-pack `ScenarioResult` taxonomy — verifiers in sandbox containers produce the same shape as in-process verifiers, so the runner can treat them uniformly.
 

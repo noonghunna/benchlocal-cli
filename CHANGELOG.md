@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- Vendor upstream `verification/` runtimes for BugFind-15, CLI-40, and HermesAgent-20.
+- Delegate BugFind verification to upstream `verifyAnswer`, with runtime support for Python, Node, Go, and Rust checks.
+- Delegate CLI one-shot and replay verification to upstream verifier functions, and relax scripting-language bans to match the upstream execution model.
+- Copy vendored verification runtimes into Docker build contexts during `tools/build-sandboxes.sh`.
+- Mark sandbox health endpoints as `stage="v0.7"` and document the remaining Hermes runner-integration gap.
+
 ## 0.6.0
 
 - Add v0.6 sandbox verifier implementations for BugFind, CLI, and HermesAgent using upstream-derived raw scenario metadata, deterministic rubric checks, safe command execution, and stateful mocked-tool tracing.

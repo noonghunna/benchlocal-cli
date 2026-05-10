@@ -108,7 +108,7 @@ Scenario field reference:
 | `max_seconds_override` | no | int / null | Override metadata `default_max_seconds` |
 | `tags` | no | array | Free-form tags for filtering / grouping |
 | `upstream_scenario_id` | no | string | If this scenario was ported, the upstream id (usually same as `id`) |
-| `raw_scenario` | no | object | Upstream-derived verifier payload for sandboxed packs. v0.6 uses this for BugFind rubric fields, CLI expected command metadata, and Hermes tool-flow metadata. |
+| `raw_scenario` | no | object | Upstream-derived verifier payload for sandboxed packs. v0.7 marks sandbox packs with `fixture_status: "upstream-verification-runtime"` when verification is delegated to vendored upstream runtime code. |
 
 ## Assertion primitives
 
@@ -186,7 +186,7 @@ For execution-backed packs (BugFind / HermesAgent / CLI). Without `--enable-sand
 
 The `_stub` verifier type is therefore a dispatch marker rather than the final scorer for sandboxed runs.
 
-Sandboxed v0.6 scenarios include `raw_scenario` fields when the upstream mirror exposes enough metadata:
+Sandboxed v0.7 scenarios include `raw_scenario` fields when the upstream mirror exposes enough metadata:
 
 ```json
 {
@@ -198,17 +198,17 @@ Sandboxed v0.6 scenarios include `raw_scenario` fields when the upstream mirror 
       "failure_case": "...",
       "required_keywords": ["..."]
     },
-    "fixture_status": "rubric-only; upstream mirror has no workspace fixture tree"
+    "fixture_status": "upstream-verification-runtime"
   }
 }
 ```
 
-Known v0.6 sandbox raw fields:
+Known v0.7 sandbox raw fields:
 
 | Pack | Fields |
 |---|---|
 | BugFind-15 | `language`, `category`, `difficulty`, `success_case`, `failure_case`, `rubric_keywords`, `fixture_status` |
-| CLI-40 | `kind`, `category_id`, `category`, `expected`, `input_fixtures`, `fixture_status` |
+| CLI-40 | `kind`, `category_id`, `category`, `expected`, `input_fixtures`, `fixture_status`; messages include the upstream one-shot or multi-round system prompt from `verification/manifest.mjs` |
 | HermesAgent-20 | `kind`, `category`, `expected`, `tool_fixtures`, `fixture_status` |
 
 ## Adding new assertion primitives
