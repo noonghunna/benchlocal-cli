@@ -91,6 +91,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="opt out of sandboxed packs even on --full (use --medium for clean deterministic-only)",
     )
+    run.add_argument(
+        "--sandboxed-only",
+        action="store_true",
+        help="run only the sandboxed packs (bugfind-15, cli-40, hermesagent-20) — skips deterministic packs; useful when debugging verifiers",
+    )
     run.add_argument("--sandbox-image-tag", default="latest", help="Docker tag for sandbox images (default: latest)")
     run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
@@ -189,10 +194,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         mode = _mode_from_args(args)
-        pack_ids = [args.pack] if args.pack else PACK_MODES[mode]
+        if args.sandboxed_only:
+            from benchlocal_cli.runner import SANDBOXED_PACK_IDS
+            pack_ids = list(SANDBOXED_PACK_IDS)
+            mode = "sandboxed-only"
+        elif args.pack:
+            pack_ids = [args.pack]
+        else:
+            pack_ids = PACK_MODES[mode]
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
+        # --sandboxed-only also implies sandbox is enabled (no point otherwise).
         # Single-pack runs (--pack) auto-enable sandbox if the pack requires it.
-        sandboxed_enabled = args.enable_sandboxed_packs or mode in SANDBOX_MODES
+        sandboxed_enabled = (
+            args.enable_sandboxed_packs
+            or mode in SANDBOX_MODES
+            or args.sandboxed_only
+        )
         if args.pack:
             try:
                 meta, _ = load_pack(args.pack)
@@ -200,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                     sandboxed_enabled = True
             except Exception:
                 pass  # let Runner surface the unknown-pack error
-        if args.no_sandboxed_packs:
+        if args.no_sandboxed_packs and not args.sandboxed_only:
             sandboxed_enabled = False
         runner = Runner(
             endpoint=args.endpoint,

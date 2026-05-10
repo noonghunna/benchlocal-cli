@@ -46,6 +46,10 @@ PACK_MODES = {
 # sandboxed packs (no flag needed) and fail loud if Docker isn't available.
 SANDBOX_MODES = {"full"}
 
+# Just the sandboxed packs — used by `--sandboxed-only` for debug iteration
+# on the verifier containers without paying the deterministic-pack cost.
+SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40"]
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
