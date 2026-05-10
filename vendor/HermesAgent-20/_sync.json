@@ -1,10 +1,16 @@
 {
   "commit": "fa40ab9fb84a329421bbdfc3062cf28f1670de71",
-  "fetched_at": "2026-05-09T00:00:00Z",
+  "fetched_at": "2026-05-10T00:26:34.957833Z",
   "source_files": [
     "benchlocal.pack.json",
     "lib/benchmark.ts",
-    "lib/orchestrator.ts"
+    "lib/orchestrator.ts",
+    "verification/Dockerfile",
+    "verification/agent-runner.py",
+    "verification/core.mjs",
+    "verification/hermes-runtime.mjs",
+    "verification/manifest.mjs",
+    "verification/server.mjs"
   ],
   "source_url": "https://github.com/stevibe/HermesAgent-20"
 }

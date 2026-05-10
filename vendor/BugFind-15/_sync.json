@@ -1,13 +1,19 @@
 {
   "commit": "59f2e96f0c64b447ad6a545fc1e2416efce512b6",
-  "fetched_at": "2026-05-09T00:00:00Z",
+  "fetched_at": "2026-05-10T00:26:16.708693Z",
   "source_files": [
     "benchlocal.pack.json",
     "lib/benchmark.ts",
     "lib/llm-client.ts",
     "lib/models.ts",
     "lib/orchestrator.ts",
-    "lib/sandbox-client.ts"
+    "lib/sandbox-client.ts",
+    "verification/Dockerfile",
+    "verification/core.mjs",
+    "verification/manifest.mjs",
+    "verification/runner.mjs",
+    "verification/server.mjs",
+    "verification/service-helpers.mjs"
   ],
   "source_url": "https://github.com/stevibe/BugFind-15"
 }

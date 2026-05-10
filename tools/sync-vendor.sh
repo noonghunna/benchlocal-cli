@@ -36,10 +36,13 @@ mkdir -p "$DEST/lib"
 cp "$tmp/benchlocal.pack.json" "$DEST/benchlocal.pack.json"
 find "$tmp" -maxdepth 1 -type f ! -name benchlocal.pack.json -exec cp {} "$DEST/lib/" \;
 
-if [[ "$PACK" == "CLI-40" ]]; then
+if gh api "repos/$REPO/contents/verification?ref=$commit" >/tmp/benchlocal-verification-list.json 2>/dev/null; then
+  rm -rf "$DEST/verification"
   mkdir -p "$DEST/verification"
-  gh api "repos/$REPO/contents/verification/scenario-data.json?ref=$commit" --jq '.content' |
-    base64 -d > "$DEST/verification/scenario-data.json"
+  while IFS= read -r name; do
+    gh api "repos/$REPO/contents/verification/$name?ref=$commit" --jq '.content' |
+      base64 -d > "$DEST/verification/$name"
+  done < <(jq -r '.[] | select(.type=="file") | .name' /tmp/benchlocal-verification-list.json)
 fi
 
 python3 - "$DEST" "$PACK" "$commit" <<'PY'
