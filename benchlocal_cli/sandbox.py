@@ -69,10 +69,14 @@ SANDBOX_REGISTRY = {
         host_port=9004,
         network_isolated=False,  # aider needs to call out to model_endpoint
         multi_turn=True,         # uses /verify-start with verify-final early-out
-        # 30-min read timeout: the entire batch (30 exercises × multi-turn
+        # 50-min read timeout: the entire batch (30 exercises × multi-turn
         # aider edit/test loops) lives inside one /verify-start call. The
-        # inner subprocess timeout is 1500s; this gives +5min headroom.
-        request_timeout_s=1800.0,
+        # inner subprocess timeout is 2700s; this gives +5min headroom.
+        # First Qwen-with-thinking-on run hit the 1500s inner cap with 0
+        # exercises completed; thinking-off run paced ~40s/exercise = ~20min
+        # total, but contributors with slower hardware (e.g., 24 GB single
+        # card, longer-context models) need this headroom on stress runs.
+        request_timeout_s=3000.0,
     ),
 }
 
@@ -467,6 +471,13 @@ def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
     base = config.image_name.split(":", 1)[0]
     host_mounts: tuple[tuple[str, str], ...] = config.host_mounts
     env: tuple[tuple[str, str], ...] = config.env
+    if pack_id == "aider-polyglot-30":
+        # v0.9.0: parallelize aider's batch across N threads. Default 4 to
+        # match the vLLM gemma-mtp compose's --max-num-seqs 4. Override
+        # via BENCHLOCAL_AIDER_THREADS env on the runner side.
+        threads = os.environ.get("BENCHLOCAL_AIDER_THREADS", "4")
+        env = env + (("AIDER_BENCHMARK_THREADS", threads),)
+
     if pack_id == "hermesagent-20":
         # Per-scenario subprocess wall-clock cap inside the container. Default
         # to 300s (5 min) — long enough for legitimate multi-turn agent loops

@@ -64,8 +64,8 @@ AIDER_PINNED_COMMIT = os.environ.get("AIDER_PINNED_COMMIT", "unknown")
 POLYGLOT_PINNED_COMMIT = os.environ.get("POLYGLOT_PINNED_COMMIT", "unknown")
 
 # Wall-clock cap for the entire batch. The runner-side per-pack timeout
-# (SandboxConfig.request_timeout_s) is 1800; this is the inner subprocess cap.
-SUBPROCESS_TIMEOUT_S = float(os.environ.get("AIDER_BENCHMARK_TIMEOUT_S", "1500"))
+# (SandboxConfig.request_timeout_s) is 3000; this is the inner subprocess cap.
+SUBPROCESS_TIMEOUT_S = float(os.environ.get("AIDER_BENCHMARK_TIMEOUT_S", "2700"))
 
 # Per-pack threshold: pass if >= this fraction of exercises pass.
 DEFAULT_PASS_THRESHOLD = 0.5
@@ -136,11 +136,23 @@ REQUIRED_BENCHMARK_FLAGS = (
 )
 
 
+_BENCHMARK_CLI_SIGNATURE_CACHE: dict | None = None
+
+
 def _detect_benchmark_cli_signature() -> dict:
     """Run `benchmark.py --help` and check for required flags. Surfaces in
-    /health so pin-bump regressions are visible BEFORE first /verify-start."""
+    /health so pin-bump regressions are visible BEFORE first /verify-start.
+
+    Cached at module level — aider's import surface is heavy (~10-30s
+    cold start). Re-running per /health probe makes /health unresponsive
+    under repeated polling. The result doesn't change at runtime since
+    aider source is baked into the image."""
+    global _BENCHMARK_CLI_SIGNATURE_CACHE
+    if _BENCHMARK_CLI_SIGNATURE_CACHE is not None:
+        return _BENCHMARK_CLI_SIGNATURE_CACHE
     if not BENCHMARK_PY.is_file():
-        return {"ok": False, "reason": f"benchmark.py not found at {BENCHMARK_PY}"}
+        _BENCHMARK_CLI_SIGNATURE_CACHE = {"ok": False, "reason": f"benchmark.py not found at {BENCHMARK_PY}"}
+        return _BENCHMARK_CLI_SIGNATURE_CACHE
     try:
         proc = subprocess.run(
             ["python3", str(BENCHMARK_PY), "--help"],
@@ -148,19 +160,25 @@ def _detect_benchmark_cli_signature() -> dict:
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=60,  # was 20 — cold-import of aider can take longer
         )
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
-        return {"ok": False, "reason": f"benchmark.py --help failed: {exc}"}
+        _BENCHMARK_CLI_SIGNATURE_CACHE = {"ok": False, "reason": f"benchmark.py --help failed: {exc}"}
+        return _BENCHMARK_CLI_SIGNATURE_CACHE
     if proc.returncode != 0:
-        return {"ok": False, "reason": f"benchmark.py --help rc={proc.returncode}: {(proc.stderr or '')[-400:]}"}
+        _BENCHMARK_CLI_SIGNATURE_CACHE = {
+            "ok": False,
+            "reason": f"benchmark.py --help rc={proc.returncode}: {(proc.stderr or '')[-400:]}",
+        }
+        return _BENCHMARK_CLI_SIGNATURE_CACHE
     help_text = (proc.stdout or "") + (proc.stderr or "")
     missing = [f for f in REQUIRED_BENCHMARK_FLAGS if f not in help_text]
-    return {
+    _BENCHMARK_CLI_SIGNATURE_CACHE = {
         "ok": not missing,
         "missing_flags": missing,
         "help_size_chars": len(help_text),
     }
+    return _BENCHMARK_CLI_SIGNATURE_CACHE
 
 
 # ============================================================================
@@ -204,8 +222,21 @@ def _build_benchmark_args(
 def _stage_exercises_workspace(stage_dir: Path) -> Path:
     """Create a `polyglot-benchmark` tree under `stage_dir` containing
     ONLY the canonical 30 exercises. Avoids relying on --keywords substring
-    matching (Codex 2nd-pass #5)."""
-    stage_root = stage_dir / "polyglot-benchmark"
+    matching (Codex 2nd-pass #5).
+
+    Also `git init` the stage_dir — upstream's benchmark.py calls
+    git.Repo(search_parent_directories=True) early on and aborts if the
+    cwd isn't inside a git repo. Our staged dir at /tmp/... isn't, so we
+    stand up a minimal one. No commit needed; the .git dir alone
+    satisfies the check.
+    """
+    # benchmark.py looks for exercises at BENCHMARK_DNAME/exercises_dir where
+    # BENCHMARK_DNAME defaults to tmp.benchmarks (overridable via AIDER_BENCHMARK_DIR
+    # env). We set AIDER_BENCHMARK_DIR=<stage_dir>/tmp.benchmarks at run time
+    # so our staged exercises live at <stage_dir>/tmp.benchmarks/polyglot-benchmark/.
+    benchmark_root = stage_dir / "tmp.benchmarks"
+    benchmark_root.mkdir(parents=True, exist_ok=True)
+    stage_root = benchmark_root / "polyglot-benchmark"
     stage_root.mkdir(parents=True, exist_ok=True)
     for entry in CANONICAL_EXERCISES:
         src = POLYGLOT_DIR / entry["language"] / "exercises" / "practice" / entry["name"]
@@ -216,6 +247,25 @@ def _stage_exercises_workspace(stage_dir: Path) -> Path:
         # Hard-link individual files (cheap, doesn't duplicate disk).
         # cp -al equivalent.
         shutil.copytree(src, dst, copy_function=os.link, dirs_exist_ok=True)
+    # Stand up a minimal git repo so benchmark.py's git.Repo() succeeds.
+    # benchmark.py reads repo.head.object.hexsha[:7] — needs an actual
+    # commit, not just `git init`. Make one empty commit.
+    try:
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(stage_dir)],
+            check=False, capture_output=True, timeout=10,
+        )
+        for k, v in (("user.email", "benchlocal@example.com"), ("user.name", "benchlocal")):
+            subprocess.run(
+                ["git", "-C", str(stage_dir), "config", k, v],
+                check=False, capture_output=True, timeout=5,
+            )
+        subprocess.run(
+            ["git", "-C", str(stage_dir), "commit", "--allow-empty", "-q", "-m", "benchlocal-cli stage"],
+            check=False, capture_output=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass  # git missing in container would have failed earlier; non-fatal.
     return stage_root
 
 
@@ -258,6 +308,15 @@ def _summarize_exercise_result(data: dict) -> dict:
         "tries": len(outcomes),
         "duration_s": data.get("duration"),
         "cost": data.get("cost"),
+        # Diagnostic fields — surface enough to tell whether aider made
+        # real model calls (prompt_tokens > 0) vs failed early (0 tokens
+        # + non-zero num_error_outputs).
+        "model": data.get("model"),
+        "prompt_tokens": data.get("prompt_tokens"),
+        "completion_tokens": data.get("completion_tokens"),
+        "num_error_outputs": data.get("num_error_outputs"),
+        "num_user_asks": data.get("num_user_asks"),
+        "num_malformed_responses": data.get("num_malformed_responses"),
         "model_errors": data.get("model_errors") or 0,
         "edit_format": data.get("edit_format"),
         "commands": data.get("commands"),
@@ -390,9 +449,38 @@ def _verify_start(req: dict) -> dict:
             (scenario.get("raw_scenario") or {}).get("default_pass_threshold")
             or DEFAULT_PASS_THRESHOLD
         )
+        # litellm (which aider uses under the hood) requires a provider
+        # prefix in the model name to route to OpenAI-compatible custom
+        # endpoints. Without `openai/`, litellm tries to resolve the model
+        # against its built-in catalog → no match → silent fallback that
+        # makes zero model calls (duration ~0.02s/exercise, cost $0.00).
+        # Don't double-prefix if user already passed e.g. "openai/<name>".
+        aider_model = model_name if "/" in model_name else f"openai/{model_name}"
+
+        # Disable Qwen3-style thinking via per-request `extra_body`.
+        # vLLM doesn't accept --chat-template-kwargs at the CLI; the
+        # per-request mechanism is the supported path. Aider reads
+        # `.aider.model.settings.yml` from cwd (job_dir) and forwards
+        # extra_params to litellm, which forwards to vLLM as extra_body.
+        #
+        # Written for ALL models (not just Qwen):
+        #   - Gemma 4 default thinking=off already, so the kwarg is a no-op
+        #   - llama.cpp ignores unknown chat_template_kwargs
+        # If a future bench wants thinking ON, set
+        # BENCHLOCAL_AIDER_ENABLE_THINKING=1 in the runner env.
+        if os.environ.get("BENCHLOCAL_AIDER_ENABLE_THINKING") != "1":
+            (job_dir / ".aider.model.settings.yml").write_text(
+                "- name: " + aider_model + "\n"
+                "  edit_format: " + edit_format + "\n"
+                "  extra_params:\n"
+                "    extra_body:\n"
+                "      chat_template_kwargs:\n"
+                "        enable_thinking: false\n"
+            )
+
         argv = _build_benchmark_args(
             run_name=run_name,
-            model=model_name,
+            model=aider_model,
             edit_format=edit_format,
             threads=int(os.environ.get("AIDER_BENCHMARK_THREADS", "1")),
         )
@@ -401,11 +489,31 @@ def _verify_start(req: dict) -> dict:
         # OPENAI_API_BASE (Codex 2nd-pass concern about which the upstream
         # litellm/openai SDK pins read from).
         env = os.environ.copy()
-        env["OPENAI_BASE_URL"] = model_endpoint
-        env["OPENAI_API_BASE"] = model_endpoint
+        # Normalize: aider's litellm/openai client expects base_url ending in /v1
+        # (it appends /chat/completions itself). Same fix we hit in v0.7.4 hermes.
+        # Without /v1, the client hits /chat/completions → 404 → empty response,
+        # which aider counts as num_error_outputs without prompt_tokens.
+        normalized_endpoint = model_endpoint.rstrip("/")
+        for suffix in ("/v1/chat/completions", "/chat/completions"):
+            if normalized_endpoint.endswith(suffix):
+                normalized_endpoint = normalized_endpoint[: -len(suffix)]
+                break
+        normalized_endpoint = normalized_endpoint.rstrip("/")
+        if not normalized_endpoint.endswith("/v1"):
+            normalized_endpoint = normalized_endpoint + "/v1"
+        env["OPENAI_BASE_URL"] = normalized_endpoint
+        env["OPENAI_API_BASE"] = normalized_endpoint
         env["OPENAI_API_KEY"] = str(req.get("model_api_key") or "benchlocal-cli-aider-polyglot-30")
         env["AIDER_NO_PRETTY"] = "1"
         env["AIDER_NO_AUTO_COMMITS"] = "1"
+        # benchmark.py refuses to run without AIDER_DOCKER set (safety guard
+        # against running unvetted model code on a host) — set it since we
+        # ARE inside a container.
+        env["AIDER_DOCKER"] = "1"
+        # Make BENCHMARK_DNAME point at our staged tmp.benchmarks, so
+        # benchmark.py finds <stage>/tmp.benchmarks/polyglot-benchmark/<lang>/...
+        # and writes results to <stage>/tmp.benchmarks/<run_name>/.
+        env["AIDER_BENCHMARK_DIR"] = str(job_dir / "tmp.benchmarks")
 
         # Spawn with process-group isolation (same hardening as v0.7.3 hermes)
         started = time.monotonic()
@@ -430,26 +538,57 @@ def _verify_start(req: dict) -> dict:
             stdout, stderr = proc.communicate()
         elapsed = time.monotonic() - started
 
-        if timed_out:
-            return {
-                "action": "verify-final",
-                "passed": False,
-                "failure_mode": "agent_runner_timeout",
-                "detail": f"{scenario_id}: aider benchmark.py exceeded {SUBPROCESS_TIMEOUT_S:.0f}s",
-                "trace": {
-                    "schema_version": SCHEMA_VERSION,
-                    "elapsed_s": elapsed,
-                    "stderr_tail": (stderr or "")[-2000:],
-                },
-            }
-
         # Find the run dir aider created — it lives under tmp.benchmarks/
-        # within our staged workspace.
+        # within our staged workspace. (Moved BEFORE timeout-handling so we
+        # can recover partial data when subprocess gets killed by SIGKILL.)
         tmp_benchmarks = job_dir / "tmp.benchmarks"
         run_dirs = sorted(tmp_benchmarks.glob(f"*{run_name}*"))
         run_dir = run_dirs[-1] if run_dirs else tmp_benchmarks
 
         per_exercise = _walk_per_exercise_results(run_dir)
+
+        if timed_out:
+            # Recover partial per-exercise data. Aider's benchmark.py writes
+            # one .aider.results.json per exercise as it completes, so even if
+            # we SIGKILL'd mid-batch, exercises that finished BEFORE the kill
+            # have data on disk. Surface that instead of throwing it away.
+            graded_partial = _grade_aider_batch_result(
+                per_exercise, threshold=threshold
+            ) if per_exercise else None
+            partial_pass_count = graded_partial["passed_count"] if graded_partial else 0
+            partial_total = graded_partial["total_count"] if graded_partial else len(CANONICAL_EXERCISES)
+            partial_found = graded_partial["found_count"] if graded_partial else 0
+            return {
+                "action": "verify-final",
+                "passed": False,
+                "failure_mode": "agent_runner_timeout",
+                "detail": (
+                    f"{scenario_id}: aider benchmark.py exceeded {SUBPROCESS_TIMEOUT_S:.0f}s "
+                    f"(killed at {elapsed:.0f}s; {partial_found}/{partial_total} exercises "
+                    f"completed before kill, {partial_pass_count} passed)"
+                ),
+                # Surface partial counts as first-class fields so the runner can
+                # log progress even on timeout — matches the success path shape.
+                "pass_rate": (graded_partial["pass_rate"] if graded_partial else None),
+                "passed_count": partial_pass_count,
+                "total_count": partial_total,
+                "trace": {
+                    "schema_version": SCHEMA_VERSION,
+                    "stage": "v0.9.0",
+                    "elapsed_s": elapsed,
+                    "batch_wall_clock_s": elapsed,
+                    "aider_pinned_commit": AIDER_PINNED_COMMIT,
+                    "polyglot_pinned_commit": POLYGLOT_PINNED_COMMIT,
+                    "edit_format": edit_format,
+                    "threshold": threshold,
+                    "timed_out": True,
+                    "found_count": partial_found,
+                    "upstream_per_exercise": (
+                        graded_partial["per_exercise"] if graded_partial else {}
+                    ),
+                    "stderr_tail": (stderr or "")[-2000:],
+                },
+            }
         if not per_exercise and proc.returncode != 0:
             # Detect network-error pattern in stderr
             net_pat = re.compile(
@@ -506,10 +645,12 @@ def _verify_start(req: dict) -> dict:
         }
     finally:
         # Best-effort job dir cleanup. Hard-linked exercises so cheap to remove.
-        try:
-            shutil.rmtree(job_dir, ignore_errors=True)
-        except Exception:  # noqa: BLE001
-            pass
+        # Set BENCHLOCAL_AIDER_KEEP_JOBDIRS=1 to retain for forensic inspection.
+        if os.environ.get("BENCHLOCAL_AIDER_KEEP_JOBDIRS") != "1":
+            try:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ============================================================================
