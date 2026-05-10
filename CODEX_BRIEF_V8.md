@@ -8,6 +8,24 @@ The forensics fields v0.7.2 added (`verifier_trace`, `conversation`, `--sandbox-
 
 **Promoted above eval expansion**: better tooling makes the existing 8 packs more useful before adding new evals. Today's saved JSON has everything needed for diagnosis but requires hand-grep / `python3 -c "import json; ..."` to extract anything meaningful. v0.8 closes that gap.
 
+## Codex review findings (2026-05-09)
+
+Codex sanity-checked this brief on six dimensions before implementation. Findings folded in:
+
+1. **Scenario keying must be `(pack_id, scenario_id)`**: same scenario IDs can collide across packs (e.g. CLI-01 and BF-01 are unique within their packs but the bare ID shape isn't globally unique going forward). All delta-classify, history-CSV, and inspect filter logic must key on the tuple, not the bare ID.
+2. **Multi-repeat handling — pick aggregation explicitly**: brief originally punted to "each repeat is separate ScenarioRun" but `{scenario_id: passed}` collapses that to last-write-wins. Decision: **delta classifier aggregates to per-scenario pass-rate** when `repeat > 1`. Treat scenario as "passed" if pass-rate ≥ 50% (configurable via `BENCHLOCAL_DELTA_PASS_THRESHOLD`). Document this in the markdown so users see "11/15 (avg of 3 repeats)".
+3. **Inspect scope is too large for 3-4 hr** — split it: 
+   - **Phase B.0 (MVP, 2-3 hr)**: single-scenario detail (`--scenario`), pack-wide failure scan (`--failed`, `--mode`, `--pack`), missing-field tolerance (v0.5/v0.6/v0.7.0 JSON), default truncation, `--full`, `--format json`. Ship this as v0.8.0.
+   - **Phase B.5 (1-2 hr, OPTIONAL)**: `--diff` side-by-side and `--logs` integration. Ship as v0.8.1 if Phase B.0 hits time budget.
+4. **Markdown delta column breaks pinned scripts**: don't change the default markdown shape. Render delta column **only when `--previous-result` was actually passed**. Without that flag, current markdown is byte-identical to v0.7.3's output. Pinned downstream parsers (club-3090 `quality-test.sh`) keep working.
+5. **CSV concurrent-append safety**: append from two simultaneous runs corrupts the file. Use `fcntl.flock(fd, LOCK_EX)` around the append on POSIX (skip on Windows — document non-concurrency there). Lock the CSV, not the directory.
+6. **Older-shape tolerance — list explicit field names**: `inspect` must handle field-name variance — `raw_response` (v0.7+) vs `response` (v0.5/v0.6), absent `failure_mode` (v0.5), absent `verifier_trace`/`conversation` (pre-v0.7.2). Implementer should test each of: synthetic v0.5 minimal JSON, real v0.6 saved JSON if available, real v0.7.2 saved JSON.
+7. **Lock to v0.7.3 master only** — don't start v0.8 from v0.7.2. Brief 2's verifier_trace assumptions depend on Hermes shape from v0.7.3 (upstream `toolEvents`, `messages`, `finalResponse` fields).
+8. **`inspect --logs DIR` needs deterministic mapping**: result JSON should record per-scenario `sandbox_log_file` field when `--sandbox-log-dir` was used. v0.7.2 captures the dir but doesn't save the per-scenario filename in the JSON. **Sub-task in Phase B.5**: extend forensics fields to include `sandbox_log_file: "sandbox-cli-40.log"` per scenario when applicable.
+9. **Strict downstream-parser break**: adding `delta` to `RunResult.to_dict()` is fine (new optional field), but make sure `schema_version` bumps when `delta` is present. If a downstream parser is strict-mode, omit `delta` entirely when not computed (don't write `null`).
+
+These additions split Phase B into B.0 (MVP, ship in v0.8.0) and B.5 (diff+logs, optional/v0.8.1) and add the keying/locking/version-pin obligations across all three pieces. Net time impact: +1-2 hr for the locking + keying audit, but the inspect split prevents 3-4 hr from sprawling to 6+ hr.
+
 ## Three pieces, one brief
 
 | Piece | What | Time |

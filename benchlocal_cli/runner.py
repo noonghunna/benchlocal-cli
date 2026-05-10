@@ -490,15 +490,39 @@ class Runner:
         ended = False
 
         try:
-            start_payload = sandbox_client.verify_multiturn_start(scenario)
+            start_kwargs: dict = {}
+            if scenario.get("pack_id") == "hermesagent-20":
+                # Hermes upstream agent-runner makes its own model calls; pass
+                # the runner's endpoint + model so the sandbox can spawn the
+                # upstream agent against the same target the runner is benching.
+                # Sampling is included so upstream's request_overrides
+                # (temperature, top_p, max_tokens, etc.) match runner defaults.
+                start_kwargs = {
+                    "model_endpoint": self.endpoint,
+                    "model_name": self.model,
+                    "model_api_key": "dummy",  # vLLM doesn't validate; upstream still requires a value
+                    "sampling": dict(sampling),
+                }
+            start_payload = sandbox_client.verify_multiturn_start(scenario, **start_kwargs)
             if start_payload.get("action") == "verify-final":
                 latency = time.perf_counter() - started
+                # Preserve upstream forensics in the early-out path too —
+                # otherwise hermes scenarios that grade on the first call lose
+                # their `trace` payload (toolEvents, finalResponse, etc.)
+                # before reaching the saved JSON.
+                early_trace: dict | None = None
+                if isinstance(start_payload, dict):
+                    early_trace = {
+                        k: v for k, v in start_payload.items()
+                        if k not in ("passed", "failure_mode", "detail", "action")
+                    } or None
                 result = ScenarioResult(
                     scenario_id=scenario["id"],
                     passed=bool(start_payload.get("passed")),
                     failure_mode=start_payload.get("failure_mode", "verifier_fail"),
                     detail=str(start_payload.get("detail", "")),
                     latency_seconds=latency,
+                    verifier_trace=early_trace,
                 )
                 return self._scenario_run(
                     scenario,

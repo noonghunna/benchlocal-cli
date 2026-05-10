@@ -13,6 +13,22 @@ Today's diagnostic identified 5 distinct failure patterns (`docs/CODEX_REPORT.md
 
 All five collapse onto one root: **we're not running the upstream Hermes runtime.** v0.7.3 wires it in.
 
+## Codex review findings (2026-05-09)
+
+Codex sanity-checked this brief on six dimensions before implementation. Findings folded in below — implementer must address these in addition to the original phases:
+
+1. **Reproducibility — capture upstream version**: bind-mounting host `/opt/hermes-agent` makes scoring non-reproducible unless the exact upstream commit is captured. Phase A `/health` MUST report `hermes_agent_commit` (try `git -C {path} rev-parse HEAD`, swallow errors as `unknown`). Same field must end up in every scenario's `verifier_trace` so a saved JSON is self-describing.
+2. **Host-path validation beyond `is_dir()`**: detect must verify the install is usable — at minimum, check that `run_agent.py` and `hermes_state.py` exist at the path. A `/opt/hermes-agent` directory that's an empty stub fails the import inside the container with a confusing traceback.
+3. **Concurrent-scenario isolation**: per-scenario `job_dir = /tmp/hermes-runs/{uuid}/` is correct, but upstream may write to `~/.hermes` or another shared location under `/opt/hermes-agent`. Set `HERMES_HOME` env per-scenario to `{job_dir}/home` and verify upstream respects it. If upstream uses a global SQLite DB path, isolate via per-scenario DB path env override.
+4. **Subprocess timeout cleanup**: `subprocess.run(..., timeout=900)` raises `TimeoutExpired` but doesn't reliably kill grandchildren. Use `subprocess.Popen` + `os.setsid` + on timeout `os.killpg(os.getpgid(proc.pid), SIGKILL)`. Always rm `job_dir` after use (success or failure) to avoid disk pressure across many scenarios.
+5. **Failure-mode mapping**: don't return generic `verifier_fail` for everything. Distinguish: `agent_runner_timeout`, `agent_runner_crashed` (nonzero exit + stderr captured into detail), `model_endpoint_unreachable` (network error mapped from upstream), `result_json_malformed`, `verifier_fail` (real grade failure). Each mode goes into `failure_mode` so v0.8 inspect can filter on them.
+6. **Per-pack timeout, not global**: `SandboxClient._post()` timeout bump must be per-call, not global — BugFind/CLI still want 60s. Add `timeout_s` parameter to `_post()` (default 60); hermes pack passes 900.
+7. **CI matrix correction**: "both paths exercised" requires CI to have **both** a host mount AND a baked image — running with `HERMES_AGENT_FORCE_BAKED=1` only exercises the baked path. `tools/test-sandboxes.sh` should run twice, once with `HERMES_AGENT_HOST_PATH=/tmp/test-hermes-clone` and once with `HERMES_AGENT_FORCE_BAKED=1`. Skip the host-mount test gracefully if `/opt/hermes-agent` and equivalents aren't present (don't fail the whole suite on a fresh CI box).
+8. **Bake-clone scope hedge**: upstream URL + pinned ref + license + vendoring policy are unspecified. **Defer the actual `git clone` line in Phase B until upstream URL is confirmed.** Implement the build-arg gate, the Dockerfile-side env setup, and the fail-loud `/health` reporting — but leave the clone command as a TODO comment with the placeholder URL. User has confirmed local install, so Phase A bind-mount is the working path; Phase B's actual clone can ship later.
+9. **"Both paths produce same scores" is too strong**: upstream Hermes uses real LLM calls with non-zero temperature → runs are non-deterministic. Soften acceptance gate criterion #4: "Cross-path scores within ±10% of each other on the same scenario set, run 3× and averaged" rather than expecting exact equivalence.
+
+These additions don't change the phase structure or time estimate — they're correctness/robustness obligations within each existing phase.
+
 ## Why this brief is risk-fronted
 
 The v0.7 candidate vendored `vendor/HermesAgent-20/verification/agent-runner.py` — but inspecting it reveals it's a wrapper that imports from `/opt/hermes-agent`:

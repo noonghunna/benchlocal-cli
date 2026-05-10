@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -19,6 +22,19 @@ class SandboxConfig:
     host_port: int         # e.g. 9001
     network_isolated: bool # True for cli (untrusted exec); False for bugfind + hermes
     multi_turn: bool       # True for cli + hermes; False for bugfind
+    # Optional host directories bind-mounted into the container.
+    # Tuple of (host_path, container_path) entries — bound read-only.
+    # Hermes uses two: the hermes-agent install AND its uv-managed Python
+    # tree, both mounted at the same paths inside the container so that
+    # venv shebangs and the python binary's hardcoded prefix resolve.
+    # Empty tuple means no mounts.
+    host_mounts: tuple[tuple[str, str], ...] = ()
+    # Optional environment variables passed to `docker run -e ...`.
+    env: tuple[tuple[str, str], ...] = ()
+    # Per-pack default HTTP read timeout for /verify* calls in seconds.
+    # Hermes runs upstream agent loops with real LLM calls and needs ~15min;
+    # bugfind/cli stay at 60s.
+    request_timeout_s: float = 60.0
 
 
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
@@ -43,8 +59,123 @@ SANDBOX_REGISTRY = {
         host_port=9003,
         network_isolated=False,
         multi_turn=True,
+        # 15-minute read timeout for /verify-start — upstream Hermes
+        # agent-runner.py runs 10-20 turns of real LLM calls per scenario.
+        request_timeout_s=900.0,
     ),
 }
+
+
+# Required files in a host-installed `hermes-agent` checkout. Used by detection
+# to reject empty stub directories that exist but can't satisfy the upstream
+# Python imports.
+_HERMES_AGENT_REQUIRED_FILES = ("run_agent.py", "hermes_state.py")
+
+
+def _is_valid_hermes_agent_install(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return all((path / f).is_file() for f in _HERMES_AGENT_REQUIRED_FILES)
+
+
+def _resolve_via_which_hermes() -> str | None:
+    """Resolve the install root by following `which hermes` through its symlink.
+
+    The official installer creates a symlink at ~/.local/bin/hermes pointing
+    into <install-root>/venv/bin/hermes. Walking up 3 levels lands on the
+    install root. Tolerates non-standard install layouts (custom prefixes,
+    pipx-style locations) without us needing to enumerate every possibility.
+    """
+    binary = shutil.which("hermes")
+    if not binary:
+        return None
+    try:
+        resolved = Path(binary).resolve(strict=True)
+    except OSError:
+        return None
+    # Try a couple of likely walk-up depths to handle both venv-based
+    # (root/venv/bin/hermes → root) and direct (root/bin/hermes → root) layouts.
+    for ancestor in (resolved.parent.parent.parent, resolved.parent.parent):
+        if _is_valid_hermes_agent_install(ancestor):
+            return str(ancestor.resolve())
+    return None
+
+
+def detect_hermes_agent_host_path() -> str | None:
+    """Resolve a host-installed hermes-agent path for bind-mounting.
+
+    Order:
+        1. HERMES_AGENT_FORCE_BAKED=1 → return None (skip host detection;
+           container falls back to image-baked install)
+        2. HERMES_AGENT_HOST_PATH=<dir> → use this path; raise if missing or
+           doesn't look like a hermes-agent install (must contain run_agent.py
+           and hermes_state.py)
+        3. Auto-detect: check /opt/hermes-agent, ~/hermes-agent,
+           ~/.local/hermes-agent, ~/.hermes/hermes-agent. If exactly one valid
+           install is found, use it; if multiple, raise with set-HOST_PATH
+           guidance.
+        4. `which hermes` → follow the symlink → walk up to install root.
+           Catches non-standard install layouts (custom prefixes, pipx-style
+           locations).
+        5. Otherwise None (caller falls through to image-baked or fail-loud).
+    """
+    if os.environ.get("HERMES_AGENT_FORCE_BAKED") == "1":
+        return None
+    explicit = os.environ.get("HERMES_AGENT_HOST_PATH")
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if not path.is_dir():
+            raise RuntimeError(
+                f"HERMES_AGENT_HOST_PATH={explicit} is not a directory"
+            )
+        if not _is_valid_hermes_agent_install(path):
+            raise RuntimeError(
+                f"HERMES_AGENT_HOST_PATH={explicit} does not look like a "
+                f"hermes-agent install (missing one of "
+                f"{', '.join(_HERMES_AGENT_REQUIRED_FILES)})"
+            )
+        return str(path)
+    candidates = [
+        Path("/opt/hermes-agent"),
+        Path.home() / "hermes-agent",
+        Path.home() / ".local/hermes-agent",
+        # The official `hermes` installer (curl … | sh) lays its source
+        # checkout at ~/.hermes/hermes-agent. This is the most common host
+        # install in practice — added 2026-05-09 after the v0.7.3 A/B run.
+        Path.home() / ".hermes/hermes-agent",
+    ]
+    found = [str(p.resolve()) for p in candidates if _is_valid_hermes_agent_install(p)]
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise RuntimeError(
+            f"multiple hermes-agent installs found: {found}; "
+            f"set HERMES_AGENT_HOST_PATH to disambiguate"
+        )
+    # Last resort: ask `which hermes`. Catches non-standard install layouts.
+    return _resolve_via_which_hermes()
+
+
+def detect_hermes_agent_commit(path: str) -> str:
+    """Best-effort `git rev-parse HEAD` on the host install. Returns 'unknown'
+    on any failure — never raises. Captured into /health and verifier_trace
+    so saved JSONs are self-describing about which upstream commit graded them.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", path, "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            commit = proc.stdout.strip()
+            if commit:
+                return commit
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return "unknown"
 
 
 class SandboxClient:
@@ -83,8 +214,13 @@ class SandboxClient:
             name,
             "-p",
             f"{self.config.host_port}:9000",
-            self.config.image_name,
         ]
+        # Optional bind-mounts (Hermes maps hermes-agent install + uv python tree).
+        for host_path, container_path in self.config.host_mounts:
+            cmd.extend(["-v", f"{host_path}:{container_path}:ro"])
+        for key, value in self.config.env:
+            cmd.extend(["-e", f"{key}={value}"])
+        cmd.append(self.config.image_name)
         try:
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
@@ -151,9 +287,35 @@ class SandboxClient:
         data = self._post("/verify", payload)
         return _result_from_payload(str(scenario.get("id", "unknown")), data)
 
-    def verify_multiturn_start(self, scenario: dict) -> dict:
-        """Initialize a sandbox-owned multi-turn scenario state."""
-        return self._post("/verify-start", {"scenario_id": scenario.get("id"), "scenario": scenario})
+    def verify_multiturn_start(
+        self,
+        scenario: dict,
+        *,
+        model_endpoint: str | None = None,
+        model_name: str | None = None,
+        model_api_key: str | None = None,
+        sampling: dict | None = None,
+    ) -> dict:
+        """Initialize a sandbox-owned multi-turn scenario state.
+
+        For Hermes (v0.7.3+), `model_endpoint` / `model_name` are required so
+        the sandbox can spawn the upstream agent-runner against the same
+        endpoint the runner is benching. For non-Hermes packs they are
+        ignored (the sandbox makes no model calls).
+        """
+        payload: dict = {
+            "scenario_id": scenario.get("id"),
+            "scenario": scenario,
+        }
+        if model_endpoint is not None:
+            payload["model_endpoint"] = model_endpoint
+        if model_name is not None:
+            payload["model_name"] = model_name
+        if model_api_key is not None:
+            payload["model_api_key"] = model_api_key
+        if sampling is not None:
+            payload["sampling"] = sampling
+        return self._post("/verify-start", payload)
 
     def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
         """Advance one multi-turn step; returns next prompt or final result."""
@@ -173,11 +335,15 @@ class SandboxClient:
     def verify_hermes_end(self, scenario_state_id: str) -> dict:
         return self.verify_multiturn_end(scenario_state_id)
 
-    def _post(self, path: str, payload: dict) -> dict:
+    def _post(self, path: str, payload: dict, *, timeout_s: float | None = None) -> dict:
+        # Per-pack default; hermes runs upstream agent loops needing 15min.
+        # Callers can override per-call (e.g., /verify-turn might be shorter
+        # than /verify-start for the same pack).
+        timeout = timeout_s if timeout_s is not None else self.config.request_timeout_s
         response = httpx.post(
             f"http://127.0.0.1:{self.config.host_port}{path}",
             json=payload,
-            timeout=60.0,
+            timeout=timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -193,15 +359,87 @@ class SandboxClient:
         self.stop()
 
 
+def _resolve_venv_python_root(host_install: str) -> tuple[str, str] | None:
+    """Resolve `<install>/venv/bin/python` to its target binary's install root.
+
+    Used to mount the venv's underlying CPython into the container at the
+    same path it lives on the host, so the venv shebang + python's hardcoded
+    prefix both resolve. Returns (host_root, host_root) — both sides identical
+    because the path must match. None if no venv-style python is detectable.
+
+    Common layouts handled:
+      - uv-managed: `~/.local/share/uv/python/cpython-3.11-...-gnu/bin/python3.11`
+        → mount root: `~/.local/share/uv/python` (covers all uv-installed pythons)
+      - system python: `/usr/bin/python3.X` → no mount needed (already in container path)
+    """
+    venv_python = Path(host_install) / "venv" / "bin" / "python"
+    try:
+        target = venv_python.resolve(strict=True)
+    except OSError:
+        return None
+    target_str = str(target)
+    # uv lays pythons under `~/.local/share/uv/python/<distribution>/bin/`. Mount
+    # the parent `python` dir so all uv-managed pythons are visible (small cost
+    # since most rigs only have one).
+    uv_marker = "/.local/share/uv/python/"
+    if uv_marker in target_str:
+        idx = target_str.index(uv_marker)
+        uv_root = target_str[: idx + len(uv_marker) - 1]  # strip trailing /
+        return (uv_root, uv_root)
+    # System python under /usr already exists in the container's image; no mount.
+    if target_str.startswith("/usr/"):
+        return None
+    # Otherwise mount the python's install root — walk up from `bin/python` 2 levels.
+    install_root = str(target.parent.parent)
+    return (install_root, install_root)
+
+
 def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
     config = SANDBOX_REGISTRY[pack_id]
     base = config.image_name.split(":", 1)[0]
+    host_mounts: tuple[tuple[str, str], ...] = config.host_mounts
+    env: tuple[tuple[str, str], ...] = config.env
+    if pack_id == "hermesagent-20":
+        # Per-scenario subprocess wall-clock cap inside the container. Default
+        # to 300s (5 min) — long enough for legitimate multi-turn agent loops
+        # but short enough that a stuck scenario doesn't burn the whole bench.
+        # Override via BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner.
+        sub_timeout = os.environ.get("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "300")
+        env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", sub_timeout),)
+        # Auto-detect a host-installed hermes-agent. We mount it at the SAME
+        # path inside the container (not /opt/hermes-agent) so the venv's
+        # shebangs and the uv-managed python's hardcoded prefix both resolve.
+        host_path = detect_hermes_agent_host_path()
+        if host_path:
+            mounts = [(host_path, host_path)]
+            # If the install has a venv with a uv-managed python, also bind-
+            # mount the uv python tree so the symlink chain resolves inside
+            # the container. System pythons (/usr/bin/python3.x) don't need
+            # this — the container's own Python image already has them.
+            python_mount = _resolve_venv_python_root(host_path)
+            if python_mount:
+                mounts.append(python_mount)
+            host_mounts = tuple(mounts)
+            commit = detect_hermes_agent_commit(host_path)
+            env_pairs = list(env) + [
+                ("BENCHLOCAL_HERMES_AGENT_COMMIT", commit),
+                ("HERMES_AGENT_PATH", host_path),
+            ]
+            # Prefer the host venv's python if it exists — it has hermes-agent's
+            # deps installed at the right versions.
+            venv_python = str(Path(host_path) / "venv" / "bin" / "python")
+            if Path(venv_python).is_file() or Path(venv_python).is_symlink():
+                env_pairs.append(("HERMES_AGENT_PYTHON", venv_python))
+            env = tuple(env_pairs)
     return SandboxConfig(
         pack_id=config.pack_id,
         image_name=f"{base}:{image_tag}",
         host_port=config.host_port,
         network_isolated=config.network_isolated,
         multi_turn=config.multi_turn,
+        host_mounts=host_mounts,
+        env=env,
+        request_timeout_s=config.request_timeout_s,
     )
 
 

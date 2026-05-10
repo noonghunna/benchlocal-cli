@@ -4,11 +4,19 @@ Each sandboxed pack (BugFind-15, CLI-40, HermesAgent-20) ships a Docker containe
 
 ## Status
 
-🟡 **v0.7.1 upstream verifier-runtime lift + runner multi-turn loop.** All 3 containers expose `/health` with `stage="v0.7.1"` and return real verifier result shapes. The upstream repos do not expose the static fixture-tree layout imagined in the v0.7 brief; the fixture source available in practice is each pack's `verification/` runtime.
+🟢 **v0.7.3 — full upstream verifier-runtime delegation across all 3 packs.**
+BugFind/CLI containers expose `/health` with `stage="v0.7.1"`; Hermes is now
+`stage="v0.7.3"` after the upstream-runtime lift. All 3 packs return real
+verifier result shapes.
 
 - BugFind delegates to upstream `verifyAnswer`, with Python/Node/Go/Rust runtime tools available in the sandbox image.
 - CLI delegates one-shot scenarios to upstream `verifyOneShotSubmission`; multi-round scenarios use `/verify-start` and `/verify-turn` for iterative bash feedback, then grade captured commands through upstream `verifyMultiRoundReplay`.
-- Hermes carries the upstream verifier runtime in the image and is driven by the runner-side multi-turn loop, while still using the local deterministic mocked-tool adapter.
+- **Hermes (v0.7.3)** delegates the entire agent loop to upstream
+  `agent-runner.py` from a host-mounted or image-baked
+  `nousresearch/hermes-agent` checkout. The runner-side `/verify-turn` loop
+  is **unused** for Hermes — `/verify-start` returns `verify-final` directly
+  after the upstream subprocess completes. This is the v0.7.1 early-out
+  contract; the runner already supports it.
 
 | Pack | Host port | Verifier endpoint(s) | Multi-turn? |
 |---|---|---|---|
@@ -114,8 +122,23 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 | `wrong_answer` | Model emitted unexpected response shape (e.g., text instead of tool call) |
 | `invalid_json` | Tool call arguments didn't parse, or fix wasn't valid Python, etc |
 | `timeout` | Hit per-scenario time limit (10s for CLI commands; 20-turn limit for HermesAgent) |
+| `agent_runner_timeout` | (Hermes v0.7.3) upstream subprocess exceeded wall-clock cap (default 900s) |
+| `agent_runner_crashed` | (Hermes v0.7.3) upstream exited nonzero or didn't write `result.json` |
+| `result_json_malformed` | (Hermes v0.7.3) upstream's `result.json` couldn't be parsed |
+| `model_endpoint_unreachable` | (Hermes v0.7.3) upstream reported network error to `model_endpoint` |
 | `server_error` | Sandbox infra issue (state id missing, fixture missing, container OOM, etc) |
 | `verifier_not_implemented` | Runner-side skip when a sandboxed pack is requested without sandbox support or a sandbox cannot start |
+
+## Hermes-specific: v0.7.3 model-endpoint passthrough
+
+Hermes `/verify-start` requires the runner to pass `model_endpoint`,
+`model_name`, optional `model_api_key` (default `"dummy"` for vLLM), and
+`sampling` (the same dict the runner uses for direct chat-completions calls).
+Upstream `agent-runner.py` makes its own LLM calls against this endpoint, so
+the bench is testing the *real* agent loop against the *real* model under test.
+
+If `model_endpoint` is missing from the request body, the sandbox returns
+`server_error` with a message asking to upgrade to v0.7.3+.
 
 ## CLI safety model
 

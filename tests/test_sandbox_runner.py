@@ -178,3 +178,291 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert run.result.tokens_completion == 8
     assert len(run.tool_calls) == 1
     assert fake.ended is False
+
+
+class FakeHermesEarlyOutSandbox:
+    """Hermes v0.7.3 sandbox: /verify-start returns verify-final directly,
+    no /verify-turn loop. Captures the start kwargs so we can assert the
+    runner passed model_endpoint/model_name/sampling through.
+    """
+
+    def __init__(self, *, passed: bool = True, failure_mode: str = "passed", detail: str = "upstream pass") -> None:
+        self.config = FakeMultiTurnConfig()
+        self.start_kwargs: dict = {}
+        self.turn_called = False
+        self.end_called = False
+        self._passed = passed
+        self._failure_mode = failure_mode
+        self._detail = detail
+
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        self.start_kwargs = dict(kwargs)
+        return {
+            "action": "verify-final",
+            "passed": self._passed,
+            "failure_mode": self._failure_mode,
+            "detail": self._detail,
+            "trace": {
+                "hermes_agent_source": "host-mount",
+                "hermes_agent_commit": "abc123",
+                "tool_events": [{"name": "memory_set"}, {"name": "memory_set"}],
+                "final_response": "Stored CockroachDB memory.",
+            },
+        }
+
+    def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
+        self.turn_called = True
+        raise AssertionError("verify_multiturn_turn must not be called for Hermes v0.7.3")
+
+    def verify_multiturn_end(self, scenario_state_id: str) -> dict:
+        self.end_called = True
+        return {"action": "verify-final", "passed": False, "failure_mode": "timeout", "detail": "", "trace": {}}
+
+
+def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint():
+    runner = Runner(
+        endpoint="http://10.0.0.5:8001",
+        model="qwen3.6-27b-autoround",
+        enable_sandboxed_packs=True,
+    )
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["hermesagent-20"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenario = {
+        "id": "HA-01",
+        "pack_id": "hermesagent-20",
+        "messages": [{"role": "user", "content": "remember CockroachDB"}],
+        "raw_scenario": {"kind": "memory_replace_contradiction"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert run.result.detail == "upstream pass"
+    assert run.turn_count == 0
+    assert fake.turn_called is False
+    assert fake.end_called is False
+    # Runner must pass endpoint/model through to upstream agent-runner
+    assert fake.start_kwargs["model_endpoint"] == "http://10.0.0.5:8001"
+    assert fake.start_kwargs["model_name"] == "qwen3.6-27b-autoround"
+    assert fake.start_kwargs["model_api_key"] == "dummy"
+    assert fake.start_kwargs["sampling"]["temperature"] == 0.0
+    assert fake.start_kwargs["sampling"]["max_tokens"] == 256
+    # verifier_trace populated from upstream payload — preserves the
+    # `trace` sub-dict the sandbox returned (one level of nesting because
+    # the runner strips top-level action/passed/failure_mode/detail keys).
+    assert run.result.verifier_trace is not None
+    nested_trace = run.result.verifier_trace.get("trace") or {}
+    assert nested_trace.get("hermes_agent_commit") == "abc123"
+    assert nested_trace.get("hermes_agent_source") == "host-mount"
+
+
+def test_runner_propagates_hermes_failure_mode_from_verify_start():
+    runner = Runner(endpoint="http://localhost:8001", model="fake", enable_sandboxed_packs=True)
+    fake = FakeHermesEarlyOutSandbox(
+        passed=False, failure_mode="agent_runner_timeout", detail="HA-09: upstream exceeded 900s"
+    )
+    runner._sandbox_clients["hermesagent-20"] = fake
+    meta = {"supports_sandboxed_only": True, "default_max_seconds": 60, "sampling_defaults": {}}
+    scenario = {
+        "id": "HA-09",
+        "pack_id": "hermesagent-20",
+        "messages": [{"role": "user", "content": "do work"}],
+        "raw_scenario": {"kind": "skill_run"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is False
+    assert run.result.failure_mode == "agent_runner_timeout"
+    assert "exceeded 900s" in run.result.detail
+
+
+def test_detect_hermes_agent_host_path_force_baked_returns_none(monkeypatch):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.setenv("HERMES_AGENT_FORCE_BAKED", "1")
+    monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    assert sandbox_module.detect_hermes_agent_host_path() is None
+
+
+def test_detect_hermes_agent_host_path_explicit_must_be_valid(monkeypatch, tmp_path):
+    from benchlocal_cli import sandbox as sandbox_module
+    import pytest
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    # Empty dir: fails the run_agent.py / hermes_state.py existence check.
+    empty = tmp_path / "stub"
+    empty.mkdir()
+    monkeypatch.setenv("HERMES_AGENT_HOST_PATH", str(empty))
+    with pytest.raises(RuntimeError, match="does not look like a hermes-agent install"):
+        sandbox_module.detect_hermes_agent_host_path()
+
+    # Valid dir: required files present → returns the resolved path.
+    valid = tmp_path / "real"
+    valid.mkdir()
+    (valid / "run_agent.py").write_text("# stub")
+    (valid / "hermes_state.py").write_text("# stub")
+    monkeypatch.setenv("HERMES_AGENT_HOST_PATH", str(valid))
+    assert sandbox_module.detect_hermes_agent_host_path() == str(valid.resolve())
+
+
+def test_detect_hermes_agent_host_path_missing_returns_none(monkeypatch, tmp_path):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    # Point Path.home() at an empty dir so auto-detect finds nothing.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr("benchlocal_cli.sandbox.Path.home", lambda: fake_home)
+    # Block the `which hermes` fallback too — on dev rigs this finds the real
+    # user install and would mask the all-empty case.
+    monkeypatch.setattr("benchlocal_cli.sandbox.shutil.which", lambda _: None)
+    # /opt/hermes-agent on the test box may exist but is unlikely to be valid;
+    # we don't fake it here — the test is about the all-empty case.
+    if not (
+        sandbox_module._is_valid_hermes_agent_install(sandbox_module.Path("/opt/hermes-agent"))
+    ):
+        assert sandbox_module.detect_hermes_agent_host_path() is None
+
+
+def test_detect_hermes_agent_host_path_falls_back_to_which_hermes(monkeypatch, tmp_path):
+    """When no candidate dir matches, follow `which hermes` through the
+    symlink and walk up to the install root. Catches non-standard install
+    layouts (custom prefixes, pipx-style locations).
+    """
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr("benchlocal_cli.sandbox.Path.home", lambda: fake_home)
+
+    # Simulate an install layout: <root>/venv/bin/hermes is a symlink
+    # target; <root> is the install root with the required files.
+    install = tmp_path / "custom-prefix" / "hermes-agent"
+    install.mkdir(parents=True)
+    (install / "run_agent.py").write_text("# stub")
+    (install / "hermes_state.py").write_text("# stub")
+    venv_bin = install / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    binary = venv_bin / "hermes"
+    binary.write_text("#!/usr/bin/env python3\nprint('hermes stub')\n")
+    binary.chmod(0o755)
+
+    if sandbox_module._is_valid_hermes_agent_install(sandbox_module.Path("/opt/hermes-agent")):
+        import pytest as _pytest
+        _pytest.skip("/opt/hermes-agent is also a valid install on this box")
+
+    monkeypatch.setattr("benchlocal_cli.sandbox.shutil.which", lambda name: str(binary) if name == "hermes" else None)
+
+    detected = sandbox_module.detect_hermes_agent_host_path()
+    assert detected == str(install.resolve())
+
+
+def test_detect_hermes_agent_host_path_picks_up_dot_hermes_layout(monkeypatch, tmp_path):
+    """The official `hermes` installer lays its source at ~/.hermes/hermes-agent.
+    Auto-detect must include this path — added 2026-05-09 after the v0.7.3 A/B
+    where the user's existing pipx-style install was missed by the original
+    {/opt, ~, ~/.local} candidate list.
+    """
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    fake_home = tmp_path / "home"
+    install = fake_home / ".hermes" / "hermes-agent"
+    install.mkdir(parents=True)
+    (install / "run_agent.py").write_text("# stub")
+    (install / "hermes_state.py").write_text("# stub")
+    monkeypatch.setattr("benchlocal_cli.sandbox.Path.home", lambda: fake_home)
+
+    # Skip if /opt/hermes-agent on the test box is also a valid install — the
+    # multi-match case is handled by a separate test path in the helper itself.
+    if sandbox_module._is_valid_hermes_agent_install(sandbox_module.Path("/opt/hermes-agent")):
+        import pytest as _pytest
+        _pytest.skip("/opt/hermes-agent is also a valid install on this box; multi-match case")
+
+    detected = sandbox_module.detect_hermes_agent_host_path()
+    assert detected == str(install.resolve())
+
+
+def test_config_for_pack_hermes_populates_bind_mounts(monkeypatch, tmp_path):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    valid = tmp_path / "hermes-agent"
+    valid.mkdir()
+    (valid / "run_agent.py").write_text("# stub")
+    (valid / "hermes_state.py").write_text("# stub")
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.setenv("HERMES_AGENT_HOST_PATH", str(valid))
+
+    config = sandbox_module.config_for_pack("hermesagent-20")
+
+    # The hermes install is bind-mounted at the SAME path inside the container
+    # (so venv shebangs resolve). No separate /opt/hermes-agent target.
+    assert config.host_mounts != ()
+    assert config.host_mounts[0][0] == str(valid.resolve())
+    assert config.host_mounts[0][1] == str(valid.resolve())  # host == container
+    # request_timeout_s preserved from registry default
+    assert config.request_timeout_s == 900.0
+    # commit env var + HERMES_AGENT_PATH injected
+    env_keys = {k for k, _ in config.env}
+    assert "BENCHLOCAL_HERMES_AGENT_COMMIT" in env_keys
+    assert "HERMES_AGENT_PATH" in env_keys
+    # No venv in this stub, so HERMES_AGENT_PYTHON not injected
+    assert "HERMES_AGENT_PYTHON" not in env_keys
+
+
+def test_config_for_pack_hermes_adds_venv_python_mount(monkeypatch, tmp_path):
+    """When the host install has a venv with a uv-managed python, both the
+    install dir AND the uv python tree are bind-mounted, and HERMES_AGENT_PYTHON
+    points at the venv's python.
+    """
+    from benchlocal_cli import sandbox as sandbox_module
+
+    install = tmp_path / "hermes-agent"
+    install.mkdir()
+    (install / "run_agent.py").write_text("# stub")
+    (install / "hermes_state.py").write_text("# stub")
+    # Simulate uv-managed python: the venv's python is a symlink chain leading
+    # to ~/.local/share/uv/python/<dist>/bin/python3.11.
+    uv_root = tmp_path / "fake_home" / ".local" / "share" / "uv" / "python"
+    uv_dist = uv_root / "cpython-3.11-linux-x86_64-gnu"
+    (uv_dist / "bin").mkdir(parents=True)
+    real_python = uv_dist / "bin" / "python3.11"
+    real_python.write_text("#!/bin/sh\nexit 0\n")
+    real_python.chmod(0o755)
+    venv_bin = install / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(real_python)
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.setenv("HERMES_AGENT_HOST_PATH", str(install))
+
+    config = sandbox_module.config_for_pack("hermesagent-20")
+
+    mounts = {host: container for host, container in config.host_mounts}
+    # Two mounts: install + uv python root, both at same path host=container
+    assert str(install.resolve()) in mounts
+    assert str(uv_root.resolve()) in mounts
+    # HERMES_AGENT_PYTHON points at the venv's python (host path)
+    env = dict(config.env)
+    assert env["HERMES_AGENT_PYTHON"] == str(install / "venv" / "bin" / "python")
+
+
+def test_config_for_pack_non_hermes_no_bind_mount():
+    from benchlocal_cli import sandbox as sandbox_module
+
+    config = sandbox_module.config_for_pack("bugfind-15")
+    assert config.host_mounts == ()
+    assert config.env == ()
+    assert config.request_timeout_s == 60.0
