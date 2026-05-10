@@ -18,7 +18,7 @@ class SandboxConfig:
     image_name: str        # e.g. "benchlocal-sandbox-bugfind:latest"
     host_port: int         # e.g. 9001
     network_isolated: bool # True for cli (untrusted exec); False for bugfind + hermes
-    multi_turn: bool       # True for hermes; False for bugfind + cli
+    multi_turn: bool       # True for cli + hermes; False for bugfind
 
 
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
@@ -35,7 +35,7 @@ SANDBOX_REGISTRY = {
         image_name="benchlocal-sandbox-cli:latest",
         host_port=9002,
         network_isolated=True,   # untrusted command exec — isolate from network
-        multi_turn=False,
+        multi_turn=True,
     ),
     "hermesagent-20": SandboxConfig(
         pack_id="hermesagent-20",
@@ -122,18 +122,27 @@ class SandboxClient:
         data = self._post("/verify", payload)
         return _result_from_payload(str(scenario.get("id", "unknown")), data)
 
-    # Multi-turn (Hermes-specific) — Codex Phase D
-    def verify_hermes_start(self, scenario: dict) -> dict:
-        """Hermes only: initialize scenario state, return first prompt + tools."""
+    def verify_multiturn_start(self, scenario: dict) -> dict:
+        """Initialize a sandbox-owned multi-turn scenario state."""
         return self._post("/verify-start", {"scenario_id": scenario.get("id"), "scenario": scenario})
 
-    def verify_hermes_turn(self, scenario_state_id: str, model_response: dict) -> dict:
-        """Hermes only: simulate one tool turn, return next prompt OR final pass/fail."""
+    def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
+        """Advance one multi-turn step; returns next prompt or final result."""
         return self._post("/verify-turn", {"scenario_state_id": scenario_state_id, "model_response": model_response})
 
-    def verify_hermes_end(self, scenario_state_id: str) -> dict:
-        """Hermes only: explicit 'model gave up' or 'turn limit reached'."""
+    def verify_multiturn_end(self, scenario_state_id: str) -> dict:
+        """Explicit 'model gave up' or turn-limit completion."""
         return self._post("/verify-end", {"scenario_state_id": scenario_state_id})
+
+    # Back-compat aliases kept for existing Hermes tests/callers.
+    def verify_hermes_start(self, scenario: dict) -> dict:
+        return self.verify_multiturn_start(scenario)
+
+    def verify_hermes_turn(self, scenario_state_id: str, model_response: dict) -> dict:
+        return self.verify_multiturn_turn(scenario_state_id, model_response)
+
+    def verify_hermes_end(self, scenario_state_id: str) -> dict:
+        return self.verify_multiturn_end(scenario_state_id)
 
     def _post(self, path: str, payload: dict) -> dict:
         response = httpx.post(

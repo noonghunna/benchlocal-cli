@@ -4,16 +4,16 @@ Each sandboxed pack (BugFind-15, CLI-40, HermesAgent-20) ships a Docker containe
 
 ## Status
 
-🟡 **v0.7 upstream verifier-runtime lift.** All 3 containers expose `/health` with `stage="v0.7"` and return real verifier result shapes. The upstream repos do not expose the static fixture-tree layout imagined in the v0.7 brief; the fixture source available in practice is each pack's `verification/` runtime.
+🟡 **v0.7.1 upstream verifier-runtime lift + runner multi-turn loop.** All 3 containers expose `/health` with `stage="v0.7.1"` and return real verifier result shapes. The upstream repos do not expose the static fixture-tree layout imagined in the v0.7 brief; the fixture source available in practice is each pack's `verification/` runtime.
 
 - BugFind delegates to upstream `verifyAnswer`, with Python/Node/Go/Rust runtime tools available in the sandbox image.
-- CLI delegates one-shot scenarios to upstream `verifyOneShotSubmission` and command-block replays to `verifyMultiRoundReplay`.
-- Hermes carries the upstream verifier runtime in the image, but full parity still requires runner-side multi-turn delegation because upstream Hermes owns the complete agent/model loop.
+- CLI delegates one-shot scenarios to upstream `verifyOneShotSubmission`; multi-round scenarios use `/verify-start` and `/verify-turn` for iterative bash feedback, then grade captured commands through upstream `verifyMultiRoundReplay`.
+- Hermes carries the upstream verifier runtime in the image and is driven by the runner-side multi-turn loop, while still using the local deterministic mocked-tool adapter.
 
 | Pack | Host port | Verifier endpoint(s) | Multi-turn? |
 |---|---|---|---|
 | BugFind-15 | 9001 | POST /verify | no |
-| CLI-40 | 9002 | POST /verify | no |
+| CLI-40 | 9002 | POST /verify and POST /verify-{start,turn,end} | mixed |
 | HermesAgent-20 | 9003 | POST /verify-{start,turn,end} | yes |
 
 ## Build + smoke-test
@@ -28,7 +28,7 @@ bash tools/test-sandboxes.sh     # confirms /health responds on all 3
 ```http
 GET /health
 → 200 OK
-  {"status": "ok", "pack": "<pack-id>", "stage": "v0.7"}
+  {"status": "ok", "pack": "<pack-id>", "stage": "v0.7.1"}
 
 POST /verify
 Content-Type: application/json
@@ -49,9 +49,9 @@ Content-Type: application/json
 }
 ```
 
-## Multi-turn protocol (HermesAgent)
+## Multi-turn protocol (CLI multi-round, HermesAgent)
 
-The runner orchestrates the agent loop; sandbox tracks per-scenario state.
+The runner orchestrates the agent loop; sandbox tracks per-scenario state. CLI-40 uses this only for scenarios whose `raw_scenario.kind` is `multiround`; one-shot CLI scenarios stay on `/verify`.
 
 ```http
 POST /verify-start
@@ -119,13 +119,14 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 
 ## CLI safety model
 
-The v0.7 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates and the upstream verifier runtime:
+The v0.7.1 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates and the upstream verifier runtime:
 
 - container runs as non-root `verifier`
 - simple commands are parsed with `shlex.split`
 - compound shell syntax is routed through `bash -c` after raw-string safety checks
 - network and destructive executables/tokens are rejected before execution
-- each scenario gets a fresh temporary workspace
+- one-shot scenarios run in the upstream seeded workspace through `verifyOneShotSubmission`
+- multi-round scenarios receive iterative bash feedback and are finally graded by replaying captured commands through `verifyMultiRoundReplay`
 - timeout is capped at 10s
 - stdout/stderr are truncated to 64 KiB
 
@@ -150,10 +151,10 @@ finally:
 - `start()` polls `/health` for up to 30s after `docker run`
 - `stop()` is idempotent (safe even if container died)
 - SIGINT in the runner triggers `stop()` for all active SandboxClients before exit
-- For HermesAgent: `verify_hermes_start` / `verify_hermes_turn` / `verify_hermes_end` instead of `verify`
+- For multi-turn packs: `verify_multiturn_start` / `verify_multiturn_turn` / `verify_multiturn_end` instead of `verify`; the old Hermes-specific method names remain aliases.
 
 ## Why this protocol
 
-Same shape across all 3 packs (deterministic `passed/failure_mode/detail/trace` response) means the Runner's dispatch logic stays uniform. The only difference is single-turn vs multi-turn (bugfind/cli vs hermes), which the runner detects via `SandboxConfig.multi_turn` and dispatches accordingly.
+Same shape across all 3 packs (deterministic `passed/failure_mode/detail/trace` response) means the Runner's dispatch logic stays uniform. The only difference is single-turn vs multi-turn, which the runner detects from `SandboxConfig.multi_turn` plus scenario metadata.
 
 The HTTP-server pattern (vs subprocess) means containers stay warm across all scenarios in a pack run — no startup cost per scenario. For HermesAgent's 20 scenarios with multi-turn loops, this matters significantly.

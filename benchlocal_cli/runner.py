@@ -7,6 +7,7 @@ import json
 import signal
 import statistics
 import time
+from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timezone
 from importlib import resources
@@ -120,6 +121,19 @@ def build_request(
     if scenario.get("tools"):
         request["tools"] = scenario["tools"]
     return request, sampling
+
+
+def build_chat_request(
+    messages: list[dict],
+    sampling: dict,
+    model: str,
+    *,
+    tools: list[dict] | None = None,
+) -> dict:
+    request = {"model": model, "messages": messages, **sampling}
+    if tools:
+        request["tools"] = tools
+    return request
 
 
 def _chat_url(endpoint: str) -> str:
@@ -325,6 +339,24 @@ class Runner:
         status_code: int | None = None
         raw_response: dict | None = None
 
+        sandbox_client = self._sandbox_clients.get(scenario.get("pack_id"))
+        if (
+            meta.get("supports_sandboxed_only")
+            and sandbox_client is not None
+            and getattr(getattr(sandbox_client, "config", None), "multi_turn", False)
+            and self._should_use_multiturn(scenario)
+            and scenario["id"] not in self.mock_responses
+        ):
+            return self._run_multiturn_scenario(
+                meta,
+                scenario,
+                sandbox_client,
+                request,
+                sampling,
+                repeat_index,
+                timeout,
+            )
+
         if scenario["id"] in self.mock_responses:
             raw_response = self.mock_responses[scenario["id"]]
             latency = 0.0
@@ -383,6 +415,218 @@ class Runner:
         )
 
     @staticmethod
+    def _should_use_multiturn(scenario: dict) -> bool:
+        pack_id = scenario.get("pack_id")
+        if pack_id == "hermesagent-20":
+            return True
+        if pack_id == "cli-40":
+            return (scenario.get("raw_scenario") or {}).get("kind") == "multiround"
+        return False
+
+    def _max_turns_for(self, scenario: dict) -> int:
+        explicit = scenario.get("max_turns") or (scenario.get("raw_scenario") or {}).get("max_turns")
+        if isinstance(explicit, int) and explicit > 0:
+            return explicit
+        if scenario.get("pack_id") == "hermesagent-20":
+            return 20
+        return 15
+
+    def _post_chat(self, request: dict, timeout: float) -> tuple[int, dict]:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(_chat_url(self.endpoint), json=request)
+        try:
+            raw_response = response.json()
+        except ValueError:
+            raw_response = {"text": response.text}
+        return response.status_code, raw_response
+
+    @staticmethod
+    def _message_from_response(raw_response: dict) -> dict:
+        choices = raw_response.get("choices") if isinstance(raw_response, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict):
+                return dict(message)
+        return {"role": "assistant", "content": ""}
+
+    @staticmethod
+    def _completion_tokens(raw_response: dict | None) -> int | None:
+        usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
+        if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
+            return usage["completion_tokens"]
+        return None
+
+    @staticmethod
+    def _tool_calls_from_message(message: dict) -> list[dict]:
+        calls = message.get("tool_calls")
+        return calls if isinstance(calls, list) else []
+
+    def _run_multiturn_scenario(
+        self,
+        meta: dict,
+        scenario: dict,
+        sandbox_client: SandboxClient,
+        initial_request: dict,
+        sampling: dict,
+        repeat_index: int,
+        timeout: float,
+    ) -> ScenarioRun:
+        started = time.perf_counter()
+        status_code: int | None = None
+        raw_responses: list[dict] = []
+        assistant_messages: list[dict] = []
+        tool_calls: list[dict] = []
+        tokens_total = 0
+        state_id: str | None = None
+        ended = False
+
+        try:
+            start_payload = sandbox_client.verify_multiturn_start(scenario)
+            if start_payload.get("action") == "verify-final":
+                latency = time.perf_counter() - started
+                result = ScenarioResult(
+                    scenario_id=scenario["id"],
+                    passed=bool(start_payload.get("passed")),
+                    failure_mode=start_payload.get("failure_mode", "verifier_fail"),
+                    detail=str(start_payload.get("detail", "")),
+                    latency_seconds=latency,
+                )
+                return self._scenario_run(
+                    scenario,
+                    {"multi_turn": True, "responses": [], "final_verifier_payload": start_payload},
+                    initial_request,
+                    sampling,
+                    None,
+                    result,
+                    repeat_index,
+                    response_field_used="multi_turn",
+                    turn_count=0,
+                )
+            state_id = str(start_payload.get("scenario_state_id") or "")
+            if not state_id:
+                latency = time.perf_counter() - started
+                result = ScenarioResult(
+                    scenario["id"],
+                    False,
+                    "server_error",
+                    "multi-turn sandbox did not return scenario_state_id",
+                    latency_seconds=latency,
+                )
+                return self._scenario_run(
+                    scenario,
+                    {"multi_turn": True, "responses": [], "final_verifier_payload": start_payload},
+                    initial_request,
+                    sampling,
+                    None,
+                    result,
+                    repeat_index,
+                    response_field_used="multi_turn",
+                    turn_count=0,
+                )
+            history = list(start_payload.get("prompt") or scenario.get("messages", []))
+            tools = start_payload.get("tools") if isinstance(start_payload.get("tools"), list) else []
+            max_turns = self._max_turns_for(scenario)
+            result: ScenarioResult | None = None
+            final_payload: dict | None = None
+
+            for _turn in range(1, max_turns + 1):
+                request = build_chat_request(history, sampling, self.model, tools=tools)
+                try:
+                    status_code, raw_response = self._post_chat(request, timeout)
+                except httpx.TimeoutException:
+                    result = ScenarioResult(scenario["id"], False, "timeout", f"timed out after {timeout}s")
+                    break
+                except httpx.HTTPError as exc:
+                    result = ScenarioResult(scenario["id"], False, "http_error", str(exc))
+                    break
+
+                raw_responses.append(raw_response)
+                if status_code >= 500:
+                    result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}")
+                    break
+                if status_code >= 400:
+                    result = ScenarioResult(scenario["id"], False, "http_error", f"HTTP {status_code}")
+                    break
+
+                token_count = self._completion_tokens(raw_response)
+                if token_count is not None:
+                    tokens_total += token_count
+
+                assistant_message = self._message_from_response(raw_response)
+                assistant_messages.append(assistant_message)
+                history.append(assistant_message)
+                tool_calls.extend(self._tool_calls_from_message(assistant_message))
+
+                turn_payload = sandbox_client.verify_multiturn_turn(state_id, raw_response)
+                action = turn_payload.get("action")
+                if action == "verify-final":
+                    final_payload = turn_payload
+                    ended = True
+                    result = ScenarioResult(
+                        scenario_id=scenario["id"],
+                        passed=bool(turn_payload.get("passed")),
+                        failure_mode=turn_payload.get("failure_mode", "verifier_fail"),
+                        detail=str(turn_payload.get("detail", "")),
+                    )
+                    break
+                if action != "next-prompt":
+                    result = ScenarioResult(
+                        scenario["id"],
+                        False,
+                        "server_error",
+                        f"unexpected sandbox action: {action}",
+                    )
+                    break
+                next_prompt = turn_payload.get("prompt")
+                if isinstance(next_prompt, list):
+                    history.extend(next_prompt)
+                next_tools = turn_payload.get("tools")
+                if isinstance(next_tools, list):
+                    tools = next_tools
+            else:
+                end_payload = sandbox_client.verify_multiturn_end(state_id)
+                final_payload = end_payload
+                ended = True
+                result = ScenarioResult(
+                    scenario_id=scenario["id"],
+                    passed=bool(end_payload.get("passed")),
+                    failure_mode=end_payload.get("failure_mode", "timeout"),
+                    detail=str(end_payload.get("detail", "")),
+                )
+
+            if result is None:
+                result = ScenarioResult(scenario["id"], False, "server_error", "multi-turn loop exited without result")
+        finally:
+            if state_id and not ended:
+                with suppress(Exception):
+                    sandbox_client.verify_multiturn_end(state_id)
+
+        latency = time.perf_counter() - started
+        result = replace(
+            result,
+            latency_seconds=latency,
+            tokens_completion=tokens_total if tokens_total else None,
+        )
+        raw_response: dict = {
+            "multi_turn": True,
+            "responses": raw_responses,
+            "final_verifier_payload": final_payload,
+        }
+        return self._scenario_run(
+            scenario,
+            raw_response,
+            initial_request,
+            sampling,
+            status_code,
+            result,
+            repeat_index,
+            response_field_used="multi_turn",
+            turn_count=len(assistant_messages),
+            assistant_messages=assistant_messages,
+            tool_calls=tool_calls,
+        )
+
+    @staticmethod
     def _scenario_run(
         scenario: dict,
         raw_response: dict | None,
@@ -392,6 +636,9 @@ class Runner:
         result: ScenarioResult,
         repeat_index: int,
         response_field_used: str | None = None,
+        turn_count: int | None = None,
+        assistant_messages: list[dict] | None = None,
+        tool_calls: list[dict] | None = None,
     ) -> ScenarioRun:
         return ScenarioRun(
             id=scenario["id"],
@@ -403,4 +650,7 @@ class Runner:
             status_code=status_code,
             repeat_index=repeat_index,
             response_field_used=response_field_used,
+            turn_count=turn_count,
+            assistant_messages=assistant_messages or [],
+            tool_calls=tool_calls or [],
         )

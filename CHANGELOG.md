@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+- Add runner-side multi-turn sandbox orchestration for CLI-40 multi-round scenarios and HermesAgent-20.
+- Generalize sandbox client multi-turn methods while keeping Hermes aliases for compatibility.
+- Add CLI-40 `/verify-start`, `/verify-turn`, and `/verify-end` endpoints with iterative bash feedback and upstream replay grading.
+- Persist multi-turn diagnostics in scenario results: turn count, assistant messages, and tool calls.
+- Mark sandbox health endpoints as `stage="v0.7.1"`.
+
 ## 0.7.0
 
 - Vendor upstream `verification/` runtimes for BugFind-15, CLI-40, and HermesAgent-20.

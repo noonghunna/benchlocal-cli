@@ -198,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "bugfind-15", "stage": "v0.7"})
+            self._send({"status": "ok", "pack": "bugfind-15", "stage": "v0.7.1"})
             return
         self.send_response(404)
         self.end_headers()

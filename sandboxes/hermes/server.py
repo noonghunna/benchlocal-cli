@@ -1,10 +1,10 @@
-"""HermesAgent-20 verifier server — v0.7 state/trace verifier.
+"""HermesAgent-20 verifier server — v0.7.1 state/trace verifier.
 
 The upstream verifier runtime is vendored in v0.7, but its public entrypoint
 drives full model runs against a pinned Hermes checkout. The local benchlocal
 runner still owns model calls and sends `/verify` after one assistant response,
 so this server preserves the v0.6 stateful mocked-tool protocol while reporting
-v0.7 stage. Full upstream Hermes runtime integration requires runner-side
+v0.7.1 stage. Full upstream Hermes runtime integration requires runner-side
 multi-turn delegation.
 """
 
@@ -208,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "hermesagent-20", "stage": "v0.7"})
+            self._send({"status": "ok", "pack": "hermesagent-20", "stage": "v0.7.1", "multi_turn": True})
             return
         self.send_response(404)
         self.end_headers()
@@ -255,11 +255,22 @@ class Handler(BaseHTTPRequestHandler):
                 response = req.get("model_response", {})
                 calls = _tool_calls(response)
                 if calls:
-                    tool_results = [_simulate_tool(state, call) for call in calls]
+                    tool_messages = []
+                    for call in calls:
+                        result = _simulate_tool(state, call)
+                        name = _tool_name(call)
+                        tool_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": str(call.get("id") or f"call_{state['turn_count']}_{len(tool_messages) + 1}"),
+                                "name": name,
+                                "content": json.dumps(result),
+                            }
+                        )
                     result = {
                         "action": "next-prompt",
                         "scenario_state_id": state_id,
-                        "prompt": state["messages"] + [{"role": "tool", "content": json.dumps(tool_results)}],
+                        "prompt": tool_messages,
                         "tools": TOOLS,
                         "turn_count": state["turn_count"],
                     }

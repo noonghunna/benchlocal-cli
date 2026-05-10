@@ -49,19 +49,19 @@ v0.7 candidate closes the available part of this gap by syncing upstream `verifi
 
 **Acceptance gate still pending** (gates public release): mock validation and real-model A/B on Qwen + Gemma must show meaningful discrimination on each sandboxed pack (>40% on cli-40, stable in non-trivial range on bugfind/hermes).
 
-## After v0.7 — v0.7.x follow-ups
+## v0.7.1 — runner-side multi-turn delegation (candidate, 2026-05-10)
 
-### v0.7.1 — runner-side multi-turn delegation ⭐ unblocks public flip
-
-**Brief:** [`CODEX_BRIEF_V7_1.md`](CODEX_BRIEF_V7_1.md) (~7-11 hr Codex chunk).
+**Brief:** [`CODEX_BRIEF_V7_1.md`](CODEX_BRIEF_V7_1.md).
 
 v0.7 candidate exposed two pack classes stuck at 0% because the runner only sends one chat completion per scenario:
 - cli-40 multi-round (15/40 scenarios) — runner doesn't loop on tool calls
 - hermesagent-20 (20 scenarios) — same gap, falls back to v0.6 single-turn shape-check
 
-The HTTP protocol for multi-turn is already defined (`/verify-start` / `/verify-turn` / `/verify-end`); the Hermes sandbox already implements it. v0.7.1 wires the runner to actually loop on `next-prompt` responses + adds the same endpoints to the CLI sandbox. After v0.7.1: public flip is unblocked.
+The HTTP protocol for multi-turn is now wired through the runner. CLI-40 multi-round scenarios route through `/verify-start` / `/verify-turn` / `/verify-end`, and HermesAgent-20 uses the same runner loop. Public flip still needs real-model A/B acceptance on Qwen + Gemma.
 
-### v0.7.x — ReasonMath + migration docs
+## After v0.7.1 — v0.7.x follow-ups
+
+### ReasonMath + migration docs
 
 - **ReasonMath value-centric verifier.** In-process scoring path (separate from sandbox layer). Implements value-match assertion type per [stevibe/ReasonMath-15#2](https://github.com/stevibe/ReasonMath-15/issues/2). Path depends on upstream response:
   - If stevibe accepts the proposal → align with upstream

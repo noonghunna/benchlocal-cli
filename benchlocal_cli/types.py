@@ -46,6 +46,9 @@ class ScenarioRun:
     status_code: int | None
     repeat_index: int = 1
     response_field_used: str | None = None
+    turn_count: int | None = None
+    assistant_messages: list[dict] = field(default_factory=list)
+    tool_calls: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)

@@ -1,11 +1,11 @@
-"""CLI-40 verifier server — v0.7 upstream fixture-runtime adapter.
+"""CLI-40 verifier server — v0.7.1 upstream fixture-runtime adapter.
 
 The v0.7 image bakes upstream `verification/` into `/app/verification`. For
 normal one-shot scenarios this server delegates to `verifyOneShotSubmission()`,
 which programmatically seeds the workspace and grades the filesystem/output
-state. Multi-round scenarios are replayed through `verifyMultiRoundReplay()`
-when the final response contains shell commands; otherwise they fail honestly
-because the current benchlocal runner does not orchestrate CLI tool turns.
+state. Multi-round scenarios use `/verify-start` + `/verify-turn` to provide
+iterative bash feedback; final grading still delegates to upstream
+`verifyMultiRoundReplay()` using the captured command trace.
 """
 
 from __future__ import annotations
@@ -18,11 +18,29 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 PORT = 9000
 MAX_OUTPUT = 64 * 1024
+WORKSPACE = Path("/workspace")
+STATES: dict[str, dict] = {}
+BASH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Execute a command in a persistent bash session inside the scenario's Linux container.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "default": 30},
+            },
+            "required": ["command"],
+        },
+    },
+}
 FORBIDDEN = {
     "rm",
     "shutdown",
@@ -48,6 +66,34 @@ def _response_text(response: dict) -> str:
             if isinstance(value, str) and value.strip():
                 return value
     return ""
+
+
+def _tool_calls(response: dict) -> list[dict]:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return []
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    calls = message.get("tool_calls")
+    return calls if isinstance(calls, list) else []
+
+
+def _tool_name(call: dict) -> str:
+    fn = call.get("function", {}) if isinstance(call, dict) else {}
+    return str(fn.get("name", ""))
+
+
+def _tool_args(call: dict) -> dict:
+    fn = call.get("function", {}) if isinstance(call, dict) else {}
+    raw = fn.get("arguments", {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _extract_command(text: str) -> str:
@@ -203,6 +249,98 @@ def _expected_compare(expected: dict, run: dict) -> tuple[bool, str]:
     return True, "explicit expectations matched"
 
 
+def _run_workspace_command(command: str, timeout_seconds: int | float = 30) -> dict:
+    safe, reason = _is_safe_shell(command)
+    if not safe:
+        return {"stdout": "", "stderr": reason, "exit_code": 126, "timed_out": False}
+    timeout = max(1.0, min(float(timeout_seconds or 30), 60.0))
+    try:
+        proc = subprocess.run(
+            ["bash", "-lc", command],
+            cwd=WORKSPACE,
+            shell=False,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C", "HOME": str(WORKSPACE)},
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "stdout": (exc.stdout or "")[:MAX_OUTPUT],
+            "stderr": (exc.stderr or "")[:MAX_OUTPUT],
+            "exit_code": 124,
+            "timed_out": True,
+        }
+    return {
+        "stdout": proc.stdout[:MAX_OUTPUT],
+        "stderr": proc.stderr[:MAX_OUTPUT],
+        "exit_code": proc.returncode,
+        "timed_out": False,
+    }
+
+
+def _run_upstream_js(js: str, args: list[str], timeout: float = 30) -> dict:
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", js, *args],
+        cwd="/app",
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if not proc.stdout.strip():
+        return {"status": "error", "summary": f"upstream verifier produced no JSON: {proc.stderr[-2000:]}"}
+    return json.loads(proc.stdout.splitlines()[-1])
+
+
+def _payload_to_result(scenario_id: str, payload: dict, stderr: str = "") -> dict:
+    if payload.get("status") == "error":
+        return _fail(scenario_id, "server_error", str(payload.get("summary", "upstream verifier error")), {"upstream": payload, "stderr": stderr[-2000:]})
+    passed = payload.get("status") == "pass"
+    return {
+        "passed": passed,
+        "failure_mode": "passed" if passed else "verifier_fail",
+        "detail": f"{scenario_id}: {payload.get('summary', 'upstream verifier result')}",
+        "trace": {"mode": "upstream-runtime", "upstream": payload, "stderr": stderr[-2000:]},
+    }
+
+
+def _seed_multiround_workspace(scenario_id: str) -> dict:
+    # Upstream createContext()+seedScenario() is private. Calling replay with
+    # no commands initializes /workspace through the upstream runtime; final
+    # grading later replays the captured command trace from a clean seed.
+    return _run_upstream_js(
+        """
+          import('./verification/core.mjs').then(async (m) => {
+            const result = await m.verifyMultiRoundReplay(process.argv[1], []);
+            console.log(JSON.stringify(result));
+          }).catch((error) => {
+            console.log(JSON.stringify({status: 'error', summary: String(error?.stack || error)}));
+            process.exitCode = 2;
+          });
+        """,
+        [scenario_id],
+        timeout=30,
+    )
+
+
+def _verify_multiround_commands(scenario_id: str, commands: list[str]) -> dict:
+    payload = _run_upstream_js(
+        """
+          import('./verification/core.mjs').then(async (m) => {
+            const result = await m.verifyMultiRoundReplay(process.argv[1], JSON.parse(process.argv[2]));
+            console.log(JSON.stringify(result));
+          }).catch((error) => {
+            console.log(JSON.stringify({status: 'error', summary: String(error?.stack || error)}));
+            process.exitCode = 2;
+          });
+        """,
+        [scenario_id, json.dumps(commands)],
+        timeout=45,
+    )
+    return _payload_to_result(scenario_id, payload)
+
+
 def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
     text = _response_text(response)
     if not text.strip():
@@ -257,6 +395,94 @@ def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
             "detail": detail,
         },
     )
+
+
+def _multiturn_start(scenario_id: str, scenario: dict) -> dict:
+    raw = scenario.get("raw_scenario") or {}
+    if raw.get("kind") != "multiround":
+        return {"action": "verify-final", **_fail(scenario_id, "wrong_answer", "CLI multi-turn endpoint requires a multi-round scenario")}
+    try:
+        seed_payload = _seed_multiround_workspace(scenario_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"action": "verify-final", **_fail(scenario_id, "server_error", f"workspace seed failed: {exc}")}
+    if seed_payload.get("status") == "error":
+        return {"action": "verify-final", **_fail(scenario_id, "server_error", str(seed_payload.get("summary", "workspace seed failed")))}
+    state_id = str(uuid.uuid4())
+    STATES[state_id] = {
+        "scenario_id": scenario_id,
+        "scenario": scenario,
+        "commands": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "assistant_messages": [],
+        "turn_count": 0,
+    }
+    return {
+        "action": "next-prompt",
+        "scenario_state_id": state_id,
+        "prompt": scenario.get("messages", []),
+        "tools": [BASH_TOOL],
+        "turn_count": 0,
+    }
+
+
+def _multiturn_turn(state_id: str, response: dict) -> dict:
+    state = STATES.get(state_id)
+    if state is None:
+        return {"action": "verify-final", "passed": False, "failure_mode": "server_error", "detail": "unknown scenario_state_id", "trace": {}}
+    state["turn_count"] += 1
+    text = _response_text(response)
+    state["assistant_messages"].append(text)
+    calls = _tool_calls(response)
+    if not calls:
+        result = _verify_multiround_commands(state["scenario_id"], state["commands"])
+        result["action"] = "verify-final"
+        result.setdefault("trace", {}).update(
+            {
+                "turn_count": state["turn_count"],
+                "commands": state["commands"],
+                "tool_results": state["tool_results"],
+                "final_answer": text,
+            }
+        )
+        STATES.pop(state_id, None)
+        return result
+
+    prompt: list[dict] = []
+    for call in calls:
+        call_id = str(call.get("id") or f"call_{state['turn_count']}_{len(state['tool_calls']) + 1}")
+        name = _tool_name(call)
+        if name != "bash":
+            result = {"stdout": "", "stderr": f"unknown tool: {name}", "exit_code": 127, "timed_out": False}
+            command = ""
+        else:
+            args = _tool_args(call)
+            command = str(args.get("command", ""))
+            result = _run_workspace_command(command, args.get("timeout_seconds", 30))
+            state["commands"].append(command)
+        state["tool_calls"].append(call)
+        state["tool_results"].append({"callId": call_id, "name": name, "result": result})
+        prompt.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": json.dumps(result)})
+    return {
+        "action": "next-prompt",
+        "scenario_state_id": state_id,
+        "prompt": prompt,
+        "tools": [BASH_TOOL],
+        "turn_count": state["turn_count"],
+    }
+
+
+def _multiturn_end(state_id: str) -> dict:
+    state = STATES.pop(state_id, None)
+    if state is None:
+        return {"action": "verify-final", "passed": False, "failure_mode": "server_error", "detail": "unknown scenario_state_id", "trace": {}}
+    result = _verify_multiround_commands(state["scenario_id"], state["commands"])
+    result["action"] = "verify-final"
+    if not result.get("passed"):
+        result["failure_mode"] = "timeout"
+        result["detail"] = f"{state['scenario_id']}: agent loop ended before success"
+    result.setdefault("trace", {}).update({"turn_count": state["turn_count"], "commands": state["commands"], "tool_results": state["tool_results"]})
+    return result
 
 
 def _pass(scenario_id: str, trace: dict) -> dict:
@@ -320,15 +546,7 @@ def _verify_with_upstream_runtime(scenario_id: str, scenario: dict, answer: str)
         payload = json.loads(proc.stdout.splitlines()[-1])
     except json.JSONDecodeError:
         return _fail(scenario_id, "server_error", "upstream verifier JSON parse failed", {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]})
-    if payload.get("status") == "error":
-        return _fail(scenario_id, "server_error", str(payload.get("summary", "upstream verifier error")), {"upstream": payload, "stderr": proc.stderr[-2000:]})
-    passed = payload.get("status") == "pass"
-    return {
-        "passed": passed,
-        "failure_mode": "passed" if passed else "verifier_fail",
-        "detail": f"{scenario_id}: {payload.get('summary', 'upstream verifier result')}",
-        "trace": {"mode": "upstream-runtime", "upstream": payload, "stderr": proc.stderr[-2000:]},
-    }
+    return _payload_to_result(scenario_id, payload, proc.stderr)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -337,13 +555,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.7"})
+            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.7.1", "multi_turn": True})
             return
         self.send_response(404)
         self.end_headers()
 
     def do_POST(self) -> None:
-        if self.path != "/verify":
+        if self.path not in ("/verify", "/verify-start", "/verify-turn", "/verify-end"):
             self.send_response(404)
             self.end_headers()
             return
@@ -356,7 +574,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         scenario_id = req.get("scenario_id", "?")
         try:
-            result = _verify(scenario_id, req.get("scenario", {}), req.get("response", {}))
+            if self.path == "/verify":
+                result = _verify(scenario_id, req.get("scenario", {}), req.get("response", {}))
+            elif self.path == "/verify-start":
+                scenario = req.get("scenario", {})
+                result = _multiturn_start(req.get("scenario_id") or scenario.get("id", "?"), scenario)
+            elif self.path == "/verify-turn":
+                result = _multiturn_turn(str(req.get("scenario_state_id", "")), req.get("model_response", {}))
+            else:
+                result = _multiturn_end(str(req.get("scenario_state_id", "")))
         except Exception as exc:  # noqa: BLE001
             import traceback
             tb = traceback.format_exc()
