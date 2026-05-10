@@ -27,10 +27,22 @@ from tools.terminal_tool import set_approval_callback
 
 **Detection priority order** (Phase A's first job is wiring this):
 
-1. **`HERMES_AGENT_HOST_PATH` env var** (user-set) → bind-mount into sandbox container at `/opt/hermes-agent`
-2. **Common host paths** — auto-detect at runner startup. Check `/opt/hermes-agent`, `~/hermes-agent`, `~/.local/hermes-agent`. If exactly one is found, use it; if multiple are found, error and ask user to set `HERMES_AGENT_HOST_PATH` explicitly.
-3. **Image-baked fallback** — if no host install found AND `HERMES_AGENT_BAKED_INSTALL=1` env var is set, the Dockerfile cloned a copy at build time → use the baked version
-4. **Fail loud** — if none of the above, return clear error from `/health` endpoint and during `/verify-start`. Don't silently fall back to v0.6 keyword-match.
+1. **`HERMES_AGENT_FORCE_BAKED=1`** (test override) → skip host detection entirely, use image-baked install. This is the **regression-test flag** — lets us validate the baked-path setup even on dev rigs that have a local install. CI / `tools/test-sandboxes.sh` should run with this set so both paths get exercised.
+2. **`HERMES_AGENT_HOST_PATH` env var** (user-set explicit) → bind-mount into sandbox container at `/opt/hermes-agent`
+3. **Common host paths** — auto-detect at runner startup. Check `/opt/hermes-agent`, `~/hermes-agent`, `~/.local/hermes-agent`. If exactly one is found, use it; if multiple are found, error and ask user to set `HERMES_AGENT_HOST_PATH` explicitly.
+4. **Image-baked fallback** — if no host install found, fall through to the image-baked clone (Phase B's bake step must have run). Same source as #1, but here we got there via auto-fallback rather than explicit override.
+5. **Fail loud** — if no host install found AND no baked clone exists in the image, return clear error from `/health` endpoint and during `/verify-start`. Don't silently fall back to v0.6 keyword-match.
+
+**Why fall #4 is automatic, not opt-in**: image-baked is a real working path — if we built it, it should be used when there's no host install. The previous "opt-in to baked via env var" framing was wrong because it created a hidden no-op state. Now the only way to get an empty hermes-agent is to disable bake at build time AND not have a host install.
+
+**Test matrix that v0.7.3 should support out of the box:**
+
+| Configuration | Test |
+|---|---|
+| Host has hermes-agent + image baked | Default detection picks host. `HERMES_AGENT_FORCE_BAKED=1` flips to baked. Both should produce same scores on same scenarios. |
+| Host has hermes-agent, image NOT baked | Default uses host. `HERMES_AGENT_FORCE_BAKED=1` → fail-loud (baked unavailable). |
+| Host has nothing, image baked | Default falls through to baked. |
+| Host has nothing, image NOT baked | /health reports missing-hermes-agent + clear set-HOST_PATH-or-rebuild guidance. |
 
 ## Architecture — the integration shape
 
@@ -90,19 +102,25 @@ Files to touch:
 
 **Fail-loud policy**: if no hermes-agent path is mountable AND `HERMES_AGENT_BAKED_INSTALL=1` is unset (default), the hermes sandbox `/health` should report `status: "missing-hermes-agent"` and `/verify-start` should return a clear error. Don't silently fall back to v0.6 keyword-match — that hides whether v0.7.3 is actually engaged.
 
-### Phase B — Optional: bake a fallback clone into the sandbox image (~1-2 hr, opt-in)
+### Phase B — Bake a fallback clone into the sandbox image (~1-2 hr)
+
+We need both paths working so they can be cross-validated. Phase B builds the baked-clone path; Phase A's `HERMES_AGENT_FORCE_BAKED=1` flag exercises it.
 
 Files to touch:
 - `sandboxes/hermes/Dockerfile`:
-  - Install Python deps the upstream agent needs (openai-python, sqlite3 likely already present, anyio, httpx, etc.) — these install regardless of bake choice
-  - **Conditional clone**: behind a build arg `BAKE_HERMES_AGENT=1`, clone upstream Hermes agent repo into `/opt/hermes-agent`. Off by default to keep image size small for users who bind-mount.
+  - Install Python deps the upstream agent needs (openai-python, anyio, httpx, etc.) — these install unconditionally
+  - **Build-arg-gated clone**: `ARG BAKE_HERMES_AGENT=1` (default ON). When set, `git clone` upstream into `/opt/hermes-agent`. User can build with `--build-arg BAKE_HERMES_AGENT=0` for smaller bind-mount-only images.
   - Set `HERMES_HOME` to a writable verifier-owned directory
   - Pre-create `/tmp/hermes-runs/` with verifier ownership for per-scenario job dirs
-- `tools/build-sandboxes.sh` — pass `--build-arg BAKE_HERMES_AGENT=$BAKE_HERMES_AGENT` and document the env var
+- `tools/build-sandboxes.sh` — pass `--build-arg BAKE_HERMES_AGENT=${BAKE_HERMES_AGENT:-1}` and document the env var
+- `tools/test-sandboxes.sh` — extend smoke-test to check `/health` reports both `hermes_agent_path` and `hermes_agent_source` fields (where source ∈ `{host-mount, baked, missing}`). Optionally run a tiny canonical scenario through both paths if cheap.
 
-Default Codex deliverable: image WITHOUT baked clone (smaller, relies on bind-mount). User who wants a self-contained image runs `BAKE_HERMES_AGENT=1 bash tools/build-sandboxes.sh`.
+Default Codex deliverable: **image WITH baked clone**. Bind-mount overrides it at runtime when host install is detected. So users get:
+- Self-contained image by default (works without local hermes-agent install)
+- Bind-mount used automatically when local install detected (avoids stale baked copy)
+- Force flag to validate either path on demand
 
-**If upstream `hermes-agent` repo URL isn't determinable** (Phase A's secondary risk), file `docs/QUESTIONS.md` with what you found + recommend running with `HERMES_AGENT_HOST_PATH` only (skip the bake path). User confirmed at brief authoring time that they have a local install, so the bind-mount path is the primary working config either way.
+**If upstream `hermes-agent` repo URL isn't determinable** (Phase B's risk), file `docs/QUESTIONS.md` with what you found. User has confirmed they have a local install, so bind-mount is sufficient as a working-system fallback even if the bake path doesn't ship. In that case: implement `HERMES_AGENT_FORCE_BAKED=1` to fail-loud rather than silently degrading.
 
 ### Phase C — Rewrite `sandboxes/hermes/server.py` to delegate (~2-3 hr)
 
