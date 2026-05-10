@@ -1,0 +1,41 @@
+{
+  "_comment": "Canonical exercise list for benchlocal-cli's aider-polyglot-30 pack. Hand-curated 5 per language across the 6 polyglot-benchmark languages, mixing easy/medium/hard difficulty and varied problem types (state machines, DSL parsing, math, data structures, concurrency, string manipulation). Selection criteria documented in docs/AIDER_POLYGLOT_30.md. The sandbox MUST assert this exact set is resolvable from upstream at startup (Codex review #5: exact-id match, not just count). On rename or removal upstream, fail loud with a re-sync recipe rather than silently pick replacements.",
+  "_version": "1.0.0",
+  "exercises": [
+    {"name": "clock",                "language": "cpp",        "difficulty": "easy",   "kind": "math"},
+    {"name": "crypto-square",        "language": "cpp",        "difficulty": "medium", "kind": "string"},
+    {"name": "binary-search-tree",   "language": "cpp",        "difficulty": "medium", "kind": "data-structure"},
+    {"name": "bank-account",         "language": "cpp",        "difficulty": "medium", "kind": "concurrency"},
+    {"name": "complex-numbers",      "language": "cpp",        "difficulty": "medium", "kind": "math"},
+
+    {"name": "bowling",              "language": "go",         "difficulty": "medium", "kind": "state-machine"},
+    {"name": "connect",              "language": "go",         "difficulty": "hard",   "kind": "board-game"},
+    {"name": "crypto-square",        "language": "go",         "difficulty": "medium", "kind": "string"},
+    {"name": "book-store",           "language": "go",         "difficulty": "medium", "kind": "optimization"},
+    {"name": "alphametics",          "language": "go",         "difficulty": "hard",   "kind": "constraint-solving"},
+
+    {"name": "affine-cipher",        "language": "java",       "difficulty": "medium", "kind": "math"},
+    {"name": "bank-account",         "language": "java",       "difficulty": "medium", "kind": "concurrency"},
+    {"name": "change",               "language": "java",       "difficulty": "medium", "kind": "dynamic-programming"},
+    {"name": "bowling",              "language": "java",       "difficulty": "medium", "kind": "state-machine"},
+    {"name": "alphametics",          "language": "java",       "difficulty": "hard",   "kind": "constraint-solving"},
+
+    {"name": "affine-cipher",        "language": "javascript", "difficulty": "medium", "kind": "math"},
+    {"name": "complex-numbers",      "language": "javascript", "difficulty": "medium", "kind": "math"},
+    {"name": "binary",               "language": "javascript", "difficulty": "easy",   "kind": "math"},
+    {"name": "book-store",           "language": "javascript", "difficulty": "medium", "kind": "optimization"},
+    {"name": "bottle-song",          "language": "javascript", "difficulty": "easy",   "kind": "string"},
+
+    {"name": "dominoes",             "language": "python",     "difficulty": "medium", "kind": "graph"},
+    {"name": "dot-dsl",              "language": "python",     "difficulty": "medium", "kind": "dsl-parsing"},
+    {"name": "connect",              "language": "python",     "difficulty": "hard",   "kind": "board-game"},
+    {"name": "bowling",              "language": "python",     "difficulty": "medium", "kind": "state-machine"},
+    {"name": "book-store",           "language": "python",     "difficulty": "medium", "kind": "optimization"},
+
+    {"name": "acronym",              "language": "rust",       "difficulty": "easy",   "kind": "string"},
+    {"name": "decimal",              "language": "rust",       "difficulty": "hard",   "kind": "arbitrary-precision"},
+    {"name": "dot-dsl",              "language": "rust",       "difficulty": "medium", "kind": "dsl-parsing"},
+    {"name": "doubly-linked-list",   "language": "rust",       "difficulty": "hard",   "kind": "data-structure-lifetimes"},
+    {"name": "bowling",              "language": "rust",       "difficulty": "medium", "kind": "state-machine"}
+  ]
+}

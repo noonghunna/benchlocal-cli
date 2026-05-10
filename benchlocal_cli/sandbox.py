@@ -63,7 +63,64 @@ SANDBOX_REGISTRY = {
         # agent-runner.py runs 10-20 turns of real LLM calls per scenario.
         request_timeout_s=900.0,
     ),
+    "aider-polyglot-30": SandboxConfig(
+        pack_id="aider-polyglot-30",
+        image_name="benchlocal-sandbox-aider-polyglot:latest",
+        host_port=9004,
+        network_isolated=False,  # aider needs to call out to model_endpoint
+        multi_turn=True,         # uses /verify-start with verify-final early-out
+        # 30-min read timeout: the entire batch (30 exercises × multi-turn
+        # aider edit/test loops) lives inside one /verify-start call. The
+        # inner subprocess timeout is 1500s; this gives +5min headroom.
+        request_timeout_s=1800.0,
+    ),
 }
+
+
+def resolve_endpoint_for_container(endpoint: str) -> str:
+    """v0.9.0 helper (Codex 2nd-pass #2): rewrite host-side endpoint URLs to
+    container-reachable form when a sandbox needs to call out to the runner's
+    model endpoint.
+
+    Rules:
+      - localhost / 127.0.0.1 / 127.x → host.docker.internal
+      - [::1] → host.docker.internal (IPv6 loopback)
+      - 0.0.0.0 → raise ValueError (it's a bind-only address, not a target)
+      - non-loopback hosts (real hostnames, RFC1918 IPs, host.docker.internal,
+        FQDNs) → unchanged
+      - URL paths, ports, queries, fragments → preserved
+
+    Linux note: `host.docker.internal` only resolves inside a container that
+    was started with `--add-host=host.docker.internal:host-gateway`. The
+    runner adds that flag to docker run for sandboxes that opt into this
+    rewrite (default-on for aider-polyglot, opt-in via env for hermes).
+    """
+    if not endpoint:
+        return endpoint
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(endpoint)
+    host = (parsed.hostname or "").lower()
+    if host == "0.0.0.0":
+        raise ValueError(
+            "endpoint host is 0.0.0.0 (bind-only, not a routable target). "
+            "Pass a real host or use 127.0.0.1/localhost."
+        )
+    is_loopback = (
+        host == "localhost"
+        or host == "::1"
+        or host.startswith("127.")
+    )
+    if not is_loopback:
+        return endpoint
+    # Reassemble with the new host. preserve port + path + query + fragment.
+    port_suffix = f":{parsed.port}" if parsed.port else ""
+    new_netloc = f"host.docker.internal{port_suffix}"
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        new_netloc = f"{userinfo}@{new_netloc}"
+    return urlunparse(parsed._replace(netloc=new_netloc))
 
 
 # Required files in a host-installed `hermes-agent` checkout. Used by detection
@@ -220,6 +277,17 @@ class SandboxClient:
             cmd.extend(["-v", f"{host_path}:{container_path}:ro"])
         for key, value in self.config.env:
             cmd.extend(["-e", f"{key}={value}"])
+        # v0.9.0: aider-polyglot needs to call out to the runner's model
+        # endpoint from inside the container. On Linux, host.docker.internal
+        # only resolves with this --add-host flag (Codex 2nd-pass #2).
+        # Default-on for aider-polyglot; opt-in for hermes (preserves
+        # existing hermes deployments where service-name resolution
+        # already works).
+        if (
+            self.config.pack_id == "aider-polyglot-30"
+            or os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1"
+        ):
+            cmd.extend(["--add-host", "host.docker.internal:host-gateway"])
         cmd.append(self.config.image_name)
         try:
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)

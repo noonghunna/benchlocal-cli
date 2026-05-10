@@ -36,6 +36,16 @@ class ScenarioResult:
     # so a failure can be diagnosed without re-running the scenario. None
     # for in-process verifiers and for runs where the payload is unavailable.
     verifier_trace: dict | None = None
+    # v0.9.0: first-class pass-rate metrics for "scoreboard" packs that
+    # internally aggregate multiple sub-results into one scenario verdict
+    # (e.g., aider-polyglot-30 runs 30 exercises and reports the aggregate).
+    # All optional / default None; non-scoreboard packs leave these unset.
+    # Codex 2nd-pass review #1: promote out of `verifier_trace` so v0.8
+    # `--previous-result` delta + markdown output can render real
+    # "23/30 → 20/30 (-10pp)" deltas instead of just threshold flips.
+    pass_rate: float | None = None
+    passed_count: int | None = None
+    total_count: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

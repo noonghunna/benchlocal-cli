@@ -1,0 +1,16 @@
+{
+  "_comment": "v0.9.0 manifest — pinned upstream commits for the Aider Polyglot lite slice.",
+  "aider": {
+    "repo": "Aider-AI/aider",
+    "commit": "3ec8ec5a7d695b08a6c24fe6c0c235c8f87df9af",
+    "url": "https://github.com/Aider-AI/aider.git"
+  },
+  "polyglot_benchmark": {
+    "repo": "Aider-AI/polyglot-benchmark",
+    "commit": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
+    "url": "https://github.com/Aider-AI/polyglot-benchmark.git"
+  },
+  "fetched_at": "2026-05-10T07:30:00Z",
+  "lite_slice_size": 30,
+  "languages": ["cpp", "go", "java", "javascript", "python", "rust"]
+}

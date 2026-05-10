@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.9.0
+
+First slice of the eval-expansion track: adds the `aider-polyglot-30`
+sandboxed pack — multi-language code editing across C++/Go/Java/JS/Python/Rust
+via upstream `Aider-AI/aider`'s benchmark.py. Each suite ships
+independently (no `--audit` bundle in v0.9.x).
+
+Architecture: **single-scoreboard pack** (1 scenario per pack). Aider's
+benchmark.py is a batch runner by design; we accept that rather than
+bend `/verify-start` into a batch protocol. Per-exercise breakdown lives
+in `verifier_trace.upstream_per_exercise`; aggregate `pass_rate` /
+`passed_count` / `total_count` are first-class `ScenarioResult` fields.
+
+This was the conclusion of two Codex review passes (first pass found 30+
+findings on a "synchronous batch caching" architecture; second pass
+approved the single-scoreboard redesign with 5 specific tightenings, all
+folded in).
+
+- `aider-polyglot-30` pack: 1 scenario `aider-polyglot-30-batch` covering
+  30 hand-curated exercises (5 per language across 6 languages, mixing
+  easy/medium/hard difficulty + varied problem types). Pinned to
+  upstream commits `aider@3ec8ec5a` + `polyglot-benchmark@7e0611e7`.
+  See `vendor/AiderPolyglot-30/exercises.json` for the canonical list
+  + selection criteria in `ATTRIBUTION.md`.
+- `sandboxes/aider-polyglot/` Docker image (~2-2.5 GB): Python 3.11 +
+  JDK 21 + Go 1.21 + Rust + Node 20, mirroring upstream's
+  `aider/benchmark/Dockerfile`. `tools/build-sandboxes.sh` learns the
+  new pack name.
+- `ScenarioResult.pass_rate` / `passed_count` / `total_count` — new
+  optional fields. Promoted out of `verifier_trace` per Codex 2nd-pass
+  review #1, so v0.8 `--previous-result` delta + markdown can render
+  real "23/30 → 20/30" deltas instead of just threshold flips.
+- `resolve_endpoint_for_container()` helper: rewrites
+  localhost / 127.x / [::1] → host.docker.internal so a sandbox's
+  outbound calls reach the runner's model endpoint. Default-on for
+  aider-polyglot-30 (fresh pack); opt-in for hermesagent-20 via
+  `BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1` env (preserves existing
+  hermes deployments).
+- `docker run --add-host=host.docker.internal:host-gateway` added
+  automatically when the resolver is in use (Linux compat — Docker
+  Desktop has it built-in).
+- 104 / 104 tests passing (was 81). 23 new tests in
+  `tests/test_aider_polyglot.py` covering `resolve_endpoint_for_container`
+  (7 input shapes), `_build_benchmark_args` (3), `_grade_aider_batch_result`
+  (6 — 0/30, below-threshold, at-threshold, full pass, missing results,
+  extra results), `CANONICAL_EXERCISES` integrity (3), new
+  `ScenarioResult` field optionality (2), pack registration (2).
+- Schema version bumped to "3" in aider-polyglot-30 saved JSONs.
+  Existing v0.8.x readers (schema "2" / "1") that don't know about the
+  new fields ignore them gracefully.
+- v0.9.1 (lm-eval IFEval+GSM8K) and v0.9.2 (BFCL-lite) follow
+  separately. No `--audit` bundle until they're all in.
+
 ## 0.8.1
 
 The deferred Phase B.5 from the v0.8 brief — `inspect --diff` and

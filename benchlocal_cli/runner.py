@@ -512,7 +512,8 @@ class Runner:
 
         try:
             start_kwargs: dict = {}
-            if scenario.get("pack_id") == "hermesagent-20":
+            pack_id = scenario.get("pack_id")
+            if pack_id == "hermesagent-20":
                 # Hermes upstream agent-runner makes its own model calls; pass
                 # the runner's endpoint + model so the sandbox can spawn the
                 # upstream agent against the same target the runner is benching.
@@ -522,6 +523,16 @@ class Runner:
                     "model_endpoint": self.endpoint,
                     "model_name": self.model,
                     "model_api_key": "dummy",  # vLLM doesn't validate; upstream still requires a value
+                    "sampling": dict(sampling),
+                }
+            elif pack_id == "aider-polyglot-30":
+                # v0.9.0: aider needs a container-reachable URL. Apply the
+                # endpoint resolver (rewrites localhost → host.docker.internal).
+                from benchlocal_cli.sandbox import resolve_endpoint_for_container
+                start_kwargs = {
+                    "model_endpoint": resolve_endpoint_for_container(self.endpoint),
+                    "model_name": self.model,
+                    "model_api_key": "benchlocal-cli-aider-polyglot",  # non-empty placeholder
                     "sampling": dict(sampling),
                 }
             start_payload = sandbox_client.verify_multiturn_start(scenario, **start_kwargs)
@@ -535,7 +546,13 @@ class Runner:
                 if isinstance(start_payload, dict):
                     early_trace = {
                         k: v for k, v in start_payload.items()
-                        if k not in ("passed", "failure_mode", "detail", "action")
+                        if k not in (
+                            "passed", "failure_mode", "detail", "action",
+                            # v0.9.0: pass_rate / passed_count / total_count are
+                            # promoted to first-class ScenarioResult fields
+                            # (Codex 2nd-pass #1) — don't double-include.
+                            "pass_rate", "passed_count", "total_count",
+                        )
                     } or None
                 result = ScenarioResult(
                     scenario_id=scenario["id"],
@@ -544,6 +561,9 @@ class Runner:
                     detail=str(start_payload.get("detail", "")),
                     latency_seconds=latency,
                     verifier_trace=early_trace,
+                    pass_rate=start_payload.get("pass_rate"),
+                    passed_count=start_payload.get("passed_count"),
+                    total_count=start_payload.get("total_count"),
                 )
                 result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
                 return self._scenario_run(
