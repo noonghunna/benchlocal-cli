@@ -59,9 +59,28 @@ v0.7 candidate exposed two pack classes stuck at 0% because the runner only send
 
 The HTTP protocol for multi-turn is now wired through the runner. CLI-40 multi-round scenarios route through `/verify-start` / `/verify-turn` / `/verify-end`, and HermesAgent-20 uses the same runner loop. Public flip still needs real-model A/B acceptance on Qwen + Gemma.
 
-## After v0.7.1 — v0.7.x follow-ups
+## v0.7.2 — post-run forensics (shipped 2026-05-10)
 
-### ReasonMath + migration docs
+[Release v0.7.2](https://github.com/noonghunna/benchlocal-cli/releases/tag/v0.7.2). Added `verifier_trace` (full upstream payload preserved per scenario), `conversation` (full multi-turn message history), and `--sandbox-log-dir` (captures `docker logs` to disk before container teardown). Failed scenarios can now be diagnosed entirely from the saved JSON + sandbox.log without re-running. Used today's Qwen Hermes diagnostic to identify 5 distinct failure patterns (refusal / casual summary / no-tool-use / tool-set mismatch / lucky pass).
+
+## v0.7.3 — Hermes upstream-runtime delegation (planned, ~5-8 hr)
+
+Closes Codex's flagged Phase D gap from v0.7 candidate report: HermesAgent grading is currently keyword-evidence on the final assistant message, not real upstream `agent-runner.py` evaluation.
+
+The upstream runtime is already vendored in `vendor/HermesAgent-20/verification/` (Codex sync'd it during v0.7). v0.7.3 wires our hermes sandbox to delegate grading to it via subprocess+python — same pattern as v0.7's BugFind / CLI upstream-runtime delegation.
+
+Closes:
+- Pattern A (model refusals) — upstream prompts already nudge agent role
+- Pattern B (casual summary keyword-misses) — upstream grades trace + state, not final-message vocabulary
+- Pattern C (model doesn't use tools) — upstream's full tool catalog (read/list/glob/exec/browser/cron/send_message) is in scope
+- Pattern D (tool-set mismatch) — upstream tool simulator matches what scenarios expect
+- Verifier strictness (Pattern E lucky-pass artifact) — replaced by real grading
+
+Today's Qwen 25% / Gemma 20% on Hermes is keyword-evidence floor. v0.7.3 likely produces 40-65% with real cross-model discrimination — bench becomes useful as a "did the model actually solve the agent task" signal.
+
+After v0.7.3, all 3 sandboxed packs (BugFind / CLI / Hermes) use upstream runtimes for grading. v0.7's "real verifier parity" vision is fully closed.
+
+## After v0.7.x — ReasonMath + migration docs
 
 - **ReasonMath value-centric verifier.** In-process scoring path (separate from sandbox layer). Implements value-match assertion type per [stevibe/ReasonMath-15#2](https://github.com/stevibe/ReasonMath-15/issues/2). Path depends on upstream response:
   - If stevibe accepts the proposal → align with upstream
@@ -84,7 +103,7 @@ Recommended order if we expand:
 
 1. **lm-eval-harness calibration slice** — tiny subset (IFEval / GSM8K / MMLU / HellaSwag, ~50 prompts each) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Not a replacement; a calibration anchor.
 2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step scenarios add real depth when we need to compare function-calling fidelity across quants.
-3. **Mirror HermesAgent into Inspect AI** — strongest "maybe we should have started here" point. v0.7's HermesAgent exposes a real architecture gap: the upstream agent runner owns the model loop, but our SandboxClient sends one assistant response per call. Inspect AI provides the framework primitives (multi-turn loop, tool simulation, trace verification) we'd otherwise re-invent. If serious multi-turn agent eval becomes a project priority, port HermesAgent there rather than deepening our custom Hermes runner.
+3. **Inspect AI for NEW agent benchmarks beyond BenchLocal** — tau-bench, AgentBench, custom safety/agent evals that don't ship their own runtime. **Not a Hermes fix** — the BenchLocal Hermes pack already has its own upstream `agent-runner.py` runtime, which v0.7.3 delegates to directly. Putting BenchLocal Hermes through Inspect AI would just add an indirection layer over the same upstream code. Inspect AI's framework primitives (multi-turn loop, tool sim, trace verification) earn their keep when adding evals that DON'T have those primitives already.
 
 ### Mode naming for the expanded suite
 
