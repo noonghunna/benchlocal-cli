@@ -117,9 +117,13 @@ class RunResult:
     totals: dict[str, float | int]
     thinking_enabled: bool = False
     warnings: list[str] = field(default_factory=list)
+    # v0.8: populated when `--previous-result PATH` was passed to the run.
+    # None means delta wasn't computed (the default; preserves saved-JSON
+    # back-compat with v0.7.x readers per Codex review #9).
+    delta: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "schema_version": self.schema_version,
             "runner_version": self.runner_version,
             "endpoint": self.endpoint,
@@ -132,3 +136,6 @@ class RunResult:
             "thinking_enabled": self.thinking_enabled,
             "warnings": self.warnings,
         }
+        if self.delta is not None:
+            out["delta"] = self.delta
+        return out

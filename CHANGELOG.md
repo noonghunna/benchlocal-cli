@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.8.0
+
+Diagnostic tooling on top of v0.7.4's grading parity. No sandbox
+rebuild needed — pure Python additions on the runner side.
+
+- **`run --previous-result PATH`** — load a saved RunResult JSON and
+  classify each scenario as regression / fix / stable / new / dropped.
+  Per-`(pack_id, scenario_id)` keying so same scenario IDs across packs
+  don't collide. Multi-repeat aggregates to per-scenario pass-rate ≥
+  50% (override via `BENCHLOCAL_DELTA_PASS_THRESHOLD`). Markdown delta
+  column rendered ONLY when `--previous-result` is passed (default
+  output stays byte-stable for pinned downstream parsers).
+- **`run --exit-on-regression`** — exit code 3 when delta has any
+  regressions. Requires `--previous-result`. CI-friendly.
+- **`benchlocal-cli inspect <result.json>`** — surface saved-JSON
+  forensics without manual JSON grep. Filters: `--scenario ID`,
+  `--pack PACK`, `--failed`, `--mode FAILURE_MODE`. Default truncation
+  for verifier_trace (80 lines) and conversation (5 turns); `--full`
+  disables. `--format json` for piping. Tolerates v0.5/v0.6/v0.7.0
+  saved JSONs missing `verifier_trace`/`conversation` fields.
+- **`run --history-file PATH`** — append a per-run summary row to a
+  CSV (timestamp, run_id, mode, model, total_pass/total, score, per-pack
+  pass/total, runner_version, git_commit). Opt-in only; default
+  unchanged. Falls back to `BENCHLOCAL_HISTORY_FILE` env. POSIX `flock`
+  prevents concurrent-append corruption.
+- **`benchlocal-cli history`** — query the history CSV. Filters:
+  `--file PATH`, `--model`, `--pack`, `--since YYYY-MM-DD`, `--last N`.
+  `--format json` for plotting / further processing.
+- New trace field: `verifier_trace.delta` (per-pack regression/fix
+  counts) populated when `--previous-result` was used.
+- 70/70 tests passing (was 40). New tests:
+  `tests/test_delta.py` (9), `tests/test_inspect.py` (10),
+  `tests/test_history.py` (11).
+- **Phase B.5 deferred to v0.8.1**: `inspect --diff <other.json>` and
+  `inspect --logs DIR` are explicit follow-ups; the v0.8.0 MVP covers
+  the common diagnostic flows. See `CODEX_BRIEF_V8.md` for the full
+  scope split.
+
 ## 0.7.4
 
 - Hermes grading parity: replaced our v0.7.3 keyword-match Python grader

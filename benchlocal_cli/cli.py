@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -64,6 +65,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="list available packs")
+
+    # v0.8 — `inspect` subcommand for surfacing saved-JSON forensics
+    from benchlocal_cli.inspect import add_inspect_subparser
+    add_inspect_subparser(sub)
+    # v0.8 — `history` subcommand for querying the run-history CSV
+    from benchlocal_cli.history import add_history_subparser
+    add_history_subparser(sub)
 
     run = sub.add_parser(
         "run",
@@ -106,6 +114,27 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
+    # v0.8 — diagnostic tooling
+    run.add_argument(
+        "--previous-result",
+        help="path to a previously-saved RunResult JSON. Compares the current run "
+             "scenario-by-scenario and emits a delta column in the output (regressions, "
+             "fixes, stable). Per-(pack_id, scenario_id) keying; multi-repeat aggregates "
+             "to ≥50%% pass-rate (override via BENCHLOCAL_DELTA_PASS_THRESHOLD).",
+    )
+    run.add_argument(
+        "--exit-on-regression",
+        action="store_true",
+        help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
+             "Requires --previous-result to also be set.",
+    )
+    run.add_argument(
+        "--history-file",
+        help="append a summary row to this CSV after the run completes (one row "
+             "per run; columns: timestamp, run_id, mode, model, total_pass, total, "
+             "score, per-pack pass/total, runner_version). Falls back to "
+             "BENCHLOCAL_HISTORY_FILE env. Use `benchlocal-cli history` to query.",
+    )
     return parser
 
 
@@ -132,26 +161,74 @@ def _mode_from_args(args: argparse.Namespace) -> str:
 
 def _markdown(result: RunResult) -> str:
     thinking = "on" if result.thinking_enabled else "off"
+    # v0.8: delta column rendered ONLY when --previous-result was actually
+    # computed (Codex review #4 — keep default markdown byte-stable for
+    # pinned downstream parsers like club-3090's quality-test.sh).
+    delta_pack_index: dict[str, dict] | None = None
+    if result.delta is not None:
+        delta_pack_index = {p["pack_id"]: p for p in result.delta.get("by_pack") or []}
+
     lines = [
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}) ===",
         "",
-        "Pack | Pass / Total | Score | p50 latency | p95 latency | Status",
-        "---|---:|---:|---:|---:|---",
     ]
+    if delta_pack_index is None:
+        lines.append("Pack | Pass / Total | Score | p50 latency | p95 latency | Status")
+        lines.append("---|---:|---:|---:|---:|---")
+    else:
+        lines.append("Pack | Pass / Total | Score | Δ (vs prev) | p50 latency | p95 latency | Status")
+        lines.append("---|---:|---:|---|---:|---:|---")
+
     for pack in result.packs:
         status = "skipped" if pack.skipped else ("ok" if pack.total else pack.status)
         score = f"{pack.score:.0%}" if pack.total else "-"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
-        lines.append(
-            f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {p95} | {status}"
+        if delta_pack_index is None:
+            lines.append(
+                f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {p95} | {status}"
+            )
+        else:
+            d = delta_pack_index.get(pack.pack_id)
+            if d:
+                regr = d.get("regressions", 0)
+                fixes = d.get("fixes", 0)
+                if regr:
+                    delta_cell = f"⚠ {regr} regr / {fixes} fix"
+                elif fixes:
+                    delta_cell = f"+{fixes} fix"
+                elif d.get("new") or d.get("dropped"):
+                    delta_cell = f"new={d.get('new', 0)}, dropped={d.get('dropped', 0)}"
+                else:
+                    delta_cell = "stable"
+            else:
+                delta_cell = "-"
+            lines.append(
+                f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {delta_cell} | {p50} | {p95} | {status}"
+            )
+
+    if delta_pack_index is None:
+        lines.extend(
+            [
+                "",
+                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
+            ]
         )
-    lines.extend(
-        [
-            "",
-            f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
-        ]
-    )
+    else:
+        d = result.delta or {}
+        regr = d.get("total_regressions", 0)
+        fixes = d.get("total_fixes", 0)
+        delta_summary = f"⚠ {regr} regressions, {fixes} fixes" if regr else f"+{fixes} fixes" if fixes else "stable"
+        lines.extend(
+            [
+                "",
+                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} | {delta_summary} |  |  |",
+            ]
+        )
+        if d.get("warnings"):
+            lines.append("")
+            lines.append("Delta warnings:")
+            lines.extend(f"- {w}" for w in d["warnings"])
     failures: list[str] = []
     for pack in result.packs:
         for scenario in pack.scenarios:
@@ -198,6 +275,14 @@ def main(argv: list[str] | None = None) -> int:
             _print_list()
             return 0
 
+        if args.command == "inspect":
+            from benchlocal_cli.inspect import inspect_result
+            return inspect_result(args.path, args)
+
+        if args.command == "history":
+            from benchlocal_cli.history import history_main
+            return history_main(args)
+
         mode = _mode_from_args(args)
         if args.sandboxed_only:
             from benchlocal_cli.runner import SANDBOXED_PACK_IDS
@@ -237,14 +322,45 @@ def main(argv: list[str] | None = None) -> int:
             sandbox_log_dir=args.sandbox_log_dir,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
+
+        # v0.8: --previous-result delta classification
+        if args.previous_result:
+            from benchlocal_cli import delta as delta_module
+            try:
+                run_delta = delta_module.classify(result.to_dict(), args.previous_result)
+                result.delta = run_delta.to_dict()
+            except FileNotFoundError as exc:
+                # Hard fail — user gave us a path that doesn't exist
+                print(f"benchlocal-cli: --previous-result error: {exc}", file=sys.stderr)
+                return 1
+
+        if args.exit_on_regression and not args.previous_result:
+            print(
+                "benchlocal-cli: --exit-on-regression requires --previous-result",
+                file=sys.stderr,
+            )
+            return 1
+
         result_dict = result.to_dict()
         if args.save_json:
             with Path(args.save_json).open("w", encoding="utf-8") as handle:
                 json.dump(result_dict, handle, indent=2, sort_keys=True)
+
+        # v0.8 — opt-in history append (--history-file PATH or BENCHLOCAL_HISTORY_FILE env)
+        history_path = args.history_file or os.environ.get("BENCHLOCAL_HISTORY_FILE")
+        if history_path:
+            try:
+                from benchlocal_cli.history import append_run
+                append_run(result_dict, history_path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"benchlocal-cli: warning — history append failed: {exc}", file=sys.stderr)
         if args.output == "json":
             print(json.dumps(result_dict, indent=2, sort_keys=True))
         else:
             print(_markdown(result))
+
+        if args.exit_on_regression and result.delta and result.delta.get("total_regressions", 0) > 0:
+            return 3  # CI-friendly regression exit code
         return 0 if result.totals["total"] > 0 else 2
     except Exception as exc:
         print(f"benchlocal-cli: error: {exc}", file=sys.stderr)
