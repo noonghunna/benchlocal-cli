@@ -134,13 +134,80 @@ Why `--audit` (not `--full+` or `--everything`):
 - Tier reads naturally: smoke → deterministic → sandboxed → audit
 - The `+` / `everything` / `--full2` patterns all collide semantically with `--full` since "full" already means "everything"
 
-Inspect AI's HermesAgent port replaces (not adds to) the existing `hermesagent-20` slot — same scenarios, better framework. So `--full` retains 8 packs / 150 scenarios after that swap; only `--audit` grows scenario count.
+### Implementation pattern — how each new bench plugs in
+
+Every external bench follows the same shape as today's BugFind/CLI/Hermes — Docker sandbox + HTTP verifier + delegate-to-upstream. The runner doesn't special-case any pack; adding a new bench is the same shape as adding a new BenchLocal pack.
+
+**Three layers of CLI surface:**
+
+```
+Layer 1 — mode flags (top-level presets):
+  --quick    2 packs                                            ~10 min
+  --medium   5 deterministic packs                              ~25 min   (no Docker)
+  --full     8 packs (current scope, unchanged)                 ~30-40 min
+  --audit    --full + lm-eval + BFCL + Aider + ide-safety       ~55-75 min
+  --swe      SWE-bench-lite via mini-SWE-agent (heavy)          30-60 min
+
+Layer 2 — composable additive flags (power-user):
+  --with-lm-eval        IFEval + GSM8K calibration
+  --with-bfcl           BFCL-lite tool-call depth
+  --with-aider          Aider Polyglot lite (multi-language editor)
+  --with-ide-safety     custom IDE-agent safety slice
+  --with-swe            SWE-bench-lite (heavy)
+  --with-legacy-codegen HumanEval+ (cheap legacy compatibility)
+
+  --audit  ≡  --full --with-lm-eval --with-bfcl --with-aider --with-ide-safety
+
+Layer 3 — per-bench scope tuning (env vars):
+  LM_EVAL_PROMPTS_PER_TASK=50    # default 50 each (IFEval, GSM8K)
+  BFCL_LITE_CASES=75             # default 75 of ~2000 in full BFCL
+  AIDER_POLYGLOT_CASES=30        # default 30 of 225 full
+  IDE_SAFETY_STRICT=0            # 1 = stricter agent-safety scoring
+  SWE_BENCH_CASES=10             # default 10 of 300 full SWE-bench-lite
+  SWE_BENCH_TIMEOUT_S=900        # per-case wall budget
+```
+
+**Sandbox container layout per bench:**
+
+```
+sandboxes/lm-eval-cal/        # IFEval + GSM8K via EleutherAI/lm-evaluation-harness
+sandboxes/bfcl-lite/          # BFCL via gorilla-llm/gorilla
+sandboxes/aider-polyglot/     # Aider polyglot benchmark via Aider-AI/aider
+sandboxes/ide-safety/         # custom — we author the verifier
+sandboxes/swe-bench-lite/     # SWE-bench via princeton-nlp + mini-SWE-agent
+```
+
+Each ships:
+- `Dockerfile` baking the upstream runner
+- `server.py` exposing standard `/health` + `/verify` (or `/verify-start/turn/end` for multi-turn)
+- `fixtures/` lifted from upstream where applicable
+- `verification/` if delegating to upstream JS/Python runtime
+
+**club-3090 wrapper (`scripts/quality-test.sh`) passthrough:**
+
+```bash
+bash scripts/quality-test.sh --audit                 # full audit run
+bash scripts/quality-test.sh --full --with-bfcl      # composable
+bash scripts/quality-test.sh --pack aider-polyglot   # single bench
+bash scripts/quality-test.sh --swe                   # power-user repo-scale
+LM_EVAL_PROMPTS_PER_TASK=25 bash scripts/quality-test.sh --audit  # tighter calibration
+```
+
+Same env-var pattern as today's `URL` / `MODEL` / `TIMEOUT_PER_CASE`.
+
+**What's load-bearing about this design:**
+
+1. **Each bench is just another pack ID.** No special-casing in the runner. Adding `aider-polyglot-30` is mechanically identical to adding any BenchLocal pack — JSONL + sandbox container + register in `SANDBOX_REGISTRY`.
+2. **`--audit` and `--swe` are presets**, not hardcoded paths. They expand to pack lists like `--full` does today. New presets cost nothing structural to add.
+3. **Composable flags + presets coexist.** Most users hit `--audit`; power users compose. Both paths supported.
+4. **Per-bench tuning via env-var.** Keeps CLI surface narrow.
+5. **Each external bench is one Codex brief** — `CODEX_BRIEF_V0_9_<bench>.md`-shaped, 2-4 hr each on average (most work is wrapping the upstream runner in our standard sandbox shape, not authoring scenarios).
 
 ### Tools we evaluated and *don't* rank for inclusion
 
 - **promptfoo** — useful for orchestration / regression diffs, but doesn't solve the verifier-maturity problem (which is where BenchLocal's value is)
 - **OpenAI simple-evals** — good reference code, but deprecated as a maintained source; use for inspiration only
-- **HumanEval / HumanEval+** — covered by BenchLocal's BugFind-15 effectively
+- **HumanEval / HumanEval+** — Python-only spec-to-code, saturated, prone to overfit. Demoted to optional `--with-legacy-codegen` cheap compatibility anchor; Aider Polyglot replaces it as the primary code-gen slot
 - **MT-Bench / Arena-Hard** — requires a strong judge model, not deterministic, defeats the local-only premise
 
 ## Parking lot — when needed
