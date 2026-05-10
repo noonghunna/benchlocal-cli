@@ -1,4 +1,4 @@
-# HermesAgent-20 verifier sandbox — v0.6 deterministic state/trace verifier.
+# HermesAgent-20 verifier sandbox — v0.7 state/trace verifier.
 
 FROM python:3.12-slim
 
@@ -8,6 +8,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY server.py /app/server.py
 COPY fixtures/ /app/fixtures/
+COPY verification/ /app/verification/
 
 RUN useradd -m verifier && chown -R verifier:verifier /app
 USER verifier

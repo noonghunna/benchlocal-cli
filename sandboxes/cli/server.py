@@ -1,11 +1,11 @@
-"""CLI-40 verifier server — v0.6 safe command execution verifier.
+"""CLI-40 verifier server — v0.7 upstream fixture-runtime adapter.
 
-The upstream mirror includes scenario prompts and rubrics but no workspace
-fixture tree. This verifier now executes safe commands in a cleared temporary
-workspace when possible, rejects unsafe/network commands, and compares against
-`raw_scenario.expected` when explicit expected fields are present. Without
-fixture files, it falls back to deterministic rubric evidence instead of the
-v0.4 parse-only pass.
+The v0.7 image bakes upstream `verification/` into `/app/verification`. For
+normal one-shot scenarios this server delegates to `verifyOneShotSubmission()`,
+which programmatically seeds the workspace and grades the filesystem/output
+state. Multi-round scenarios are replayed through `verifyMultiRoundReplay()`
+when the final response contains shell commands; otherwise they fail honestly
+because the current benchlocal runner does not orchestrate CLI tool turns.
 """
 
 from __future__ import annotations
@@ -36,10 +36,6 @@ FORBIDDEN = {
     "nc",
     "ncat",
     "telnet",
-    "python",
-    "python3",
-    "perl",
-    "ruby",
 }
 
 
@@ -214,6 +210,10 @@ def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
     if _has_marker(scenario_id, text):
         return _pass(scenario_id, {"mode": "mock-marker"})
 
+    upstream = _verify_with_upstream_runtime(scenario_id, scenario, text)
+    if upstream is not None:
+        return upstream
+
     command = _extract_command(text)
 
     # Route to bash -c if command contains shell metacharacters (compound,
@@ -267,13 +267,77 @@ def _fail(scenario_id: str, mode: str, detail: str, trace: dict | None = None) -
     return {"passed": False, "failure_mode": mode, "detail": f"{scenario_id}: {detail}", "trace": trace or {}}
 
 
+def _solution_block_body(text: str) -> str:
+    match = re.search(r"<solution\b[^>]*>([\s\S]*?)</solution>", text, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else _extract_command(text)
+
+
+def _verify_with_upstream_runtime(scenario_id: str, scenario: dict, answer: str) -> dict | None:
+    raw = scenario.get("raw_scenario") or {}
+    kind = raw.get("kind") or "oneshot"
+    if kind == "multiround":
+        body = _solution_block_body(answer)
+        commands = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith("#")]
+        if not commands:
+            return _fail(scenario_id, "wrong_answer", "multi-round replay requires commands in the solution body")
+        js = """
+          import('./verification/core.mjs').then(async (m) => {
+            const result = await m.verifyMultiRoundReplay(process.argv[1], JSON.parse(process.argv[2]));
+            console.log(JSON.stringify(result));
+          }).catch((error) => {
+            console.log(JSON.stringify({status: 'error', summary: String(error?.stack || error)}));
+            process.exitCode = 2;
+          });
+        """
+        args = [scenario_id, json.dumps(commands)]
+    else:
+        js = """
+          import('./verification/core.mjs').then(async (m) => {
+            const result = await m.verifyOneShotSubmission(process.argv[1], process.argv[2]);
+            console.log(JSON.stringify(result));
+          }).catch((error) => {
+            console.log(JSON.stringify({status: 'error', summary: String(error?.stack || error)}));
+            process.exitCode = 2;
+          });
+        """
+        args = [scenario_id, answer]
+    try:
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", js, *args],
+            cwd="/app",
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired as exc:
+        return _fail(scenario_id, "timeout", "upstream CLI verification timed out", {"stdout": exc.stdout or "", "stderr": exc.stderr or ""})
+    if not proc.stdout.strip():
+        return _fail(scenario_id, "server_error", "upstream verifier produced no JSON", {"stderr": proc.stderr[-2000:]})
+    try:
+        payload = json.loads(proc.stdout.splitlines()[-1])
+    except json.JSONDecodeError:
+        return _fail(scenario_id, "server_error", "upstream verifier JSON parse failed", {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]})
+    if payload.get("status") == "error":
+        return _fail(scenario_id, "server_error", str(payload.get("summary", "upstream verifier error")), {"upstream": payload, "stderr": proc.stderr[-2000:]})
+    passed = payload.get("status") == "pass"
+    return {
+        "passed": passed,
+        "failure_mode": "passed" if passed else "verifier_fail",
+        "detail": f"{scenario_id}: {payload.get('summary', 'upstream verifier result')}",
+        "trace": {"mode": "upstream-runtime", "upstream": payload, "stderr": proc.stderr[-2000:]},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         sys.stderr.write(f"[cli-sandbox] {fmt % args}\n")
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.6"})
+            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.7"})
             return
         self.send_response(404)
         self.end_headers()

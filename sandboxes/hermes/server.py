@@ -1,9 +1,11 @@
-"""HermesAgent-20 verifier server — v0.6 deterministic state/trace verifier.
+"""HermesAgent-20 verifier server — v0.7 state/trace verifier.
 
-The upstream mirror has scenario metadata but no browser/cron/memory/artifact
-fixture tree. This server implements the stable multi-turn protocol with
-scenario-scoped state, mocked tool-call simulation, and final rubric checks
-derived from `raw_scenario.expected`.
+The upstream verifier runtime is vendored in v0.7, but its public entrypoint
+drives full model runs against a pinned Hermes checkout. The local benchlocal
+runner still owns model calls and sends `/verify` after one assistant response,
+so this server preserves the v0.6 stateful mocked-tool protocol while reporting
+v0.7 stage. Full upstream Hermes runtime integration requires runner-side
+multi-turn delegation.
 """
 
 from __future__ import annotations
@@ -206,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "hermesagent-20", "stage": "v0.6"})
+            self._send({"status": "ok", "pack": "hermesagent-20", "stage": "v0.7"})
             return
         self.send_response(404)
         self.end_headers()

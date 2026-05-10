@@ -49,3 +49,6 @@ Thumbs.db
 results/
 *.results.json
 .last-run/
+
+# Generated sandbox Docker build-context copies of vendored verifier runtimes.
+sandboxes/*/verification/

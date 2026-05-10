@@ -17,6 +17,11 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 ALL_PACKS=(bugfind cli hermes)
+declare -A VENDOR_PACKS=(
+  [bugfind]="BugFind-15"
+  [cli]="CLI-40"
+  [hermes]="HermesAgent-20"
+)
 PACKS=("$@")
 if [[ ${#PACKS[@]} -eq 0 ]]; then
   PACKS=("${ALL_PACKS[@]}")
@@ -26,6 +31,12 @@ for pack in "${PACKS[@]}"; do
   if [[ ! -d "sandboxes/${pack}" ]]; then
     echo "✗ unknown pack: ${pack} (not found in sandboxes/)" >&2
     exit 1
+  fi
+  vendor_pack="${VENDOR_PACKS[$pack]}"
+  if [[ -d "vendor/${vendor_pack}/verification" ]]; then
+    rm -rf "sandboxes/${pack}/verification"
+    mkdir -p "sandboxes/${pack}/verification"
+    cp -a "vendor/${vendor_pack}/verification/." "sandboxes/${pack}/verification/"
   fi
   echo "================================================================"
   echo "Building benchlocal-sandbox-${pack}:latest"

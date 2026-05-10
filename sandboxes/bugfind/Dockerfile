@@ -1,14 +1,16 @@
-# BugFind-15 verifier sandbox — v0.6 deterministic rubric verifier.
+# BugFind-15 verifier sandbox — v0.7 upstream runtime adapter.
 
 FROM python:3.12-slim
 
-# Retained for future pytest fixture parity when upstream fixture trees are mirrored.
-RUN pip install --no-cache-dir pytest==8.* pytest-timeout==2.*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential golang-go nodejs rustc \
+    && rm -rf /var/lib/apt/lists/*
 
 # Server + fixtures
 WORKDIR /app
 COPY server.py /app/server.py
 COPY fixtures/ /app/fixtures/
+COPY verification/ /app/verification/
 
 # Non-root for safety
 RUN useradd -m verifier && chown -R verifier:verifier /app

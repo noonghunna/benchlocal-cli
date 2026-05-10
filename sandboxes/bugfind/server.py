@@ -1,16 +1,16 @@
-"""BugFind-15 verifier server — v0.6 deterministic rubric verifier.
+"""BugFind-15 verifier server — v0.7 upstream runtime adapter.
 
-The upstream mirror currently contains rubric callbacks, not pytest fixture
-trees. This server therefore verifies candidate answers against the vendored
-scenario rubric data carried in `raw_scenario`: strict solution-block parsing,
-trap/no-bug discipline, and per-scenario evidence checks derived from the
-upstream success/failure cases.
+The v0.7 image bakes the upstream `verification/` runtime into `/app/verification`
+and delegates answer checking to `verifyAnswer()` from `core.mjs`. That runtime
+materializes buggy/fixed source files from `manifest.mjs` and executes the
+canonical checks for Python, JavaScript, Rust, and Go scenarios.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -91,6 +91,10 @@ def _verify(scenario_id: str, scenario: dict, response: dict) -> dict:
     if _has_marker(scenario_id, text):
         return _pass(scenario_id, {"mode": "mock-marker"})
 
+    upstream = _verify_with_upstream_runtime(scenario_id, text)
+    if upstream is not None:
+        return upstream
+
     verdict, solution = _solution_block(text)
     if verdict is None:
         return _fail(scenario_id, "wrong_answer", "missing <solution> block or fenced candidate code", {"response_excerpt": text[:500]})
@@ -143,13 +147,58 @@ def _fail(scenario_id: str, mode: str, detail: str, trace: dict | None = None) -
     return {"passed": False, "failure_mode": mode, "detail": f"{scenario_id}: {detail}", "trace": trace or {}}
 
 
+def _verify_with_upstream_runtime(scenario_id: str, answer: str) -> dict | None:
+    js = """
+      import('./verification/core.mjs').then(async (m) => {
+        const result = await m.verifyAnswer(process.argv[1], process.argv[2]);
+        console.log(JSON.stringify(result));
+      }).catch((error) => {
+        console.log(JSON.stringify({status: 'error', summary: String(error?.stack || error)}));
+        process.exitCode = 2;
+      });
+    """
+    try:
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", js, scenario_id, answer],
+            cwd="/app",
+            text=True,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired as exc:
+        return _fail(
+            scenario_id,
+            "timeout",
+            "upstream verification timed out",
+            {"stdout": exc.stdout or "", "stderr": exc.stderr or ""},
+        )
+    if not proc.stdout.strip():
+        return _fail(scenario_id, "server_error", "upstream verifier produced no JSON", {"stderr": proc.stderr[-2000:]})
+    try:
+        payload = json.loads(proc.stdout.splitlines()[-1])
+    except json.JSONDecodeError:
+        return _fail(scenario_id, "server_error", "upstream verifier JSON parse failed", {"stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]})
+    if payload.get("status") == "error":
+        return _fail(scenario_id, "server_error", str(payload.get("summary", "upstream verifier error")), {"upstream": payload, "stderr": proc.stderr[-2000:]})
+    passed = payload.get("status") == "pass"
+    return {
+        "passed": passed,
+        "failure_mode": "passed" if passed else "verifier_fail",
+        "detail": f"{scenario_id}: {payload.get('summary', 'upstream verifier result')}",
+        "trace": {"mode": "upstream-runtime", "upstream": payload, "stderr": proc.stderr[-2000:]},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         sys.stderr.write(f"[bugfind-sandbox] {fmt % args}\n")
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "bugfind-15", "stage": "v0.6"})
+            self._send({"status": "ok", "pack": "bugfind-15", "stage": "v0.7"})
             return
         self.send_response(404)
         self.end_headers()
