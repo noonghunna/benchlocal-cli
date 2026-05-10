@@ -403,7 +403,7 @@ function buildBugFind() {
       failure_case: spec.failureCase,
       rubric_keywords: keywordsFromText(`${spec.successCase} ${spec.failureCase}`),
       source: "vendor/BugFind-15/lib/benchmark.ts",
-      fixture_status: "rubric-only; upstream mirror has no pytest fixture tree",
+      fixture_status: "upstream-verification-runtime",
     };
     return scenario;
   });
@@ -437,7 +437,7 @@ function buildHermes() {
         required_keywords: keywordsFromText(spec.successCase),
       },
       tool_fixtures: [],
-      fixture_status: "rubric-only; upstream mirror has no Hermes tool-flow fixtures",
+      fixture_status: "upstream-verification-runtime",
     },
   }));
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
@@ -446,10 +446,16 @@ function buildHermes() {
 function buildCli40() {
   const pack = "CLI-40";
   const specs = readJson(VENDOR, pack, "verification", "scenario-data.json");
+  const manifest = readText(VENDOR, pack, "verification", "manifest.mjs");
+  const oneShotSystem = extractConstTemplate(manifest, "ONESHOT_SYSTEM_PROMPT");
+  const multiRoundSystem = extractConstTemplate(manifest, "MULTIROUND_SYSTEM_PROMPT");
   const scenarios = specs.map((spec) => ({
     id: spec.id,
     description: spec.description,
-    messages: [{ role: "user", content: spec.promptText }],
+    messages: [
+      { role: "system", content: spec.kind === "multiround" ? multiRoundSystem : oneShotSystem },
+      { role: "user", content: spec.promptText },
+    ],
     verifier: { type: "_stub", asserts: [{ kind: "_stub", reason: "CLI-40 requires Linux exec sandbox verifier" }] },
     sampling_overrides: { max_tokens: 1024 },
     tags: ["vendor-generated", "sandboxed-stub"],
@@ -468,7 +474,7 @@ function buildCli40() {
         required_keywords: keywordsFromText(spec.successCase),
       },
       input_fixtures: [],
-      fixture_status: "rubric-only; upstream mirror has no workspace fixture tree",
+      fixture_status: "upstream-verification-runtime",
     },
   }));
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
