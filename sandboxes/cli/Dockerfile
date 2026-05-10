@@ -12,11 +12,16 @@ COPY server.py /app/server.py
 COPY fixtures/ /app/fixtures/
 COPY verification/ /app/verification/
 
-# Non-root user with writable working dir.
-# /tmp/cli-sandbox is where commands execute; cleared between scenarios by server.
+# Non-root user with writable working dirs.
+# /tmp/cli-sandbox is where direct-exec commands run (legacy v0.4 path).
+# /workspace is the upstream verifier's default WORKSPACE_DIR — the upstream
+# system prompt tells the model "read/write /workspace/<file>", so this path
+# is load-bearing. We pre-create + chown to verifier instead of overriding
+# the env (which would change where the verifier seeds files but NOT what
+# the model is told). /tmp/cli40-runs is the upstream RUN_ROOT for run logs.
 RUN useradd -m verifier \
-    && mkdir -p /tmp/cli-sandbox \
-    && chown -R verifier:verifier /app /tmp/cli-sandbox
+    && mkdir -p /workspace /tmp/cli40-runs /tmp/cli-sandbox \
+    && chown -R verifier:verifier /app /workspace /tmp/cli40-runs /tmp/cli-sandbox
 USER verifier
 
 EXPOSE 9000
