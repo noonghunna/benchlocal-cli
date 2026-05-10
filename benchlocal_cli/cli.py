@@ -97,6 +97,11 @@ def _parser() -> argparse.ArgumentParser:
         help="run only the sandboxed packs (bugfind-15, cli-40, hermesagent-20) — skips deterministic packs; useful when debugging verifiers",
     )
     run.add_argument("--sandbox-image-tag", default="latest", help="Docker tag for sandbox images (default: latest)")
+    run.add_argument(
+        "--sandbox-log-dir",
+        help="capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
+             "before container teardown (useful for post-run forensics)",
+    )
     run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
@@ -229,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             thinking_max_tokens=args.thinking_max_tokens,
             extra_body=_load_extra_body(args.extra_body),
             sandbox_image_tag=args.sandbox_image_tag,
+            sandbox_log_dir=args.sandbox_log_dir,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
         result_dict = result.to_dict()

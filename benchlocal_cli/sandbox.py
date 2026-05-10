@@ -104,10 +104,39 @@ class SandboxClient:
         self.stop()
         raise RuntimeError(f"sandbox {self.config.pack_id} did not become healthy: {last_error}")
 
-    def stop(self) -> None:
-        """Stop + remove the container. Idempotent (safe to call if not started)."""
+    def stop(self, log_dir: str | None = None) -> None:
+        """Stop + remove the container. Idempotent (safe to call if not started).
+
+        If `log_dir` is provided, captures `docker logs <cid>` to
+        `<log_dir>/sandbox-<pack_id>.log` BEFORE stopping the container — the
+        `docker run --rm` flag wipes logs on stop, so this is a one-shot
+        snapshot for post-run forensics. Failures here are non-fatal.
+        """
         if not self._container_id:
             return
+        if log_dir:
+            try:
+                from pathlib import Path
+                Path(log_dir).mkdir(parents=True, exist_ok=True)
+                proc = subprocess.run(
+                    ["docker", "logs", self._container_id],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                log_path = Path(log_dir) / f"sandbox-{self.config.pack_id}.log"
+                log_path.write_text(
+                    f"# benchlocal-cli sandbox log — {self.config.pack_id}\n"
+                    f"# container_id: {self._container_id}\n"
+                    f"# captured_at: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
+                    f"\n"
+                    f"=== STDOUT ===\n{proc.stdout}\n"
+                    f"=== STDERR ===\n{proc.stderr}\n",
+                    encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001
+                pass  # logs are nice-to-have; never block container teardown
         subprocess.run(["docker", "stop", self._container_id], check=False, capture_output=True, text=True)
         self._container_id = None
 
@@ -177,9 +206,16 @@ def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
 
 
 def _result_from_payload(scenario_id: str, payload: dict) -> ScenarioResult:
+    # Preserve the full upstream payload for forensics — rawLog, notes,
+    # subscore breakdowns (correctness/efficiency/discipline for CLI etc.),
+    # any diagnostic fields the verifier produced. Strip the redundant
+    # top-level passed/failure_mode/detail since those are already in the
+    # structured ScenarioResult fields.
+    trace = {k: v for k, v in payload.items() if k not in ("passed", "failure_mode", "detail")}
     return ScenarioResult(
         scenario_id=scenario_id,
         passed=bool(payload.get("passed")),
         failure_mode=payload.get("failure_mode", "verifier_fail"),
         detail=str(payload.get("detail", "")),
+        verifier_trace=trace if trace else None,
     )

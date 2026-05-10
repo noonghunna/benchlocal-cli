@@ -179,6 +179,7 @@ class Runner:
         thinking_max_tokens: int = 4096,
         extra_body: dict | None = None,
         sandbox_image_tag: str = "latest",
+        sandbox_log_dir: str | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -189,6 +190,10 @@ class Runner:
         self.thinking_max_tokens = thinking_max_tokens
         self.extra_body = extra_body or {}
         self.sandbox_image_tag = sandbox_image_tag
+        # If set, sandbox container stderr/stdout is captured to
+        # `<sandbox_log_dir>/sandbox-<pack_id>.log` before container teardown.
+        # See SandboxClient.stop(log_dir=...) for the snapshot.
+        self.sandbox_log_dir = sandbox_log_dir
         self._sandbox_clients: dict[str, SandboxClient] = {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
@@ -259,8 +264,12 @@ class Runner:
                 print(f"⚠️  {msg}", file=sys.stderr, flush=True)
 
     def _stop_sandboxes(self) -> None:
+        # Capture container logs before docker-rm wipes them — useful for
+        # post-run forensics on sandbox-side errors (verifier exceptions,
+        # upstream Node tracebacks, mock-marker warnings).
+        log_dir = self.sandbox_log_dir
         for client in list(self._sandbox_clients.values()):
-            client.stop()
+            client.stop(log_dir=log_dir)
         self._sandbox_clients.clear()
 
     def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
@@ -602,10 +611,19 @@ class Runner:
                     sandbox_client.verify_multiturn_end(state_id)
 
         latency = time.perf_counter() - started
+        # Extract the upstream verifier trace from the final payload (or
+        # whichever sandbox response was authoritative) for post-run forensics.
+        verifier_trace: dict | None = None
+        if isinstance(final_payload, dict):
+            verifier_trace = {
+                k: v for k, v in final_payload.items()
+                if k not in ("passed", "failure_mode", "detail", "action")
+            } or None
         result = replace(
             result,
             latency_seconds=latency,
             tokens_completion=tokens_total if tokens_total else None,
+            verifier_trace=verifier_trace,
         )
         raw_response: dict = {
             "multi_turn": True,
@@ -624,6 +642,7 @@ class Runner:
             turn_count=len(assistant_messages),
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
+            conversation=history,
         )
 
     @staticmethod
@@ -639,6 +658,7 @@ class Runner:
         turn_count: int | None = None,
         assistant_messages: list[dict] | None = None,
         tool_calls: list[dict] | None = None,
+        conversation: list[dict] | None = None,
     ) -> ScenarioRun:
         return ScenarioRun(
             id=scenario["id"],
@@ -653,4 +673,5 @@ class Runner:
             turn_count=turn_count,
             assistant_messages=assistant_messages or [],
             tool_calls=tool_calls or [],
+            conversation=conversation or [],
         )

@@ -30,6 +30,12 @@ class ScenarioResult:
     detail: str
     latency_seconds: float = 0.0
     tokens_completion: int | None = None
+    # Full upstream verifier payload — preserved for post-run forensics.
+    # For sandboxed packs, this is the complete dict returned by the
+    # upstream JS runtime (rawLog, notes, score, verifier subscores, etc.)
+    # so a failure can be diagnosed without re-running the scenario. None
+    # for in-process verifiers and for runs where the payload is unavailable.
+    verifier_trace: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -49,6 +55,11 @@ class ScenarioRun:
     turn_count: int | None = None
     assistant_messages: list[dict] = field(default_factory=list)
     tool_calls: list[dict] = field(default_factory=list)
+    # Full conversation history for multi-turn scenarios — list of OpenAI-shape
+    # messages (system, user, assistant, tool) across all turns. Empty for
+    # single-turn scenarios where the request `messages` field already captures
+    # the full input. Populated by the runner's multi-turn loop.
+    conversation: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -57,6 +68,7 @@ class ScenarioRun:
         data["detail"] = self.result.detail
         data["latency_seconds"] = self.result.latency_seconds
         data["tokens_completion"] = self.result.tokens_completion
+        data["verifier_trace"] = self.result.verifier_trace
         return data
 
 
