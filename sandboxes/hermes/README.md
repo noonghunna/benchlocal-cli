@@ -132,16 +132,16 @@ keyword argument '...'` errors, you have two iteration paths:
 the baked one so edits take effect on the next sandbox start:
 
 ```bash
-# Edit /opt/ai/github/benchlocal-cli/sandboxes/hermes/verification/agent-runner.py
+# Edit sandboxes/hermes/verification/agent-runner.py (in your benchlocal-cli clone)
 # Then drive the runner with the verification dir bind-mounted:
 docker run --rm -d --name hermes-iter \
   -p 9003:9000 \
-  -v ~/.hermes/hermes-agent:/home/wasif/.hermes/hermes-agent:ro \
-  -v ~/.local/share/uv/python:/home/wasif/.local/share/uv/python:ro \
+  -v ~/.hermes/hermes-agent:/opt/hermes-agent:ro \
+  -v ~/.local/share/uv/python:/opt/uv-python:ro \
   -v "$(pwd)/sandboxes/hermes/verification:/app/verification:ro" \
   -v "$(pwd)/sandboxes/hermes/server.py:/app/server.py:ro" \
-  -e HERMES_AGENT_PATH=/home/wasif/.hermes/hermes-agent \
-  -e HERMES_AGENT_PYTHON=/home/wasif/.hermes/hermes-agent/venv/bin/python \
+  -e HERMES_AGENT_PATH=/opt/hermes-agent \
+  -e HERMES_AGENT_PYTHON=/opt/uv-python/cpython-3.12/bin/python \
   benchlocal-sandbox-hermes:latest
 # POST a single scenario to /verify-start to test the fix
 docker stop hermes-iter

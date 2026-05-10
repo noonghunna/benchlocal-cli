@@ -449,6 +449,10 @@ class Runner:
         pack_id = scenario.get("pack_id")
         if pack_id == "hermesagent-20":
             return True
+        if pack_id == "aider-polyglot-30":
+            # v0.9.0: aider-polyglot-30 uses /verify-start with verify-final
+            # early-out (single-scoreboard pack — 1 batch = 1 scenario).
+            return True
         if pack_id == "cli-40":
             return (scenario.get("raw_scenario") or {}).get("kind") == "multiround"
         return False

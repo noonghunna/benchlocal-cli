@@ -170,7 +170,7 @@ Comparing against v0.6 keyword-match-on-mocked-tools:
 | Subprocess timeout 900s × any hang = 4hr worst case | Same hang | Added `HERMES_SUBPROCESS_TIMEOUT_S` env (default 300s) + per-call passthrough |
 | Hermes 64K minimum context check on Gemma 32K | First Gemma run | Wrote `<HERMES_HOME>/config.yaml` with `model.context_length: 64000` per scenario |
 | Same on auxiliary compression model | Second Gemma run | Added `auxiliary.compression.context_length: 64000` to same yaml |
-| Gemma vLLM compose missing `--enable-auto-tool-choice` / `--tool-call-parser gemma4` | Third Gemma run, 0/20 with no LLM calls | Updated `/opt/ai/compose/vllm-gemma-mtp/docker-compose.yml` |
+| Gemma vLLM compose missing `--enable-auto-tool-choice` / `--tool-call-parser gemma4` | Third Gemma run, 0/20 with no LLM calls | Updated `club-3090/models/gemma-4-31b/vllm/compose/dual/docker-compose.yml` |
 
 All fixes landed in the working tree; tests cover the detection-helper changes (33/33 passing).
 
