@@ -56,13 +56,30 @@ v0.7 candidate closes the available part of this gap by syncing upstream `verifi
   - If declined → override locally in `benchlocal_cli/scoring/value_match.py`, document as intentional divergence
 - **CHANGELOG + migration notes for v0.6/v0.7 score drops.** Document that v0.4 numbers measured shape, v0.6 added structure, v0.7 measures correctness.
 
-## Diagnostic tooling — v0.8
+## Diagnostic tooling — v0.8 ⭐ (promoted before further evals)
 
-Brief TBD. Lands after v0.7 + ReasonMath follow-up. ~8-10 hr Codex chunk. Surface area:
+Brief TBD. Lands after v0.7 + ReasonMath follow-up. ~8-10 hr Codex chunk. **Now ranked higher than expanding the eval surface** — better tooling makes the existing 8 packs more useful before adding new evals. Surface area:
 
 - **`--previous-result PATH`** — compare runs, emit delta column. Was in the v0.1 design notes but never implemented. Catches regressions on patch bumps.
 - **Result inspection subcommand** — `benchlocal-cli inspect <result.json> --scenario RM-01` shows model response + verifier reasoning + trace. Avoids manual JSON grepping.
 - **Trend tracking** — historical scores per (model, compose) tuple. Flat-file aggregator or "results catalog" doc that quality-test.sh appends to.
+
+## Optional expansion (if/when needed) — v0.9+
+
+BenchLocal stays the primary 30-45 min local quality gate. These are *complementary* additions — promote when the underlying need is real (typically: cross-rig comparisons that need depth on a specific axis, or new model classes that BenchLocal's surface doesn't exercise).
+
+Recommended order if we expand:
+
+1. **lm-eval-harness calibration slice** — tiny subset (IFEval / GSM8K / MMLU / HellaSwag, ~50 prompts each) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Not a replacement; a calibration anchor.
+2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step scenarios add real depth when we need to compare function-calling fidelity across quants.
+3. **Mirror HermesAgent into Inspect AI** — strongest "maybe we should have started here" point. v0.7's HermesAgent exposes a real architecture gap: the upstream agent runner owns the model loop, but our SandboxClient sends one assistant response per call. Inspect AI provides the framework primitives (multi-turn loop, tool simulation, trace verification) we'd otherwise re-invent. If serious multi-turn agent eval becomes a project priority, port HermesAgent there rather than deepening our custom Hermes runner.
+
+Tools we evaluated and *don't* rank for inclusion:
+
+- **promptfoo** — useful for orchestration / regression diffs, but doesn't solve the verifier-maturity problem (which is where BenchLocal's value is)
+- **OpenAI simple-evals** — good reference code, but deprecated as a maintained source; use for inspiration only
+- **HumanEval / HumanEval+** — covered by BenchLocal's BugFind-15 effectively
+- **MT-Bench / Arena-Hard** — requires a strong judge model, not deterministic, defeats the local-only premise
 
 ## Parking lot — when needed
 
