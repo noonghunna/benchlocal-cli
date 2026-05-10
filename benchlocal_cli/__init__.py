@@ -8,4 +8,4 @@ Pack data lives in `benchlocal_cli/packs/<pack-id>.jsonl`.
 Verifier modules live in `benchlocal_cli/scoring/`.
 """
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
