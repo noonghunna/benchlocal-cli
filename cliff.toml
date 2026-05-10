@@ -1,18 +1,34 @@
-# git-cliff config for benchlocal-cli — generates GitHub Release notes from
-# commits since the last tag. Uses SemVer (vMAJOR.MINOR.PATCH) since this is
-# a published Python package.
+# git-cliff config for benchlocal-cli — auto-generates BOTH the GitHub Release
+# body AND CHANGELOG.md from commit messages. Workflow:
+#   git tag v0.X.Y && git push origin v0.X.Y
+#     → .github/workflows/release.yml runs
+#       → cliff renders the GitHub Release body (--latest --strip header)
+#       → cliff regenerates the full CHANGELOG.md (writes back to master)
+#       → release published with the latest-only body
 #
-# Workflow: tag with `git tag v0.5.0 && git push origin v0.5.0` →
-# .github/workflows/release.yml runs → git-cliff generates the body →
-# release published.
+# Don't hand-edit CHANGELOG.md — it gets overwritten on the next tag. Write
+# rich commit message bodies and they'll flow into both surfaces.
 
 [changelog]
+# Header rendered once at top of CHANGELOG.md (preserved across full regens).
+# Stripped from the GitHub Release body via `--strip header`.
 header = """
+# Changelog
+
+Auto-generated from commit messages by [git-cliff](https://git-cliff.org/).
+Write rich commit message bodies (subject + blank line + multi-paragraph body)
+and they'll render below in both this file and the
+[GitHub Release pages](https://github.com/noonghunna/benchlocal-cli/releases).
+
+---
+
 """
 
+# Per-version body. Subject as bold bullet; commit message body (everything
+# after the subject + blank line) renders indented below for narrative.
 body = """
 {% if version %}\
-## What's in {{ version }}
+## {{ version }}{% if timestamp %} — {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
 
 {% else %}\
 ## Unreleased
@@ -22,21 +38,21 @@ body = """
 ### {{ group }}
 
 {% for commit in commits %}\
-- {{ commit.message | split(pat="\\n") | first | trim }}{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/noonghunna/benchlocal-cli/pull/{{ commit.github.pr_number }}) by @{{ commit.github.username }}){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/noonghunna/benchlocal-cli/commit/{{ commit.id }})){% endif %}
-{% endfor %}
-{% endfor %}
+- **{{ commit.message | split(pat="\\n") | first | trim }}**{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/noonghunna/benchlocal-cli/pull/{{ commit.github.pr_number }}) by @{{ commit.github.username }}){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/noonghunna/benchlocal-cli/commit/{{ commit.id }})){% endif %}
+{% set body_lines = commit.message | split(pat="\\n") %}\
+{% if body_lines | length > 1 %}\
+{% set body = body_lines | slice(start=1) | join(sep="\\n") | trim %}\
+{% if body %}
 
----
+  {{ body | replace(from="\\n", to="\\n  ") }}
 
-## Install
-
-```bash
-pip install git+https://github.com/noonghunna/benchlocal-cli.git@{{ version }}
-```
-
-{% if previous.version %}\
-**Full diff:** [{{ previous.version }}...{{ version }}](https://github.com/noonghunna/benchlocal-cli/compare/{{ previous.version }}...{{ version }})
 {% endif %}\
+{% endif %}\
+{% endfor %}
+{% endfor %}
+
+{% if version %}[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@{{ version }}`]{% if previous.version %} · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/{{ previous.version }}...{{ version }}){% endif %}
+{% endif %}
 """
 
 footer = ""
@@ -97,11 +113,8 @@ commit_parsers = [
 tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
 ignore_tags = ""
 
-# [remote.github] commented out: while the repo is private, git-cliff's
-# GitHub API enrichment hits 403 on closed-PR listings even with GITHUB_TOKEN.
-# Re-enable when the repo is flipped public (gives PR/contributor links in
-# rendered release notes).
-#
-# [remote.github]
-# owner = "noonghunna"
-# repo = "benchlocal-cli"
+# GitHub API enrichment — now public (flipped 2026-05-10) so this works and
+# gives PR/contributor links in rendered release notes.
+[remote.github]
+owner = "noonghunna"
+repo = "benchlocal-cli"
