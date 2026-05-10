@@ -25,18 +25,42 @@ Replace v0.4 shape-check verifiers with real upstream-fidelity verification:
 
 **Expected outcome:** evaluation quality goes up; raw scores will drop because today's shape-checks are inflated. See `CODEX_BRIEF_V6.md` for the score-drop estimate. Closing this gate is the prerequisite for flipping the repo public — at v0.6 the CLI is genuinely useful for outsiders.
 
-## After v0.6 — v0.6.1 follow-up
+## v0.6.1 — sandbox patches (shipped 2026-05-09)
 
-Small bundle, ~4-6 hr total. Lands close behind v0.6:
+Commit [`c5e1dbd`](https://github.com/noonghunna/benchlocal-cli/commit/c5e1dbd). Real-model A/B against Qwen3.6-27B exposed three v0.6 verifier defects, all patched:
+
+- All sandboxes: `do_POST` wraps verifier in try/except (was disconnecting on uncaught exceptions)
+- CLI: FileNotFoundError + PermissionError caught in `_run_command` (was crashing verifier)
+- CLI: compound shell syntax routed through `bash -c` with raw-string forbidden-token check (was rejecting `cmd1 && cmd2` outright)
+- CLI: multi-line fenced code blocks extracted in full (was first-line-only)
+
+Net: cli-40 went 0/40 → 5/40 on Qwen (still hitting fixture-gap floor; v0.7 lifts that).
+
+## Next — v0.7: close the fixture-gap (gates public release)
+
+**Brief:** [`CODEX_BRIEF_V7.md`](CODEX_BRIEF_V7.md) (Codex hand-off, ~15-22 hr).
+
+v0.6 verifiers work but the upstream fixture trees aren't in `vendor/` — so CLI verifier hits a 12% floor (commands reference `/workspace/<file>` inputs that don't exist), BugFind uses rubric heuristics instead of real pytest, Hermes uses keyword-match on final answers instead of multi-turn flow simulation.
+
+v0.7 closes this:
+- Phase A — vendor fixture lift (sync upstream's actual fixture trees into `vendor/`)
+- Phase B — BugFind real pytest against lifted fixtures
+- Phase C — CLI workspace-input + expected-output comparison
+- Phase D — Hermes flow-driven multi-turn with real browser/cron mocks
+- Phase E — docs + validation + version bump
+
+**Acceptance gate** (gates public release): real-model A/B on Qwen + Gemma must show meaningful discrimination on each sandboxed pack (>40% on cli-40, stable in non-trivial range on bugfind/hermes).
+
+## After v0.7 — v0.7.x follow-ups
 
 - **ReasonMath value-centric verifier.** In-process scoring path (separate from sandbox layer). Implements value-match assertion type per [stevibe/ReasonMath-15#2](https://github.com/stevibe/ReasonMath-15/issues/2). Path depends on upstream response:
   - If stevibe accepts the proposal → align with upstream
   - If declined → override locally in `benchlocal_cli/scoring/value_match.py`, document as intentional divergence
-- **CHANGELOG + migration notes for v0.6 score drop.** Without this, anyone reading historical compose Quality lines will think v0.6 made models worse. Document that v0.4 numbers measured shape, v0.6 measures correctness.
+- **CHANGELOG + migration notes for v0.6/v0.7 score drops.** Document that v0.4 numbers measured shape, v0.6 added structure, v0.7 measures correctness.
 
-## Diagnostic tooling — v0.7
+## Diagnostic tooling — v0.8
 
-Brief TBD. Lands after v0.6 + v0.6.1. ~8-10 hr Codex chunk. Surface area:
+Brief TBD. Lands after v0.7 + ReasonMath follow-up. ~8-10 hr Codex chunk. Surface area:
 
 - **`--previous-result PATH`** — compare runs, emit delta column. Was in the v0.1 design notes but never implemented. Catches regressions on patch bumps.
 - **Result inspection subcommand** — `benchlocal-cli inspect <result.json> --scenario RM-01` shows model response + verifier reasoning + trace. Avoids manual JSON grepping.
