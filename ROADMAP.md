@@ -74,7 +74,27 @@ Recommended order if we expand:
 2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step scenarios add real depth when we need to compare function-calling fidelity across quants.
 3. **Mirror HermesAgent into Inspect AI** — strongest "maybe we should have started here" point. v0.7's HermesAgent exposes a real architecture gap: the upstream agent runner owns the model loop, but our SandboxClient sends one assistant response per call. Inspect AI provides the framework primitives (multi-turn loop, tool simulation, trace verification) we'd otherwise re-invent. If serious multi-turn agent eval becomes a project priority, port HermesAgent there rather than deepening our custom Hermes runner.
 
-Tools we evaluated and *don't* rank for inclusion:
+### Mode naming for the expanded suite
+
+When the expansion lands, the CLI mode taxonomy grows like this:
+
+```
+--quick       2 packs   30 scenarios   ~5-10 min    smoke
+--medium      5 packs   75 scenarios   ~15-25 min   deterministic only (no Docker)
+--full        8 packs   150 scenarios  ~25-40 min   sandboxed — all BenchLocal scenarios (today's --full, scope unchanged)
+--audit       8 + lm-eval calibration + BFCL-lite   ~50-90 min   release-gate / external sanity
+```
+
+Why `--audit` (not `--full+` or `--everything`):
+
+- `--full` keeps a stable, predictable scope (all BenchLocal packs) — users who scripted `--full` today retain their 25-40 min mental model when expansion lands
+- `--audit` is semantically distinct: external calibration layered on top, not just "more BenchLocal." Implies cross-checking against established academic benchmarks (lm-eval slice) plus depth (BFCL)
+- Tier reads naturally: smoke → deterministic → sandboxed → audit
+- The `+` / `everything` / `--full2` patterns all collide semantically with `--full` since "full" already means "everything"
+
+Inspect AI's HermesAgent port replaces (not adds to) the existing `hermesagent-20` slot — same scenarios, better framework. So `--full` retains 8 packs / 150 scenarios after that swap; only `--audit` grows scenario count.
+
+### Tools we evaluated and *don't* rank for inclusion
 
 - **promptfoo** — useful for orchestration / regression diffs, but doesn't solve the verifier-maturity problem (which is where BenchLocal's value is)
 - **OpenAI simple-evals** — good reference code, but deprecated as a maintained source; use for inspiration only
