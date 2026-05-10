@@ -406,6 +406,13 @@ def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
         # Override via BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner.
         sub_timeout = os.environ.get("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "300")
         env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", sub_timeout),)
+        # Hermes-agent v0.13+ enforces a 64K context-window minimum on the
+        # served model. Models at smaller windows (Gemma 4 at 32K) fail this
+        # check even though scenarios fit in <8K tokens. Inject the override
+        # into upstream's writeHermesConfig() via env. Default 64000 (the
+        # minimum that satisfies the check); set to 0 to disable.
+        ctx_override = os.environ.get("BENCHLOCAL_HERMES_CONTEXT_OVERRIDE", "64000")
+        env = env + (("BENCHLOCAL_HERMES_CONTEXT_OVERRIDE", ctx_override),)
         # Auto-detect a host-installed hermes-agent. We mount it at the SAME
         # path inside the container (not /opt/hermes-agent) so the venv's
         # shebangs and the uv-managed python's hardcoded prefix both resolve.

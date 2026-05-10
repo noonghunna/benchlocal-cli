@@ -1,3 +1,78 @@
+# HermesAgent-20 v0.7.3 + v0.7.4 A/B — Qwen3.6-27B vs Gemma-4-31B
+
+## v0.7.4 update (2026-05-09 PM): grading parity via upstream Node grader
+
+After v0.7.3 shipped, the keyword-match Python grader was identified as
+the dominant signal-suppressor (false-negatives on correct refusals,
+false-positives on lucky keyword overlap). v0.7.4 replaced it with
+upstream's Node `core.mjs` grader running inside the same container.
+
+**Gemma v0.7.4 final: 10/20 = 50%** (v0.7.3 was 6/20 = 30% with the
+keyword grader). Per-scenario reconciliation:
+
+| Pattern | Scenarios | Meaning |
+|---|---|---|
+| v0.7.4 PASS, v0.7.3 fail (false negatives caught) | HA-03, HA-06, HA-11, HA-13, HA-15, HA-18 | Agent did the right thing; keyword grader couldn't see it |
+| v0.7.3 PASS, v0.7.4 fail (lucky-passes corrected) | HA-04, HA-14 | Keyword grader gave credit without real success; upstream grader correctly rejects |
+| Stable PASS in both | HA-01, HA-09, HA-12, HA-19 | Genuine wins under either grader |
+| Stable fail in both | 8 scenarios | Genuine fails under either grader |
+
+Net delta: **+4 correct verdicts** v0.7.4 over v0.7.3. The visible score
+shift (30% → 50%) is the keyword grader's floor lifting to truth, not
+the model improving. Same Gemma weights, same prompts, same agent loop.
+
+### v0.7.4 implementation gotchas (folded into the brief)
+
+The path from "design v0.7.4" → "Gemma 50%" surfaced 6 issues:
+
+1. **Pinned hermes commit too old** — `ea74f61` (~6 months stale) didn't
+   support newer tool-calling patterns. Bumped to upstream main HEAD
+   `44cdf555` which ships hermes-agent v0.13.0.
+2. **Verification dir path mismatch** — upstream's `hermes-runtime.mjs`
+   hardcodes `/opt/verification/`; our Dockerfile put it at `/app/verification/`.
+   Mirrored upstream's WORKDIR.
+3. **Hermes 64K context-window minimum check** — Gemma serves at 32K.
+   Patched upstream's `writeHermesConfig` to inject `context_length: 64000`
+   under both `model:` and `compression:` blocks via
+   `BENCHLOCAL_HERMES_CONTEXT_OVERRIDE` env (default 64000).
+4. **`/v1` base-url stripping** — `_normalize_base_url` in our proxy was
+   *removing* `/v1` when upstream's OpenAI client expects it present.
+   Caused HTTP 404 on every request → 0 tool events → 5% floor score.
+   Fixed to ensure `/v1` suffix is present.
+5. **Toolset restrictions are intentional** — upstream specifies per-scenario
+   toolsets (`["memory"]` for HA-01, etc.) by design. Strict parity preserves
+   this even though it makes some scenarios harder.
+6. **Bake fallback was silent on failure** — image built with no upstream install
+   would still be tagged. Codex review caught this; explicit `BAKE=1 must succeed`
+   policy now in Dockerfile.
+
+### v0.7.4 stack notes
+
+- Container runs upstream's `verification/server.mjs` on internal :4010 +
+  our Python proxy on :9000 (entrypoint.sh boots both, fail-loud if Node
+  doesn't come up)
+- Image gained Node 22, Chromium, agent-browser, Python venv with
+  hermes-agent v0.13 editable-installed (~600 MB → ~1.5 GB final)
+- Schema version bumped to "2"; saved JSON traces include
+  `upstream_status`, `upstream_score` (0-100), `upstream_verifier`
+  (subscore breakdown), `upstream_raw` (capped at 16KB)
+- 40/40 tests passing (was 33). New tests cover `_translate_request`,
+  `_translate_upstream_result`, `_classify_failure`, `_cap_upstream_for_trace`,
+  `_normalize_base_url`, mock-pass response shape
+
+### Qwen leg pending
+
+v0.7.4 Qwen A/B not yet run — the canonical
+`club-3090/models/qwen3.6-27b/vllm/compose/dual/docker-compose.yml`
+hits an unrelated vLLM `maybe_override_with_speculators` + transformers
+regression on the current `nightly-01d4d1ad` image. Stack-level concern
+not specific to v0.7.4. Once a working canonical Qwen compose is back,
+re-run the same A/B and append results here.
+
+---
+
+# Original v0.7.3 writeup (kept for history)
+
 # HermesAgent-20 v0.7.3 A/B — Qwen3.6-27B vs Gemma-4-31B
 
 **Date:** 2026-05-09
