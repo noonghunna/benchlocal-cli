@@ -16,7 +16,9 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, and CLI-40 now run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** now run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
+
+**v0.9.0** added the eval-expansion track — `aider-polyglot-30` ships as the first non-BenchLocal sandboxed pack: 30-exercise multi-language code-editing bench across cpp/go/java/javascript/python/rust, vendored upstream from `Aider-AI/aider`'s `benchmark.py`. Run with `--pack aider-polyglot-30 --enable-sandboxed-packs`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md).
 
 ## Modes (target)
 
@@ -25,8 +27,9 @@ BenchLocal is a great Electron desktop app, but our use case (validation gating 
 | `--quick` | ToolCall-15 + InstructFollow-15 | ~10-15 min | Per-commit gate; pre-push smoke |
 | `--medium` (default) | + StructOutput-15 + DataExtract-15 | ~25-30 min | Pre-release; pin bumps; new compose authoring |
 | `--full` | + ReasonMath-15 + (BugFind / HermesAgent / CLI when sandboxed) | ~45-60 min | Cross-rig comparison; quality A/B vs another quant |
+| `--pack aider-polyglot-30` | aider-polyglot-30 (independent — not bundled in `--quick`/`--medium`/`--full`) | ~15-25 min | Agentic code-editing signal; cross-model quality A/B for IDE-agent / coding workloads |
 
-Pack selection in each mode follows Codex design-review feedback (2026-05-09) — ToolCall + InstructFollow are the primary signals for IDE-agent regressions; StructOutput catches grammar/JSON drift; ReasonMath defers to `--full` because it leans toward generic benchmark behavior rather than agent-stack-specific.
+Pack selection in each mode follows Codex design-review feedback (2026-05-09) — ToolCall + InstructFollow are the primary signals for IDE-agent regressions; StructOutput catches grammar/JSON drift; ReasonMath defers to `--full` because it leans toward generic benchmark behavior rather than agent-stack-specific. AiderPolyglot-30 is run independently because its harness is a batch runner with multi-turn edit/test loops — different shape from the per-scenario BenchLocal packs.
 
 ## Pack inventory
 
@@ -40,6 +43,7 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 | **BugFind-15** | **Execution-backed** — candidate-fix verifier sandbox | ✅ sandboxed v0.4 verifier |
 | **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ✅ sandboxed v0.4 verifier |
 | **CLI-40** | **Linux exec sandbox** — command verifier sandbox | ✅ sandboxed v0.4 verifier |
+| **AiderPolyglot-30** | **Multi-language edit/test harness** — wraps upstream `Aider-AI/aider` `benchmark.py` over 30 curated exercises (cpp / go / java / js / python / rust, 5 each) | ✅ sandboxed v0.9 (single-scoreboard) |
 
 ## Layout (planned)
 
