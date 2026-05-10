@@ -263,6 +263,21 @@ class Runner:
                 warnings.append(msg)
                 print(f"⚠️  {msg}", file=sys.stderr, flush=True)
 
+    def _inject_sandbox_log_file(self, result: ScenarioResult, pack_id: str | None) -> ScenarioResult:
+        """v0.8.1: stamp `verifier_trace.sandbox_log_file` so `inspect --logs DIR`
+        can resolve which log goes with which scenario without guessing.
+
+        Records the relative filename `sandbox-<pack_id>.log` (the same file
+        SandboxClient.stop() writes when log_dir is set). v0.8.1 inspect
+        joins this with the user-supplied --logs DIR. No-op when
+        --sandbox-log-dir wasn't set or the result is from a non-sandboxed pack.
+        """
+        if not self.sandbox_log_dir or not pack_id:
+            return result
+        existing = dict(result.verifier_trace) if isinstance(result.verifier_trace, dict) else {}
+        existing.setdefault("sandbox_log_file", f"sandbox-{pack_id}.log")
+        return replace(result, verifier_trace=existing)
+
     def _stop_sandboxes(self) -> None:
         # Capture container logs before docker-rm wipes them — useful for
         # post-run forensics on sandbox-side errors (verifier exceptions,
@@ -396,7 +411,11 @@ class Runner:
 
         assert raw_response is not None
         response_field_used = content_with_source(raw_response)[1]
-        if meta.get("supports_sandboxed_only") and scenario.get("pack_id") in self._sandbox_clients:
+        sandboxed_path = (
+            meta.get("supports_sandboxed_only")
+            and scenario.get("pack_id") in self._sandbox_clients
+        )
+        if sandboxed_path:
             result = self._sandbox_clients[scenario["pack_id"]].verify(
                 scenario,
                 raw_response,
@@ -412,6 +431,8 @@ class Runner:
         if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
             tokens = usage["completion_tokens"]
         result = replace(result, latency_seconds=latency, tokens_completion=tokens)
+        if sandboxed_path:
+            result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
         return self._scenario_run(
             scenario,
             raw_response,
@@ -524,6 +545,7 @@ class Runner:
                     latency_seconds=latency,
                     verifier_trace=early_trace,
                 )
+                result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
                 return self._scenario_run(
                     scenario,
                     {"multi_turn": True, "responses": [], "final_verifier_payload": start_payload},
@@ -649,6 +671,7 @@ class Runner:
             tokens_completion=tokens_total if tokens_total else None,
             verifier_trace=verifier_trace,
         )
+        result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
         raw_response: dict = {
             "multi_turn": True,
             "responses": raw_responses,

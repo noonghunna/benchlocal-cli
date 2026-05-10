@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1
+
+The deferred Phase B.5 from the v0.8 brief — `inspect --diff` and
+`inspect --logs`. No new flags on `run`; pure additions to `inspect`.
+
+- **`inspect <result.json> --diff <other.json>`** — side-by-side
+  comparison of one (or more, with --pack/--scenario filters) scenario
+  across two saved runs. Renders verdict flip (FIX / REGRESSION /
+  stable PASS / stable fail), final-response delta, upstream score
+  delta, latency delta. Useful for "why did HA-13 flip between v0.7.3
+  and v0.7.4?".
+- **`inspect <result.json> --logs DIR`** — append a tail of the
+  associated sandbox stdout/stderr file after each rendered scenario.
+  Resolves via per-scenario `verifier_trace.sandbox_log_file` (added
+  this release in Phase A) or falls back to `<DIR>/sandbox-<pack_id>.log`
+  for v0.7.2-v0.8.0 saved JSONs.
+- **Phase A — runner injects `verifier_trace.sandbox_log_file`** when
+  `--sandbox-log-dir` is set. Added to all 3 sandboxed-result paths
+  (single-turn, multi-turn early-out, multi-turn loop end). No change
+  to default behavior; field absent when --sandbox-log-dir is unset.
+- 81/81 tests passing (was 70). 11 new tests covering diff happy/sad
+  paths, --logs file resolution + fallback + missing-dir, runner-side
+  log-file injection.
+
 ## 0.8.0
 
 Diagnostic tooling on top of v0.7.4's grading parity. No sandbox

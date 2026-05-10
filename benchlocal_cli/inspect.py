@@ -7,7 +7,9 @@ Per Codex review of the v0.8 brief:
 - Missing-field tolerance for older v0.5/v0.6/v0.7.0 saved JSONs (#6)
 - Color on TTY only
 
-B.5 (--diff, --logs) is deliberately NOT here — see CODEX_BRIEF_V8.md.
+v0.8.1 Phase B.5 additions:
+- --diff <other.json>: side-by-side scenario comparison vs another run
+- --logs DIR: pull associated sandbox stdout/stderr after rendering
 """
 
 from __future__ import annotations
@@ -182,17 +184,35 @@ def inspect_result(
         print(f"benchlocal-cli inspect: failed to read {result_path}: {exc}", file=sys.stderr)
         return 1
 
+    # v0.8.1: --diff loads a second result and renders side-by-side
+    diff_path = getattr(args, "diff", None)
+    diff_index: dict[tuple[str, str], tuple[dict, dict]] | None = None
+    if diff_path:
+        diff_p = Path(diff_path)
+        if not diff_p.is_file():
+            print(f"benchlocal-cli inspect: --diff file not found: {diff_path}", file=sys.stderr)
+            return 1
+        try:
+            diff_result = json.loads(diff_p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"benchlocal-cli inspect: failed to read --diff: {exc}", file=sys.stderr)
+            return 1
+        diff_index = _build_index(diff_result)
+
+    # v0.8.1: --logs resolves sandbox stdout/stderr files
+    logs_dir: Path | None = None
+    if getattr(args, "logs", None):
+        logs_dir = Path(args.logs)
+        if not logs_dir.is_dir():
+            print(f"benchlocal-cli inspect: --logs not a directory: {args.logs}", file=sys.stderr)
+            return 1
+
     schema_version = result.get("schema_version", "unknown")
     matched: list[tuple[dict, dict]] = []
     for pack in result.get("packs") or []:
         pack_id = pack.get("pack_id")
         for run in pack.get("scenarios") or []:
-            # The runner's saved scenario dict has both run-level and result-level
-            # fields (see ScenarioRun.to_dict). For older JSONs that nested
-            # result fields under `result`, hoist them up.
-            if "passed" not in run and isinstance(run.get("result"), dict):
-                merged = {**run, **run["result"]}
-                run = merged
+            run = _hoist_result_fields(run)
             if _matches(run, pack_id, args):
                 matched.append((pack, run))
 
@@ -212,20 +232,26 @@ def inspect_result(
         return 2
 
     if args.format == "json":
-        # Strip pack-level metadata to make the output a flat list per Codex review hint
         out = []
         for pack, run in matched:
-            out.append({
+            entry = {
                 "pack_id": pack.get("pack_id"),
                 "pack_version": pack.get("version"),
                 **run,
-            })
+            }
+            if diff_index is not None:
+                key = (pack.get("pack_id") or "?", run.get("id") or "?")
+                prev_pair = diff_index.get(key)
+                entry["previous_run"] = prev_pair[1] if prev_pair else None
+            out.append(entry)
         print(json.dumps(out, indent=2, sort_keys=True))
         return 0
 
     # markdown / human-readable
     header = (
-        f"# benchlocal-cli inspect — {path.name}\n"
+        f"# benchlocal-cli inspect — {path.name}"
+        + (f"  (vs {Path(diff_path).name})" if diff_path else "")
+        + "\n"
         f"_run: {result.get('mode', '?')} mode · "
         f"endpoint: {result.get('endpoint', '?')} · "
         f"model: {result.get('model', '?')} · "
@@ -235,11 +261,151 @@ def inspect_result(
     )
     print(header)
     print()
+
     for pack, run in matched:
-        for line in _format_scenario(pack, run, full=args.full):
-            print(line)
+        if diff_index is not None:
+            key = (pack.get("pack_id") or "?", run.get("id") or "?")
+            prev_pair = diff_index.get(key)
+            previous_run = prev_pair[1] if prev_pair else None
+            for line in _format_diff(pack, run, previous_run, full=args.full):
+                print(line)
+        else:
+            for line in _format_scenario(pack, run, full=args.full):
+                print(line)
+        if logs_dir is not None:
+            log_path = _resolve_log_path(logs_dir, run, pack)
+            if log_path:
+                for line in _format_log_tail(log_path):
+                    print(line)
+            else:
+                print(_color(
+                    f"\n### Sandbox log: not found in {logs_dir} "
+                    f"(no `verifier_trace.sandbox_log_file` and no fallback "
+                    f"sandbox-{pack.get('pack_id')}.log)",
+                    _DIM,
+                ))
         print()
     return 0
+
+
+def _hoist_result_fields(run: dict) -> dict:
+    """Older saved JSONs (and the v0.7.x ScenarioRun.to_dict) nested
+    pass/failure_mode under `result`. Hoist them up so filters work uniformly."""
+    if "passed" not in run and isinstance(run.get("result"), dict):
+        return {**run, **run["result"]}
+    return run
+
+
+def _build_index(result: dict) -> dict[tuple[str, str], tuple[dict, dict]]:
+    """Build {(pack_id, scenario_id): (pack_dict, run_dict)} from a result."""
+    out: dict[tuple[str, str], tuple[dict, dict]] = {}
+    for pack in result.get("packs") or []:
+        pack_id = pack.get("pack_id") or "?"
+        for run in pack.get("scenarios") or []:
+            run = _hoist_result_fields(run)
+            sid = run.get("id") or "?"
+            # Last write wins for multi-repeat (most recent repeat run).
+            # For diff we just want a representative run per (pack, id).
+            out[(pack_id, sid)] = (pack, run)
+    return out
+
+
+def _format_diff(pack: dict, current_run: dict, previous_run: dict | None, full: bool) -> list[str]:
+    """v0.8.1: render the current-vs-previous diff for one scenario.
+    Layout: header + side-by-side prev/cur columns for verdict + key fields."""
+    sid = current_run.get("id") or "?"
+    pack_id = pack.get("pack_id") or "?"
+    out = [f"## {pack_id} :: {sid}  [DIFF]"]
+
+    if previous_run is None:
+        out.append(_color(f"- previous run has no row for ({pack_id}, {sid}) — scenario is NEW in current.", _DIM))
+        out.extend(_format_scenario(pack, current_run, full=full))
+        return out
+
+    cur_pass = bool(current_run.get("passed"))
+    prev_pass = bool(previous_run.get("passed"))
+    cur_badge = _color("PASS", _PASS_GREEN) if cur_pass else _color("FAIL", _FAIL_RED)
+    prev_badge = _color("PASS", _PASS_GREEN) if prev_pass else _color("FAIL", _FAIL_RED)
+
+    if cur_pass and not prev_pass:
+        flip = _color(" (FIX)", _PASS_GREEN)
+    elif not cur_pass and prev_pass:
+        flip = _color(" (REGRESSION)", _FAIL_RED)
+    elif cur_pass:
+        flip = " (stable PASS)"
+    else:
+        flip = " (stable fail)"
+
+    out.append(f"verdict:{flip}")
+    out.append(f"  previous: {prev_badge}  ({previous_run.get('failure_mode', '?')})  {(previous_run.get('detail') or '')[:120]}")
+    out.append(f"  current:  {cur_badge}  ({current_run.get('failure_mode', '?')})  {(current_run.get('detail') or '')[:120]}")
+
+    cur_resp = _scenario_response_field(current_run)
+    prev_resp = _scenario_response_field(previous_run)
+    if cur_resp != prev_resp:
+        out.append("\n### Final response (changed)")
+        out.append("--- previous ---")
+        out.append("```")
+        out.append(prev_resp[:600] if not full else prev_resp)
+        out.append("```")
+        out.append("--- current ---")
+        out.append("```")
+        out.append(cur_resp[:600] if not full else cur_resp)
+        out.append("```")
+    else:
+        out.append(_color("\n### Final response: unchanged between runs", _DIM))
+
+    # Upstream score delta (v0.7.4 saved JSONs)
+    cur_trace = current_run.get("verifier_trace") or {}
+    prev_trace = previous_run.get("verifier_trace") or {}
+    cur_inner = cur_trace.get("trace") if isinstance(cur_trace.get("trace"), dict) else cur_trace
+    prev_inner = prev_trace.get("trace") if isinstance(prev_trace.get("trace"), dict) else prev_trace
+    cur_score = (cur_inner or {}).get("upstream_score")
+    prev_score = (prev_inner or {}).get("upstream_score")
+    if cur_score is not None or prev_score is not None:
+        out.append(f"\n### Upstream score: previous={prev_score}  →  current={cur_score}")
+
+    # Latency delta
+    cur_lat = current_run.get("latency_seconds") or 0.0
+    prev_lat = previous_run.get("latency_seconds") or 0.0
+    if cur_lat or prev_lat:
+        delta = cur_lat - prev_lat
+        sign = "+" if delta >= 0 else ""
+        out.append(f"### Latency: prev={prev_lat:.2f}s → cur={cur_lat:.2f}s ({sign}{delta:.2f}s)")
+
+    return out
+
+
+def _resolve_log_path(logs_dir: Path, run: dict, pack: dict) -> Path | None:
+    """v0.8.1: --logs DIR resolution. Prefer `verifier_trace.sandbox_log_file`
+    (per-scenario field added in v0.8.1 Phase A); fall back to
+    `<DIR>/sandbox-<pack_id>.log` for v0.7.2-v0.8.0 saved JSONs."""
+    trace = run.get("verifier_trace") or {}
+    inner = trace.get("trace") if isinstance(trace.get("trace"), dict) else trace
+    log_file = (inner or {}).get("sandbox_log_file") or trace.get("sandbox_log_file")
+    if isinstance(log_file, str) and log_file:
+        candidate = logs_dir / log_file
+        if candidate.is_file():
+            return candidate
+    # Fallback: <DIR>/sandbox-<pack_id>.log
+    pack_id = pack.get("pack_id") or ""
+    if pack_id:
+        candidate = logs_dir / f"sandbox-{pack_id}.log"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _format_log_tail(log_path: Path, max_bytes: int = 4000) -> list[str]:
+    """Render the tail of a sandbox log file."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [_color(f"\n### Sandbox log: read error — {exc}", _FAIL_RED)]
+    if len(text) > max_bytes:
+        text = "...\n" + text[-max_bytes:]
+    out = [f"\n### Sandbox log: {log_path}", "```", text, "```"]
+    return out
 
 
 def add_inspect_subparser(subparsers) -> None:
@@ -279,4 +445,19 @@ def add_inspect_subparser(subparsers) -> None:
         choices=("markdown", "json"),
         default="markdown",
         help="output format (default: markdown)",
+    )
+    # v0.8.1 — Phase B.5
+    parser.add_argument(
+        "--diff",
+        metavar="OTHER_RESULT_JSON",
+        help="render side-by-side scenario comparison vs another saved RunResult. "
+             "Per-(pack_id, scenario_id) match. Combine with --scenario to focus.",
+    )
+    parser.add_argument(
+        "--logs",
+        metavar="DIR",
+        help="pull sandbox stdout/stderr files from this directory (the same path "
+             "passed to `run --sandbox-log-dir`). Resolved via per-scenario "
+             "`verifier_trace.sandbox_log_file` (v0.8.1+) with fallback to "
+             "<DIR>/sandbox-<pack_id>.log.",
     )
