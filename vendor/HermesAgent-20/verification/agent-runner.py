@@ -243,7 +243,6 @@ def main() -> int:
             tool_start_callback=_tool_started,
             tool_complete_callback=_tool_completed,
             clarify_callback=clarify_callback,
-            persist_session=True,
         )
 
         result = agent.run_conversation(str(request.get("prompt") or ""))

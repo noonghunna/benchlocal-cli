@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import signal
 import statistics
 import time
@@ -523,8 +524,20 @@ class Runner:
                 # upstream agent against the same target the runner is benching.
                 # Sampling is included so upstream's request_overrides
                 # (temperature, top_p, max_tokens, etc.) match runner defaults.
+                #
+                # Endpoint resolution: opt-in via BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1.
+                # When set, rewrites localhost/127.x/[::1] → host.docker.internal so
+                # the hermes-agent inside the sandbox container can reach the runner's
+                # host-side vLLM. Pairs with the --add-host flag already added by
+                # sandbox.py:290-294. Default-off preserves existing hermes deployments
+                # where service-name resolution (k8s, docker-compose internal) already
+                # works without rewrite.
+                hermes_endpoint = self.endpoint
+                if os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1":
+                    from benchlocal_cli.sandbox import resolve_endpoint_for_container
+                    hermes_endpoint = resolve_endpoint_for_container(self.endpoint)
                 start_kwargs = {
-                    "model_endpoint": self.endpoint,
+                    "model_endpoint": hermes_endpoint,
                     "model_name": self.model,
                     "model_api_key": "dummy",  # vLLM doesn't validate; upstream still requires a value
                     "sampling": dict(sampling),
