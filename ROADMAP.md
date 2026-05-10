@@ -103,10 +103,16 @@ Integration pattern: **delegate to upstream**. BenchLocal packs (BugFind/CLI/Her
 
 Recommended order if we expand:
 
-1. **lm-eval-harness calibration slice** — tiny subset (IFEval / GSM8K / MMLU / HellaSwag, ~50 prompts each) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Delegate to `EleutherAI/lm-evaluation-harness` upstream. Not a replacement; a calibration anchor.
+1. **lm-eval-harness calibration slice** — tiny subset (**IFEval + GSM8K only**, ~50 prompts each, ~10 min) as a sanity sidecar. Tells us if a quant or config change broadly damaged model quality before we trust BenchLocal scores. Delegate to `EleutherAI/lm-evaluation-harness` upstream. Not a replacement; a calibration anchor. **Skipping MMLU / HellaSwag / ARC / TruthfulQA** — saturated for any modern model class, low signal at our scale.
 2. **BFCL-lite for tool-calling depth** — BenchLocal's `toolcall-15` is intentionally shallow. BFCL's nested-call / parallel-call / multi-step / irrelevance-detection scenarios add real depth when we need to compare function-calling fidelity across quants. Delegate to `gorilla-llm/gorilla` upstream runner.
+3. **Aider Polyglot lite for multi-language code editing** — covers C++ / Go / Java / JS / Python / Rust + edit-format reliability. **Closer to "will this model behave inside an editor"** than HumanEval+'s Python-only spec-to-code. The right primary code-generation slot for an IDE-agent quality bench. Delegate to `Aider-AI/aider` upstream's polyglot benchmark runner. ~10-15 min for a 30-50 case lite slice.
+4. **IDE-agent safety slice** (custom, ~10-20 scenarios, ~5 min) — NOT WMDP-style safety. Concrete IDE-agent failure modes: does the model refuse `rm -rf` without confirmation? Leak `.env` / secrets when asked to share config? Obey malicious README instructions or comments inside source files (prompt injection through files)? Run `curl | bash` suggestions blindly? This axis is unique to local coding-agent deployment and isn't covered by any existing bench. We'd author it ourselves; this is the one slot where Inspect AI's framework primitives could earn their keep (custom scenarios, no upstream runner).
 
-Other benches considered + reason not on the roadmap today: tau-bench / AgentBench (no concrete need; would follow same delegate-to-upstream pattern when added).
+Other benches considered:
+- **HumanEval+ / MBPP** — Python-only spec-to-code, saturated for modern models, prone to overfit. Keep as optional `--legacy-codegen` cheap compatibility anchor only; not a primary slot. Aider Polyglot replaces it as the code-gen tier-1 pick.
+- **LiveCodeBench** — contamination-resistant algorithmic coding. Different motivation than Aider Polyglot (algorithmic problem-solving vs editor realism). Add only if we have a concrete need to differentiate models on contamination resistance.
+- **SWE-bench Verified / Lite** — high-signal real software engineering. Cost is high (5-30 min per scenario). Stays in `--swe` power-user tier, not in `--audit`. Use `mini-SWE-agent` as the runner.
+- **tau-bench / AgentBench** — no concrete need; would follow delegate-to-upstream pattern when added.
 
 ### Mode naming for the expanded suite
 
@@ -116,7 +122,9 @@ When the expansion lands, the CLI mode taxonomy grows like this:
 --quick       2 packs   30 scenarios   ~5-10 min    smoke
 --medium      5 packs   75 scenarios   ~15-25 min   deterministic only (no Docker)
 --full        8 packs   150 scenarios  ~25-40 min   sandboxed — all BenchLocal scenarios (today's --full, scope unchanged)
---audit       8 + lm-eval calibration + BFCL-lite   ~50-90 min   release-gate / external sanity
+--audit       full + lm-eval (IFEval+GSM8K) + BFCL-lite + Aider Polyglot lite + agent-safety
+              ~55-75 min   release-gate / external sanity / multi-language editor + agent safety
+--swe         SWE-bench-lite (10-20 cases via mini-SWE-agent)   30-60 min   power-user repo-scale
 ```
 
 Why `--audit` (not `--full+` or `--everything`):
