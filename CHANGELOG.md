@@ -9,13 +9,27 @@ the same content per-version.
 
 ---
 
+## v0.9.4 — 2026-05-15
+
+
+### ✨ Features
+
+- feat(vendor): bump BugFind-15 to 1.0.1 ([9376923](https://github.com/noonghunna/benchlocal-cli/commit/937692320b2d57a6f1c5d0ba7ad56d763f80a96c))
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(cliff): skip auto-regen bot commits in changelog parser ([dc5d605](https://github.com/noonghunna/benchlocal-cli/commit/dc5d6058afb9b3d2a39dae491ff38aa68c0e4ad1))
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.4`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.3...v0.9.4)
 ## v0.9.3 — 2026-05-10
 
 
 ### 🧹 Refactoring + maintenance
 
 - chore(changelog): subject-only rendering + version 0.9.3 ([f0107e9](https://github.com/noonghunna/benchlocal-cli/commit/f0107e9dc72813b12f7237a3d720e3bb7c948af8))
-- chore(changelog): regenerate for v0.9.2 [skip ci] ([5076d14](https://github.com/noonghunna/benchlocal-cli/commit/5076d14d84793bb9aea424b30d29e877e8c16cec))
 
 
 
