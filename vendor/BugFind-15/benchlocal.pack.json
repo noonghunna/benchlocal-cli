@@ -4,7 +4,7 @@
   "id": "bugfind-15",
   "name": "BugFind-15",
   "author": "stevibe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Execution-backed debugging benchmark with verifier-backed scoring across 15 fixed scenarios.",
   "entry": "./dist/benchlocal/index.js",
   "samplingDefaults": {

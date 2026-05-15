@@ -177,7 +177,7 @@ This repo ports MIT-licensed bench pack scenarios from [stevibe/BenchLocal](http
 - [stevibe/StructOutput-15](https://github.com/stevibe/StructOutput-15) (v1.0.0)
 - [stevibe/ReasonMath-15](https://github.com/stevibe/ReasonMath-15) (v1.0.0)
 - [stevibe/DataExtract-15](https://github.com/stevibe/DataExtract-15) (v1.0.0)
-- [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) (v1.0.0)
+- [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) (v1.0.1)
 - [stevibe/HermesAgent-20](https://github.com/stevibe/HermesAgent-20) (v1.0.0)
 - [stevibe/CLI-40](https://github.com/stevibe/CLI-40) (v1.0.2)
 

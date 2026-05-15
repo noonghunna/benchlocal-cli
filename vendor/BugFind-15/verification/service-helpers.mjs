@@ -18,6 +18,10 @@ function includesAny(text, patterns) {
   return patterns.some((pattern) => source.includes(normalize(pattern)));
 }
 
+function stripInlineCode(text) {
+  return text.replace(/`([^`]*)`/g, "$1");
+}
+
 function extractCodeBlocks(answer, aliases) {
   const blocks = [];
   const matcher = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
@@ -170,10 +174,13 @@ function appendJavascriptHarness(block, harness) {
 }
 
 function noBugAnswer(answer) {
-  return includesAny(answer, [
+  const text = stripInlineCode(answer);
+
+  return includesAny(text, [
     "no bug",
     "code is correct",
     "compiles fine",
+    "compiles and runs successfully",
     "works correctly",
     "nothing is wrong",
     "no issue"
@@ -504,8 +511,15 @@ function buildRustCandidates(scenarioId, answer) {
   const results = [];
 
   switch (scenarioId) {
-    case "BF-03":
-      if (noBugAnswer(answer) || includesAny(answer, ["format! borrows", "does not move"])) {
+    case "BF-03": {
+      const text = stripInlineCode(answer);
+      const recognizesNoBug =
+        noBugAnswer(text) ||
+        includesAny(text, ["format! borrows", "does not move"]) ||
+        /format!.*borrows/i.test(text) ||
+        /compiles\s+(?:and\s+runs|successfully)/i.test(text);
+
+      if (recognizesNoBug) {
         results.push(
           candidate(
             "canonical-no-change",
@@ -522,6 +536,7 @@ function buildRustCandidates(scenarioId, answer) {
         );
       }
       break;
+    }
     case "BF-08":
       for (const [index, block] of blocks.entries()) {
         if (block.includes("factorial")) {

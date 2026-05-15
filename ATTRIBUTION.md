@@ -11,7 +11,7 @@ This repo ports MIT-licensed bench pack scenarios from the [BenchLocal](https://
 | StructOutput-15 | [stevibe/StructOutput-15](https://github.com/stevibe/StructOutput-15) | 1.0.0 | `00de86e9bfc9dd3d86ba397d0cf35bcbc04efd1c` | MIT |
 | ReasonMath-15 | [stevibe/ReasonMath-15](https://github.com/stevibe/ReasonMath-15) | 1.0.0 | `b97632020fa373c52ba92373dbe5dc58b744ce48` | MIT |
 | DataExtract-15 | [stevibe/DataExtract-15](https://github.com/stevibe/DataExtract-15) | 1.0.0 | `00d90bf7506a1d7ffe98943d9ffd8c6eb795dbdb` | MIT |
-| BugFind-15 | [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) | 1.0.0 | `59f2e96f0c64b447ad6a545fc1e2416efce512b6` | MIT |
+| BugFind-15 | [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) | 1.0.1 | `eea2224a531f0937a8fffb4949abcd6db81f4d11` | MIT |
 | HermesAgent-20 | [stevibe/HermesAgent-20](https://github.com/stevibe/HermesAgent-20) | 1.0.0 | `fa40ab9fb84a329421bbdfc3062cf28f1670de71` | MIT |
 | CLI-40 | [stevibe/CLI-40](https://github.com/stevibe/CLI-40) | 1.0.2 | `3b95f86e6edac47183348381a9bb211ffaf09404` | MIT |
 

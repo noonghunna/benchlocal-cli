@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "benchlocal-cli"
-version = "0.9.3"
+version = "0.9.4"
 description = "CLI port of BenchLocal quality bench packs — runs LLM behavioral evaluations against any OpenAI-compatible endpoint"
 readme = "README.md"
 authors = [
