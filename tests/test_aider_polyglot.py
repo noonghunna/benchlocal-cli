@@ -302,3 +302,34 @@ def test_pack_loads_via_runner():
     assert meta.get("supports_sandboxed_only") is True
     assert len(scenarios) == 1
     assert scenarios[0]["id"] == "aider-polyglot-30-batch"
+
+
+# ============================================================================
+# _link_or_copy — #6 EXDEV resilience (job dir on a host bind-mount)
+# ============================================================================
+
+def test_link_or_copy_hardlinks_when_possible(tmp_path):
+    server = _server()
+    src = tmp_path / "a.txt"
+    src.write_text("exercise content")
+    dst = tmp_path / "b.txt"
+    server._link_or_copy(str(src), str(dst))
+    assert dst.read_text() == "exercise content"
+    assert src.stat().st_ino == dst.stat().st_ino  # same inode → hard link
+
+
+def test_link_or_copy_falls_back_on_cross_device(tmp_path, monkeypatch):
+    """When os.link raises EXDEV (job dir is a host bind-mount, #6), staging
+    must copy the file rather than fail the whole batch."""
+    server = _server()
+    src = tmp_path / "src.txt"
+    src.write_text("exercise content")
+    dst = tmp_path / "dst.txt"
+
+    def _raise_exdev(_s, _d):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(server.os, "link", _raise_exdev)
+    server._link_or_copy(str(src), str(dst))
+    assert dst.read_text() == "exercise content"
+    assert src.stat().st_ino != dst.stat().st_ino  # copied, not linked
