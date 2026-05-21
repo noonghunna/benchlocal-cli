@@ -35,6 +35,16 @@ class SandboxConfig:
     # Hermes runs upstream agent loops with real LLM calls and needs ~15min;
     # bugfind/cli stay at 60s.
     request_timeout_s: float = 60.0
+    # #6: container path where the pack writes its per-unit run artifacts. When
+    # the runner supplies a host run-dir (derived from --sandbox-log-dir), this
+    # path is bind-mounted WRITABLE so artifacts persist to the host as they're
+    # written — surviving `docker run --rm`, crashes, and timeouts. None means
+    # the pack opts out of the run mount.
+    run_output_dir: str | None = None
+    # Extra `-e KEY=VALUE` env applied ONLY when the writable run mount is
+    # active (e.g. tell the aider sandbox to keep its job dirs rather than
+    # rmtree-ing them so the mounted artifacts survive the verify call).
+    run_mount_env: tuple[tuple[str, str], ...] = ()
 
 
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
@@ -77,6 +87,12 @@ SANDBOX_REGISTRY = {
         # total, but contributors with slower hardware (e.g., 24 GB single
         # card, longer-context models) need this headroom on stress runs.
         request_timeout_s=3000.0,
+        # #6: persist per-exercise artifacts to the host when --sandbox-log-dir
+        # is set. server.py writes job dirs under /tmp/aider-polyglot-runs and
+        # rmtree's them in a `finally` unless BENCHLOCAL_AIDER_KEEP_JOBDIRS=1 —
+        # so the mount AND the keep-env are both needed for durability.
+        run_output_dir="/tmp/aider-polyglot-runs",
+        run_mount_env=(("BENCHLOCAL_AIDER_KEEP_JOBDIRS", "1"),),
     ),
 }
 
@@ -261,11 +277,10 @@ class SandboxClient:
         self.config = config
         self._container_id: str | None = None
 
-    def start(self, *, ready_timeout_s: float = 30.0) -> None:
-        """Start the container; block until /health returns 200 or ready_timeout_s expires."""
-        if self._container_id:
-            return
-        name = f"benchlocal-{self.config.pack_id}-{int(time.time() * 1000)}"
+    def _build_docker_run_argv(self, name: str, run_dir: str | None) -> list[str]:
+        """Assemble the `docker run` argv. Pure (no side effects beyond reading
+        config/env) so it can be unit-tested. `run_dir` is the host path to
+        bind-mount writable at `config.run_output_dir` (#6); None disables it."""
         cmd = [
             "docker",
             "run",
@@ -281,6 +296,14 @@ class SandboxClient:
             cmd.extend(["-v", f"{host_path}:{container_path}:ro"])
         for key, value in self.config.env:
             cmd.extend(["-e", f"{key}={value}"])
+        # #6: writable host run-dir mount — persists per-unit run artifacts to
+        # the host AS THEY'RE WRITTEN (survives --rm/crash/timeout, no docker cp
+        # / teardown-capture race). Only when the caller supplies a host dir AND
+        # this pack declares a run_output_dir. NOTE: deliberately NOT `:ro`.
+        if run_dir and self.config.run_output_dir:
+            cmd.extend(["-v", f"{run_dir}:{self.config.run_output_dir}"])
+            for key, value in self.config.run_mount_env:
+                cmd.extend(["-e", f"{key}={value}"])
         # v0.9.0: aider-polyglot needs to call out to the runner's model
         # endpoint from inside the container. On Linux, host.docker.internal
         # only resolves with this --add-host flag (Codex 2nd-pass #2).
@@ -293,6 +316,20 @@ class SandboxClient:
         ):
             cmd.extend(["--add-host", "host.docker.internal:host-gateway"])
         cmd.append(self.config.image_name)
+        return cmd
+
+    def start(self, *, ready_timeout_s: float = 30.0, run_dir: str | None = None) -> None:
+        """Start the container; block until /health returns 200 or ready_timeout_s expires.
+
+        When `run_dir` is supplied and the pack declares `run_output_dir`, the
+        host dir is created and bind-mounted writable so run artifacts persist
+        to the host live (#6)."""
+        if self._container_id:
+            return
+        name = f"benchlocal-{self.config.pack_id}-{int(time.time() * 1000)}"
+        if run_dir and self.config.run_output_dir:
+            Path(run_dir).mkdir(parents=True, exist_ok=True)
+        cmd = self._build_docker_run_argv(name, run_dir)
         try:
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
@@ -526,6 +563,8 @@ def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
         host_mounts=host_mounts,
         env=env,
         request_timeout_s=config.request_timeout_s,
+        run_output_dir=config.run_output_dir,
+        run_mount_env=config.run_mount_env,
     )
 
 

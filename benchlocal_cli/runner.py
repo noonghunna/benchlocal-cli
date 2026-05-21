@@ -253,7 +253,14 @@ class Runner:
                 continue
             try:
                 client = SandboxClient(config_for_pack(pack_id, self.sandbox_image_tag))
-                client.start()
+                # #6: when --sandbox-log-dir is set, give the sandbox a writable
+                # host run-dir so per-unit artifacts persist live (survive --rm/
+                # crash/timeout). No-op for packs without a run_output_dir.
+                run_dir = (
+                    os.path.join(self.sandbox_log_dir, f"{pack_id}-run")
+                    if self.sandbox_log_dir else None
+                )
+                client.start(run_dir=run_dir)
                 self._sandbox_clients[pack_id] = client
             except Exception as exc:
                 msg = (

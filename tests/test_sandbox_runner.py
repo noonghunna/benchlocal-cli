@@ -466,3 +466,52 @@ def test_config_for_pack_non_hermes_no_bind_mount():
     assert config.host_mounts == ()
     assert config.env == ()
     assert config.request_timeout_s == 60.0
+
+
+# ---------------------------------------------------------------------------
+# #6: writable host run-dir bind-mount (durable sandbox artifacts)
+# ---------------------------------------------------------------------------
+
+def test_config_for_pack_aider_declares_run_output_dir():
+    from benchlocal_cli import sandbox as sandbox_module
+
+    config = sandbox_module.config_for_pack("aider-polyglot-30")
+    assert config.run_output_dir == "/tmp/aider-polyglot-runs"
+    # keep-jobdirs env is gated on the run mount being active
+    assert ("BENCHLOCAL_AIDER_KEEP_JOBDIRS", "1") in config.run_mount_env
+
+
+def test_aider_docker_argv_adds_writable_run_mount(tmp_path):
+    """With a host run-dir, aider's docker argv bind-mounts it WRITABLE (not :ro)
+    at the container run_output_dir and sets the keep-jobdirs env so server.py
+    doesn't rmtree the artifacts."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("aider-polyglot-30"))
+    run_dir = str(tmp_path / "aider-run")
+    argv = client._build_docker_run_argv("test-name", run_dir)
+
+    assert f"{run_dir}:/tmp/aider-polyglot-runs" in argv          # writable mount present
+    assert f"{run_dir}:/tmp/aider-polyglot-runs:ro" not in " ".join(argv)  # NOT read-only
+    assert "BENCHLOCAL_AIDER_KEEP_JOBDIRS=1" in argv             # keep-jobdirs env present
+
+
+def test_aider_docker_argv_no_run_mount_without_run_dir():
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("aider-polyglot-30"))
+    argv = client._build_docker_run_argv("test-name", None)
+
+    assert "/tmp/aider-polyglot-runs" not in " ".join(argv)
+    assert "BENCHLOCAL_AIDER_KEEP_JOBDIRS=1" not in argv
+
+
+def test_non_runmount_pack_ignores_run_dir(tmp_path):
+    """A pack without run_output_dir (bugfind) gets no run mount even when a
+    host run-dir is supplied."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("bugfind-15"))
+    argv = client._build_docker_run_argv("test-name", str(tmp_path / "x"))
+
+    assert "-v" not in argv  # no host_mounts and no run_output_dir → no bind-mounts
