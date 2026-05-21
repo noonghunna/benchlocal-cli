@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, list_packs, load_pack
@@ -107,8 +108,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--sandbox-image-tag", default="latest", help="Docker tag for sandbox images (default: latest)")
     run.add_argument(
         "--sandbox-log-dir",
-        help="capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
-             "before container teardown (useful for post-run forensics)",
+        help=(
+            "capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
+            "before container teardown; defaults next to --save-json for sandboxed runs, "
+            "or use none to disable"
+        ),
     )
     run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
@@ -273,6 +277,39 @@ def _load_extra_body(value: str | None) -> dict | None:
     return data
 
 
+def _pack_ids_include_sandboxed(pack_ids: list[str]) -> bool:
+    for pack_id in pack_ids:
+        try:
+            meta, _ = load_pack(pack_id)
+        except Exception:
+            continue
+        if meta.get("supports_sandboxed_only"):
+            return True
+    return False
+
+
+def _resolve_sandbox_log_dir(
+    *,
+    requested: str | None,
+    save_json: str | None,
+    pack_ids: list[str],
+    sandboxed_enabled: bool,
+) -> str | None:
+    if requested is not None:
+        if requested.strip().lower() == "none":
+            return None
+        return requested
+
+    if not sandboxed_enabled or not _pack_ids_include_sandboxed(pack_ids):
+        return None
+
+    if save_json:
+        return str(Path(save_json).parent / "sandbox-logs")
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    return str(Path("benchlocal-runs") / timestamp / "sandbox-logs")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns process exit code."""
     parser = _parser()
@@ -326,7 +363,12 @@ def main(argv: list[str] | None = None) -> int:
             thinking_max_tokens=args.thinking_max_tokens,
             extra_body=_load_extra_body(args.extra_body),
             sandbox_image_tag=args.sandbox_image_tag,
-            sandbox_log_dir=args.sandbox_log_dir,
+            sandbox_log_dir=_resolve_sandbox_log_dir(
+                requested=args.sandbox_log_dir,
+                save_json=args.save_json,
+                pack_ids=pack_ids,
+                sandboxed_enabled=sandboxed_enabled,
+            ),
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
