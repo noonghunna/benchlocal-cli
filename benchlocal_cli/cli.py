@@ -180,7 +180,14 @@ def _markdown(result: RunResult) -> str:
         lines.append("---|---:|---:|---|---:|---:|---")
 
     for pack in result.packs:
-        status = "skipped" if pack.skipped else ("ok" if pack.total else pack.status)
+        if pack.skipped:
+            status = "skipped"
+        elif pack.status not in ("ok", "stubbed"):
+            # #3: surface a real failure mode (e.g. agent_runner_timeout) even
+            # when total>0, so a graceful partial (18/30) isn't masked as "ok".
+            status = pack.status
+        else:
+            status = "ok" if pack.total else pack.status
         score = f"{pack.score:.0%}" if pack.total else "-"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"

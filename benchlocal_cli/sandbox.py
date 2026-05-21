@@ -47,6 +47,14 @@ class SandboxConfig:
     run_mount_env: tuple[tuple[str, str], ...] = ()
 
 
+# #3: aider batch timeout budget. The inner subprocess cap (server-side
+# AIDER_BENCHMARK_TIMEOUT_S) defaults here; --timeout-per-case can only RAISE
+# it (never lower it below this default). request_timeout_s tracks the inner
+# cap plus headroom so the outer HTTP read doesn't fire before the inner kill.
+_AIDER_DEFAULT_BATCH_TIMEOUT_S = 3600.0
+_AIDER_REQUEST_TIMEOUT_HEADROOM_S = 300.0
+
+
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
 SANDBOX_REGISTRY = {
     "bugfind-15": SandboxConfig(
@@ -79,14 +87,14 @@ SANDBOX_REGISTRY = {
         host_port=9004,
         network_isolated=False,  # aider needs to call out to model_endpoint
         multi_turn=True,         # uses /verify-start with verify-final early-out
-        # 50-min read timeout: the entire batch (30 exercises × multi-turn
-        # aider edit/test loops) lives inside one /verify-start call. The
-        # inner subprocess timeout is 2700s; this gives +5min headroom.
-        # First Qwen-with-thinking-on run hit the 1500s inner cap with 0
-        # exercises completed; thinking-off run paced ~40s/exercise = ~20min
-        # total, but contributors with slower hardware (e.g., 24 GB single
-        # card, longer-context models) need this headroom on stress runs.
-        request_timeout_s=3000.0,
+        # Read timeout: the entire batch (30 exercises × multi-turn aider
+        # edit/test loops) lives inside one /verify-start call. Tracks the inner
+        # subprocess cap (_AIDER_DEFAULT_BATCH_TIMEOUT_S = 3600s) plus headroom.
+        # config_for_pack recomputes this from --timeout-per-case so slow rigs
+        # (24 GB single card, low-power, long-context models) can raise it; the
+        # default was bumped from 2700→3600s after a PL250W rig hit the cap on
+        # the last exercise (#3).
+        request_timeout_s=3900.0,
         # #6: persist per-exercise artifacts to the host when --sandbox-log-dir
         # is set. server.py writes job dirs under /tmp/aider-polyglot-runs and
         # rmtree's them in a `finally` unless BENCHLOCAL_AIDER_KEEP_JOBDIRS=1 —
@@ -503,17 +511,34 @@ def _resolve_venv_python_root(host_install: str) -> tuple[str, str] | None:
     return (install_root, install_root)
 
 
-def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
+def config_for_pack(
+    pack_id: str,
+    image_tag: str = "latest",
+    *,
+    batch_timeout_s: float | None = None,
+) -> SandboxConfig:
     config = SANDBOX_REGISTRY[pack_id]
     base = config.image_name.split(":", 1)[0]
     host_mounts: tuple[tuple[str, str], ...] = config.host_mounts
     env: tuple[tuple[str, str], ...] = config.env
+    request_timeout_s = config.request_timeout_s
     if pack_id == "aider-polyglot-30":
         # v0.9.0: parallelize aider's batch across N threads. Default 4 to
         # match the vLLM gemma-mtp compose's --max-num-seqs 4. Override
         # via BENCHLOCAL_AIDER_THREADS env on the runner side.
         threads = os.environ.get("BENCHLOCAL_AIDER_THREADS", "4")
         env = env + (("AIDER_BENCHMARK_THREADS", threads),)
+        # #3: the whole 30-exercise batch runs inside one /verify-start call,
+        # so the per-case timeout governs the BATCH budget here. Slow rigs
+        # (low-power single card, long-context models) need more than the
+        # default. `--timeout-per-case` can only RAISE the inner subprocess
+        # cap (never drop it below the default); request_timeout_s tracks it
+        # with headroom so the outer HTTP read doesn't fire first.
+        inner = _AIDER_DEFAULT_BATCH_TIMEOUT_S
+        if batch_timeout_s and batch_timeout_s > inner:
+            inner = float(batch_timeout_s)
+        env = env + (("AIDER_BENCHMARK_TIMEOUT_S", str(int(inner))),)
+        request_timeout_s = inner + _AIDER_REQUEST_TIMEOUT_HEADROOM_S
 
     if pack_id == "hermesagent-20":
         # Per-scenario subprocess wall-clock cap inside the container. Default
@@ -562,7 +587,7 @@ def config_for_pack(pack_id: str, image_tag: str = "latest") -> SandboxConfig:
         multi_turn=config.multi_turn,
         host_mounts=host_mounts,
         env=env,
-        request_timeout_s=config.request_timeout_s,
+        request_timeout_s=request_timeout_s,
         run_output_dir=config.run_output_dir,
         run_mount_env=config.run_mount_env,
     )

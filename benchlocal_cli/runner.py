@@ -252,7 +252,16 @@ class Runner:
             if not meta.get("supports_sandboxed_only") or pack_id in self._sandbox_clients:
                 continue
             try:
-                client = SandboxClient(config_for_pack(pack_id, self.sandbox_image_tag))
+                # #3: pass the per-case budget through so the aider batch
+                # (one /verify-start spanning all 30 exercises) honors a raised
+                # --timeout-per-case on slow rigs instead of the default cap.
+                client = SandboxClient(
+                    config_for_pack(
+                        pack_id,
+                        self.sandbox_image_tag,
+                        batch_timeout_s=self.timeout_per_case,
+                    )
+                )
                 # #6: when --sandbox-log-dir is set, give the sandbox a writable
                 # host run-dir so per-unit artifacts persist live (survive --rm/
                 # crash/timeout). No-op for packs without a run_output_dir.
@@ -340,9 +349,48 @@ class Runner:
                 runs.append(self.run_scenario(meta, scenario, repeat_index=repeat_index))
 
         counted = [run for run in runs if run.result.failure_mode != "verifier_not_implemented"]
+        latencies = [run.result.latency_seconds for run in counted if run.result.latency_seconds > 0]
+
+        # #3: single-scoreboard packs (aider) run their entire sub-suite inside
+        # one scenario. Surface the real per-unit X/Y in the pack headline
+        # rather than collapsing to a binary 1/1 or 0/1 — which buried both the
+        # true success rate (16/30 shown as "1/1 = 100%") and graceful partial
+        # results on timeout (18/30 shown as "0/1 = 0%").
+        if meta.get("_architecture") == "single-scoreboard" and counted:
+            sr = counted[0].result
+            if sr.total_count:
+                sb_passed = sr.passed_count or 0
+                sb_total = sr.total_count
+                sb_score = sr.pass_rate if sr.pass_rate is not None else (
+                    sb_passed / sb_total if sb_total else 0.0
+                )
+                # Surface error failure modes (timeout/crash/unreachable) in the
+                # status column. A clean pass or a below-threshold "verifier_fail"
+                # both ran fine, so the score conveys the outcome (status "ok").
+                sb_status = (
+                    sr.failure_mode
+                    if sr.failure_mode in (
+                        "agent_runner_timeout", "agent_runner_crashed",
+                        "model_endpoint_unreachable", "server_error",
+                        "result_json_malformed",
+                    )
+                    else "ok"
+                )
+                return PackResult(
+                    pack_id=pack_id,
+                    version=meta["version"],
+                    upstream_commit=meta["upstream_commit"],
+                    scenario_count=len(scenarios),
+                    passed=sb_passed,
+                    total=sb_total,
+                    score=sb_score,
+                    latency=_latency(latencies),
+                    scenarios=runs,
+                    status=sb_status,
+                )
+
         passed = sum(1 for run in counted if run.result.passed)
         total = len(counted)
-        latencies = [run.result.latency_seconds for run in counted if run.result.latency_seconds > 0]
         return PackResult(
             pack_id=pack_id,
             version=meta["version"],

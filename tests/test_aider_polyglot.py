@@ -291,7 +291,7 @@ def test_pack_registered_in_sandbox_registry():
     cfg = SANDBOX_REGISTRY["aider-polyglot-30"]
     assert cfg.host_port == 9004
     assert cfg.multi_turn is True
-    assert cfg.request_timeout_s == 3000.0
+    assert cfg.request_timeout_s == 3900.0
 
 
 def test_pack_loads_via_runner():
