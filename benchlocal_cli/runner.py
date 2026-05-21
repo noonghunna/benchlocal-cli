@@ -155,6 +155,36 @@ def _chat_url(endpoint: str) -> str:
     return f"{endpoint}/v1/chat/completions"
 
 
+class _TransientPostFailure(Exception):
+    def __init__(self, failure_mode: str, detail: str, trace: dict) -> None:
+        super().__init__(detail)
+        self.failure_mode = failure_mode
+        self.detail = detail
+        self.trace = trace
+
+
+def _transient_trace(errors: list[str], attempt: int) -> dict | None:
+    if not errors:
+        return None
+    return {
+        "transient_retries": max(0, attempt - 1),
+        "transient_errors": list(errors),
+    }
+
+
+def _merge_transient_trace(existing: dict | None, new: dict | None) -> dict | None:
+    if not new:
+        return existing
+    if not existing:
+        return dict(new)
+    return {
+        "transient_retries": int(existing.get("transient_retries") or 0)
+        + int(new.get("transient_retries") or 0),
+        "transient_errors": list(existing.get("transient_errors") or [])
+        + list(new.get("transient_errors") or []),
+    }
+
+
 def _latency(values: list[float]) -> dict[str, float | None]:
     if not values:
         return {"p50": None, "p95": None, "mean": None}
@@ -181,6 +211,7 @@ class Runner:
         extra_body: dict | None = None,
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
+        max_transient_retries: int = 3,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -195,6 +226,7 @@ class Runner:
         # `<sandbox_log_dir>/sandbox-<pack_id>.log` before container teardown.
         # See SandboxClient.stop(log_dir=...) for the snapshot.
         self.sandbox_log_dir = sandbox_log_dir
+        self.max_transient_retries = max(0, int(max_transient_retries))
         self._sandbox_clients: dict[str, SandboxClient] = {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
@@ -418,6 +450,7 @@ class Runner:
         started = time.perf_counter()
         status_code: int | None = None
         raw_response: dict | None = None
+        transient_trace: dict | None = None
 
         sandbox_client = self._sandbox_clients.get(scenario.get("pack_id"))
         if (
@@ -442,20 +475,20 @@ class Runner:
             latency = 0.0
         else:
             try:
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.post(_chat_url(self.endpoint), json=request)
+                status_code, raw_response, transient_trace = self._post_chat(request, timeout)
                 latency = time.perf_counter() - started
-                status_code = response.status_code
-                try:
-                    raw_response = response.json()
-                except ValueError:
-                    raw_response = {"text": response.text}
-                if response.status_code >= 500:
-                    result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {response.status_code}", latency)
+                if status_code >= 500:
+                    result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}", latency)
+                    result = self._inject_transient_trace(result, transient_trace)
                     return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
-                if response.status_code >= 400:
-                    result = ScenarioResult(scenario["id"], False, "http_error", f"HTTP {response.status_code}", latency)
+                if status_code >= 400:
+                    result = ScenarioResult(scenario["id"], False, "http_error", f"HTTP {status_code}", latency)
                     return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
+            except _TransientPostFailure as exc:
+                latency = time.perf_counter() - started
+                result = ScenarioResult(scenario["id"], False, exc.failure_mode, exc.detail, latency)
+                result = self._inject_transient_trace(result, exc.trace)
+                return self._scenario_run(scenario, None, request, sampling, None, result, repeat_index)
             except httpx.TimeoutException:
                 latency = time.perf_counter() - started
                 result = ScenarioResult(scenario["id"], False, "timeout", f"timed out after {timeout}s", latency)
@@ -488,6 +521,7 @@ class Runner:
         if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
             tokens = usage["completion_tokens"]
         result = replace(result, latency_seconds=latency, tokens_completion=tokens)
+        result = self._inject_transient_trace(result, transient_trace)
         if sandboxed_path:
             result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
         return self._scenario_run(
@@ -522,14 +556,57 @@ class Runner:
             return 20
         return 15
 
-    def _post_chat(self, request: dict, timeout: float) -> tuple[int, dict]:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(_chat_url(self.endpoint), json=request)
-        try:
-            raw_response = response.json()
-        except ValueError:
-            raw_response = {"text": response.text}
-        return response.status_code, raw_response
+    def _post_chat(self, request: dict, timeout: float) -> tuple[int, dict, dict | None]:
+        transient_errors: list[str] = []
+        max_attempts = self.max_transient_retries + 1
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(_chat_url(self.endpoint), json=request)
+            except httpx.TimeoutException as exc:
+                transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+                if attempt >= max_attempts:
+                    trace = _transient_trace(transient_errors, attempt) or {}
+                    raise _TransientPostFailure("timeout", f"timed out after {timeout}s", trace) from exc
+                self._sleep_before_transient_retry(attempt)
+                continue
+            except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+                transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
+                if attempt >= max_attempts:
+                    trace = _transient_trace(transient_errors, attempt) or {}
+                    raise _TransientPostFailure("http_error", str(exc), trace) from exc
+                self._sleep_before_transient_retry(attempt)
+                continue
+
+            try:
+                raw_response = response.json()
+            except ValueError:
+                raw_response = {"text": response.text}
+
+            if response.status_code >= 500:
+                transient_errors.append(f"attempt {attempt}: HTTP {response.status_code}")
+                if attempt < max_attempts:
+                    self._sleep_before_transient_retry(attempt)
+                    continue
+
+            return response.status_code, raw_response, _transient_trace(transient_errors, attempt)
+
+        raise AssertionError("unreachable transient retry loop exit")
+
+    @staticmethod
+    def _inject_transient_trace(result: ScenarioResult, trace: dict | None) -> ScenarioResult:
+        if not trace:
+            return result
+        existing = dict(result.verifier_trace) if isinstance(result.verifier_trace, dict) else {}
+        existing.update(trace)
+        return replace(result, verifier_trace=existing)
+
+    @staticmethod
+    def _sleep_before_transient_retry(attempt: int) -> None:
+        delay = 2 ** (attempt - 1)
+        if delay > 0:
+            time.sleep(delay)
 
     @staticmethod
     def _message_from_response(raw_response: dict) -> dict:
@@ -565,6 +642,7 @@ class Runner:
         started = time.perf_counter()
         status_code: int | None = None
         raw_responses: list[dict] = []
+        transient_trace: dict | None = None
         assistant_messages: list[dict] = []
         tool_calls: list[dict] = []
         tokens_total = 0
@@ -680,7 +758,12 @@ class Runner:
             for _turn in range(1, max_turns + 1):
                 request = build_chat_request(history, sampling, self.model, tools=tools)
                 try:
-                    status_code, raw_response = self._post_chat(request, timeout)
+                    status_code, raw_response, turn_transient_trace = self._post_chat(request, timeout)
+                    transient_trace = _merge_transient_trace(transient_trace, turn_transient_trace)
+                except _TransientPostFailure as exc:
+                    transient_trace = _merge_transient_trace(transient_trace, exc.trace)
+                    result = ScenarioResult(scenario["id"], False, exc.failure_mode, exc.detail)
+                    break
                 except httpx.TimeoutException:
                     result = ScenarioResult(scenario["id"], False, "timeout", f"timed out after {timeout}s")
                     break
@@ -765,6 +848,7 @@ class Runner:
             tokens_completion=tokens_total if tokens_total else None,
             verifier_trace=verifier_trace,
         )
+        result = self._inject_transient_trace(result, transient_trace)
         result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
         raw_response: dict = {
             "multi_turn": True,

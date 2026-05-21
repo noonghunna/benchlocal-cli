@@ -107,6 +107,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--sandbox-image-tag", default="latest", help="Docker tag for sandbox images (default: latest)")
     run.add_argument(
+        "--max-transient-retries",
+        type=int,
+        default=_env_int("BENCHLOCAL_MAX_TRANSIENT_RETRIES", 3),
+        help=(
+            "retry transient model endpoint failures this many times before failing "
+            "a scenario (default: 3; env BENCHLOCAL_MAX_TRANSIENT_RETRIES)"
+        ),
+    )
+    run.add_argument(
         "--sandbox-log-dir",
         help=(
             "capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
@@ -277,6 +286,16 @@ def _load_extra_body(value: str | None) -> dict | None:
     return data
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
 def _pack_ids_include_sandboxed(pack_ids: list[str]) -> bool:
     for pack_id in pack_ids:
         try:
@@ -369,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
                 pack_ids=pack_ids,
                 sandboxed_enabled=sandboxed_enabled,
             ),
+            max_transient_retries=args.max_transient_retries,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
