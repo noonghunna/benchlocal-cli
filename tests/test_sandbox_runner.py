@@ -93,6 +93,36 @@ def test_runner_dispatches_sandboxed_scenario_to_client():
     assert len(fake.calls) == 1
 
 
+def test_runner_sanitizes_sandboxed_single_turn_response_before_verify():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        mock_responses={"CLI-30": {"choices": [{"message": {"content": "</think> </think> <solution>done</solution>"}}]}},
+    )
+    fake = FakeSandbox()
+    runner._sandbox_clients["cli-40"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 16},
+    }
+    scenario = {
+        "id": "CLI-30",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "write solution"}],
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert len(fake.calls) == 1
+    forwarded = fake.calls[0][1]
+    assert forwarded["choices"][0]["message"]["content"] == "<solution>done</solution>"
+    assert run.raw_response["choices"][0]["message"]["content"] == "<solution>done</solution>"
+
+
 def test_runner_skips_sandboxed_pack_without_flag():
     runner = Runner(endpoint="http://localhost:9999", model="fake")
 
