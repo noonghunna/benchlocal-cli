@@ -147,11 +147,8 @@ async function writeHermesConfig(hermesHomeDir, workspaceDir, model, maxTurns, o
   const configPath = path.join(hermesHomeDir, "config.yaml");
   // benchlocal-cli v0.7.4 patch: hermes-agent v0.13+ enforces a 64K minimum
   // context-window check on the model AND on the auxiliary compression model.
-  // Models served at smaller windows (e.g. Gemma 4 at 32K) fail this check
-  // even though the bench scenarios fit comfortably in <8K tokens. Override
-  // via `model.context_length` and `compression.context_length` so the
-  // check passes without changing actual context usage. Driven by env so
-  // upstream behavior is preserved by default.
+  // Models served at smaller windows still fit these scenarios comfortably, so
+  // allow the runner to override the advertised length without changing usage.
   const ctxOverride = parseInt(process.env.BENCHLOCAL_HERMES_CONTEXT_OVERRIDE || "", 10);
   const ctxLine = Number.isFinite(ctxOverride) && ctxOverride > 0
     ? `  context_length: ${ctxOverride}`
