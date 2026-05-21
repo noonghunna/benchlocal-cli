@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from benchlocal_cli.runner import Runner, build_request
-from benchlocal_cli.scoring.common import content_with_source
+from benchlocal_cli.scoring.common import content_with_source, sanitize_reasoning_tags
 
 
 def _meta() -> dict:
@@ -65,6 +65,33 @@ def test_extra_body_wins_over_defaults_but_loses_to_scenario_overrides():
 
     assert request["foo"] == "scenario"
     assert request["bar"] == "extra"
+
+
+def test_sanitize_reasoning_tags_strips_well_formed_blocks():
+    assert sanitize_reasoning_tags("<think>hidden reasoning</think><solution>done</solution>") == "<solution>done</solution>"
+
+
+def test_sanitize_reasoning_tags_strips_orphan_closing_tags():
+    assert sanitize_reasoning_tags("</think> </think> <solution>done</solution>") == "<solution>done</solution>"
+
+
+def test_sanitize_reasoning_tags_strips_orphan_opening_tags():
+    assert sanitize_reasoning_tags("<think> <solution>done</solution>") == "<solution>done</solution>"
+
+
+def test_sanitize_reasoning_tags_keeps_clean_content_byte_identical():
+    clean = "  hello <not-think> world  "
+    assert sanitize_reasoning_tags(clean) == clean
+
+
+def test_sanitize_reasoning_tags_all_tags_yields_empty():
+    assert sanitize_reasoning_tags("</think> </think> <think></think>") == ""
+
+
+def test_content_with_source_sanitizes_leaked_think_tags():
+    response = {"choices": [{"message": {"content": "<think>hidden</think>hello"}}]}
+
+    assert content_with_source(response) == ("hello", "message.content")
 
 
 def test_content_fallback_reads_reasoning_content():

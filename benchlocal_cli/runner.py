@@ -17,7 +17,7 @@ import httpx
 
 from benchlocal_cli import __version__
 from benchlocal_cli.sandbox import SandboxClient, config_for_pack
-from benchlocal_cli.scoring.common import content_with_source
+from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
 PACK_MODES = {
@@ -466,6 +466,7 @@ class Runner:
                 return self._scenario_run(scenario, None, request, sampling, None, result, repeat_index)
 
         assert raw_response is not None
+        raw_response = sanitize_response_text_fields(raw_response)
         response_field_used = content_with_source(raw_response)[1]
         sandboxed_path = (
             meta.get("supports_sandboxed_only")
@@ -687,6 +688,7 @@ class Runner:
                     result = ScenarioResult(scenario["id"], False, "http_error", str(exc))
                     break
 
+                raw_response = sanitize_response_text_fields(raw_response)
                 raw_responses.append(raw_response)
                 if status_code >= 500:
                     result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}")

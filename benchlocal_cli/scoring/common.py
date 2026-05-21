@@ -9,6 +9,31 @@ from typing import Any
 from benchlocal_cli.types import ScenarioResult
 
 
+_REASONING_TEXT_FIELDS = {"content", "reasoning_content", "reasoning"}
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_TAG_RE = re.compile(r"</?think\b[^>]*>", re.IGNORECASE)
+
+
+def sanitize_reasoning_tags(text: str) -> str:
+    """Strip leaked reasoning tags while leaving clean text byte-identical."""
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    cleaned = _THINK_TAG_RE.sub("", cleaned)
+    return text if cleaned == text else cleaned.strip()
+
+
+def sanitize_response_text_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: sanitize_reasoning_tags(item)
+            if key in _REASONING_TEXT_FIELDS and isinstance(item, str)
+            else sanitize_response_text_fields(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_response_text_fields(item) for item in value]
+    return value
+
+
 def result(
     scenario: dict,
     passed: bool,
@@ -40,12 +65,12 @@ def content_with_source(response: dict) -> tuple[str, str | None]:
     for field in ("content", "reasoning_content", "reasoning"):
         value = response.get(field)
         if isinstance(value, str) and value:
-            return value, field
+            return sanitize_reasoning_tags(value), field
     msg = message(response)
     for field in ("content", "reasoning_content", "reasoning"):
         value = msg.get(field)
         if isinstance(value, str) and value:
-            return value, f"message.{field}"
+            return sanitize_reasoning_tags(value), f"message.{field}"
     return "", None
 
 
