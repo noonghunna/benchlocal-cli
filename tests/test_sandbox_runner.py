@@ -466,3 +466,156 @@ def test_config_for_pack_non_hermes_no_bind_mount():
     assert config.host_mounts == ()
     assert config.env == ()
     assert config.request_timeout_s == 60.0
+
+
+# ---------------------------------------------------------------------------
+# #6: writable host run-dir bind-mount (durable sandbox artifacts)
+# ---------------------------------------------------------------------------
+
+def test_config_for_pack_aider_declares_run_output_dir():
+    from benchlocal_cli import sandbox as sandbox_module
+
+    config = sandbox_module.config_for_pack("aider-polyglot-30")
+    assert config.run_output_dir == "/tmp/aider-polyglot-runs"
+    # keep-jobdirs env is gated on the run mount being active
+    assert ("BENCHLOCAL_AIDER_KEEP_JOBDIRS", "1") in config.run_mount_env
+
+
+def test_aider_docker_argv_adds_writable_run_mount(tmp_path):
+    """With a host run-dir, aider's docker argv bind-mounts it WRITABLE (not :ro)
+    at the container run_output_dir and sets the keep-jobdirs env so server.py
+    doesn't rmtree the artifacts."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("aider-polyglot-30"))
+    run_dir = str(tmp_path / "aider-run")
+    argv = client._build_docker_run_argv("test-name", run_dir)
+
+    assert f"{run_dir}:/tmp/aider-polyglot-runs" in argv          # writable mount present
+    assert f"{run_dir}:/tmp/aider-polyglot-runs:ro" not in " ".join(argv)  # NOT read-only
+    assert "BENCHLOCAL_AIDER_KEEP_JOBDIRS=1" in argv             # keep-jobdirs env present
+
+
+def test_aider_docker_argv_no_run_mount_without_run_dir():
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("aider-polyglot-30"))
+    argv = client._build_docker_run_argv("test-name", None)
+
+    assert "/tmp/aider-polyglot-runs" not in " ".join(argv)
+    assert "BENCHLOCAL_AIDER_KEEP_JOBDIRS=1" not in argv
+
+
+def test_non_runmount_pack_ignores_run_dir(tmp_path):
+    """A pack without run_output_dir (bugfind) gets no run mount even when a
+    host run-dir is supplied."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("bugfind-15"))
+    argv = client._build_docker_run_argv("test-name", str(tmp_path / "x"))
+
+    assert "-v" not in argv  # no host_mounts and no run_output_dir → no bind-mounts
+
+
+# ---------------------------------------------------------------------------
+# #3-A: aider batch timeout honors --timeout-per-case (raises, never lowers)
+# ---------------------------------------------------------------------------
+
+def test_config_for_pack_aider_default_batch_timeout():
+    from benchlocal_cli import sandbox as sandbox_module
+    config = sandbox_module.config_for_pack("aider-polyglot-30")
+    assert dict(config.env)["AIDER_BENCHMARK_TIMEOUT_S"] == "3600"
+    assert config.request_timeout_s == 3900.0
+
+
+def test_config_for_pack_aider_raises_batch_timeout_from_per_case():
+    from benchlocal_cli import sandbox as sandbox_module
+    config = sandbox_module.config_for_pack("aider-polyglot-30", batch_timeout_s=7200)
+    assert dict(config.env)["AIDER_BENCHMARK_TIMEOUT_S"] == "7200"
+    assert config.request_timeout_s == 7500.0
+
+
+def test_config_for_pack_aider_per_case_never_lowers_default():
+    """A small per-case budget must NOT crush the batch below the default."""
+    from benchlocal_cli import sandbox as sandbox_module
+    config = sandbox_module.config_for_pack("aider-polyglot-30", batch_timeout_s=60)
+    assert dict(config.env)["AIDER_BENCHMARK_TIMEOUT_S"] == "3600"
+    assert config.request_timeout_s == 3900.0
+
+
+# ---------------------------------------------------------------------------
+# #3-B: single-scoreboard pack headline shows real X/Y, not binary 1/1 or 0/1
+# ---------------------------------------------------------------------------
+
+class FakeSingleScoreboardSandbox:
+    """Single-scoreboard pack (aider): /verify-start returns the aggregate
+    verify-final with pass_rate/passed_count/total_count first-class."""
+
+    def __init__(self, *, passed, failure_mode, passed_count, total_count, pass_rate):
+        self.config = FakeMultiTurnConfig()
+        self._p = dict(
+            passed=passed, failure_mode=failure_mode,
+            passed_count=passed_count, total_count=total_count, pass_rate=pass_rate,
+        )
+
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        return {"action": "verify-final", "detail": "batch", "trace": {}, **self._p}
+
+    def verify_multiturn_turn(self, *a, **k):  # pragma: no cover
+        raise AssertionError("single-scoreboard must early-out, not loop")
+
+    def verify_multiturn_end(self, *a, **k):  # pragma: no cover
+        raise AssertionError("single-scoreboard must early-out, not loop")
+
+
+def _single_scoreboard_fixture():
+    meta = {
+        "version": "1.0.0",
+        "upstream_commit": "deadbeef",
+        "supports_sandboxed_only": True,
+        "scenario_count": 1,
+        "_architecture": "single-scoreboard",
+        "default_max_seconds": 1800,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenarios = [{
+        "id": "aider-polyglot-30-batch",
+        "pack_id": "aider-polyglot-30",
+        "messages": [{"role": "user", "content": "batch"}],
+        "raw_scenario": {"kind": "aider-polyglot-batch"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }]
+    return meta, scenarios
+
+
+def test_run_pack_single_scoreboard_success_shows_real_fraction(monkeypatch):
+    from benchlocal_cli import runner as runner_module
+    meta, scenarios = _single_scoreboard_fixture()
+    monkeypatch.setattr(runner_module, "load_pack", lambda pid: (meta, scenarios))
+    r = runner_module.Runner(endpoint="http://h:8000", model="m", enable_sandboxed_packs=True)
+    r._sandbox_clients["aider-polyglot-30"] = FakeSingleScoreboardSandbox(
+        passed=True, failure_mode="passed", passed_count=16, total_count=30, pass_rate=16 / 30)
+
+    pack = r.run_pack("aider-polyglot-30")
+
+    assert pack.passed == 16          # NOT 1
+    assert pack.total == 30           # NOT 1
+    assert abs(pack.score - 16 / 30) < 1e-9
+    assert pack.status == "ok"
+
+
+def test_run_pack_single_scoreboard_timeout_surfaces_partial(monkeypatch):
+    from benchlocal_cli import runner as runner_module
+    meta, scenarios = _single_scoreboard_fixture()
+    monkeypatch.setattr(runner_module, "load_pack", lambda pid: (meta, scenarios))
+    r = runner_module.Runner(endpoint="http://h:8000", model="m", enable_sandboxed_packs=True)
+    r._sandbox_clients["aider-polyglot-30"] = FakeSingleScoreboardSandbox(
+        passed=False, failure_mode="agent_runner_timeout",
+        passed_count=18, total_count=30, pass_rate=18 / 30)
+
+    pack = r.run_pack("aider-polyglot-30")
+
+    assert pack.passed == 18          # partial surfaced, NOT 0
+    assert pack.total == 30
+    assert abs(pack.score - 18 / 30) < 1e-9
+    assert pack.status == "agent_runner_timeout"   # not masked as "ok"

@@ -219,6 +219,20 @@ def _build_benchmark_args(
     return argv
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """Hard-link a file (cheap, no disk duplication), falling back to a real
+    copy when the link would cross filesystems.
+
+    #6: when --sandbox-log-dir is set, the job dir lives on a host bind-mount,
+    so os.link from the container's overlayfs raises OSError (EXDEV, "Invalid
+    cross-device link"). The staged exercises are small text files, so copying
+    them is cheap. Without this fallback the whole batch fails at staging."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
 def _stage_exercises_workspace(stage_dir: Path) -> Path:
     """Create a `polyglot-benchmark` tree under `stage_dir` containing
     ONLY the canonical 30 exercises. Avoids relying on --keywords substring
@@ -244,9 +258,10 @@ def _stage_exercises_workspace(stage_dir: Path) -> Path:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not src.is_dir():
             continue  # missing exercise — surfaced in _exercise_count_status()
-        # Hard-link individual files (cheap, doesn't duplicate disk).
-        # cp -al equivalent.
-        shutil.copytree(src, dst, copy_function=os.link, dirs_exist_ok=True)
+        # Hard-link individual files (cheap, doesn't duplicate disk); fall back
+        # to a copy when the job dir is a host bind-mount (#6) and links would
+        # cross devices. cp -al equivalent with EXDEV resilience.
+        shutil.copytree(src, dst, copy_function=_link_or_copy, dirs_exist_ok=True)
     # Stand up a minimal git repo so benchmark.py's git.Repo() succeeds.
     # benchmark.py reads repo.head.object.hexsha[:7] — needs an actual
     # commit, not just `git init`. Make one empty commit.
