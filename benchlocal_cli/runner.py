@@ -390,7 +390,7 @@ class Runner:
         # results on timeout (18/30 shown as "0/1 = 0%").
         if meta.get("_architecture") == "single-scoreboard" and counted:
             sr = counted[0].result
-            if sr.total_count:
+            if sr.total_count is not None:
                 sb_passed = sr.passed_count or 0
                 sb_total = sr.total_count
                 sb_score = sr.pass_rate if sr.pass_rate is not None else (

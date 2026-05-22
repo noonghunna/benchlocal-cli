@@ -229,6 +229,24 @@ def test_grade_surfaces_missing_results():
     assert out["passed"] is True
 
 
+def test_grade_timeout_partial_scores_completed_only():
+    server = _server()
+    canonical_keys = [f"{e['language']}/{e['name']}" for e in server.CANONICAL_EXERCISES]
+    per = {}
+    for i, key in enumerate(canonical_keys[:26]):
+        per[key] = _fixture_result(passed=(i < 17))
+
+    out = server._grade_aider_batch_result(per, threshold=0.5, score_completed_only=True)
+
+    assert out["passed_count"] == 17
+    assert out["total_count"] == 26
+    assert out["canonical_total_count"] == 30
+    assert out["found_count"] == 26
+    assert abs(out["pass_rate"] - (17 / 26)) < 1e-12
+    assert out["score_completed_only"] is True
+    assert len(out["missing_results"]) == 4
+
+
 def test_grade_surfaces_extra_results():
     """If upstream ran exercises NOT in our canonical 30 (substring keyword
     collision), the canonical_keys denominator catches it."""

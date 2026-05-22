@@ -554,8 +554,17 @@ def test_non_runmount_pack_ignores_run_dir(tmp_path):
 def test_config_for_pack_aider_default_batch_timeout():
     from benchlocal_cli import sandbox as sandbox_module
     config = sandbox_module.config_for_pack("aider-polyglot-30")
-    assert dict(config.env)["AIDER_BENCHMARK_TIMEOUT_S"] == "3600"
+    env = dict(config.env)
+    assert env["AIDER_BENCHMARK_THREADS"] == "1"
+    assert env["AIDER_BENCHMARK_TIMEOUT_S"] == "3600"
     assert config.request_timeout_s == 3900.0
+
+
+def test_config_for_pack_aider_threads_env_override(monkeypatch):
+    from benchlocal_cli import sandbox as sandbox_module
+    monkeypatch.setenv("BENCHLOCAL_AIDER_THREADS", "4")
+    config = sandbox_module.config_for_pack("aider-polyglot-30")
+    assert dict(config.env)["AIDER_BENCHMARK_THREADS"] == "4"
 
 
 def test_config_for_pack_aider_raises_batch_timeout_from_per_case():
@@ -634,6 +643,23 @@ def test_run_pack_single_scoreboard_success_shows_real_fraction(monkeypatch):
     assert pack.status == "ok"
 
 
+def test_run_pack_single_scoreboard_timeout_with_zero_completed_stays_scoreboard(monkeypatch):
+    from benchlocal_cli import runner as runner_module
+    meta, scenarios = _single_scoreboard_fixture()
+    monkeypatch.setattr(runner_module, "load_pack", lambda pid: (meta, scenarios))
+    r = runner_module.Runner(endpoint="http://h:8000", model="m", enable_sandboxed_packs=True)
+    r._sandbox_clients["aider-polyglot-30"] = FakeSingleScoreboardSandbox(
+        passed=False, failure_mode="agent_runner_timeout",
+        passed_count=0, total_count=0, pass_rate=0.0)
+
+    pack = r.run_pack("aider-polyglot-30")
+
+    assert pack.passed == 0
+    assert pack.total == 0
+    assert pack.score == 0.0
+    assert pack.status == "agent_runner_timeout"
+
+
 def test_run_pack_single_scoreboard_timeout_surfaces_partial(monkeypatch):
     from benchlocal_cli import runner as runner_module
     meta, scenarios = _single_scoreboard_fixture()
@@ -641,11 +667,11 @@ def test_run_pack_single_scoreboard_timeout_surfaces_partial(monkeypatch):
     r = runner_module.Runner(endpoint="http://h:8000", model="m", enable_sandboxed_packs=True)
     r._sandbox_clients["aider-polyglot-30"] = FakeSingleScoreboardSandbox(
         passed=False, failure_mode="agent_runner_timeout",
-        passed_count=18, total_count=30, pass_rate=18 / 30)
+        passed_count=17, total_count=26, pass_rate=17 / 26)
 
     pack = r.run_pack("aider-polyglot-30")
 
-    assert pack.passed == 18          # partial surfaced, NOT 0
-    assert pack.total == 30
-    assert abs(pack.score - 18 / 30) < 1e-9
+    assert pack.passed == 17          # partial surfaced, NOT 0
+    assert pack.total == 26           # completed denominator, NOT canonical 30
+    assert abs(pack.score - 17 / 26) < 1e-9
     assert pack.status == "agent_runner_timeout"   # not masked as "ok"
