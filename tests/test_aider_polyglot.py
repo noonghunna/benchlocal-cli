@@ -123,6 +123,32 @@ def test_build_benchmark_args_num_tests_optional():
 
 
 # ============================================================================
+# _qualify_aider_model — litellm provider routing
+# ============================================================================
+
+
+def test_qualify_aider_model_prefixes_slash_free_alias():
+    server = _server()
+    assert server._qualify_aider_model("my-model") == "openai/my-model"
+
+
+def test_qualify_aider_model_prefixes_gguf_path():
+    server = _server()
+    assert server._qualify_aider_model("/models/repo/model.gguf") == "openai//models/repo/model.gguf"
+
+
+def test_qualify_aider_model_prefixes_bare_hf_repo_id():
+    server = _server()
+    assert server._qualify_aider_model("org/model") == "openai/org/model"
+
+
+def test_qualify_aider_model_preserves_known_provider_prefix():
+    server = _server()
+    assert server._qualify_aider_model("openai/qwen") == "openai/qwen"
+    assert server._qualify_aider_model("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+
+
+# ============================================================================
 # _grade_aider_batch_result — single-scoreboard aggregation
 # ============================================================================
 

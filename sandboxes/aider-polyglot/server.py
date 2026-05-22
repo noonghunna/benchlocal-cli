@@ -69,6 +69,18 @@ SUBPROCESS_TIMEOUT_S = float(os.environ.get("AIDER_BENCHMARK_TIMEOUT_S", "2700")
 
 # Per-pack threshold: pass if >= this fraction of exercises pass.
 DEFAULT_PASS_THRESHOLD = 0.5
+_LITELLM_PROVIDERS = {
+    "openai",
+    "anthropic",
+    "azure",
+    "vertex_ai",
+    "gemini",
+    "huggingface",
+    "together_ai",
+    "openrouter",
+    "bedrock",
+    "ollama",
+}
 
 # Default edit format. `whole` is the broadest model-compat choice; the
 # runner can override via raw_scenario / sampling_overrides.
@@ -217,6 +229,13 @@ def _build_benchmark_args(
     if extra_args:
         argv.extend(extra_args)
     return argv
+
+
+def _qualify_aider_model(model_name: str) -> str:
+    head = model_name.split("/", 1)[0]
+    if not model_name.startswith("/") and head in _LITELLM_PROVIDERS:
+        return model_name
+    return f"openai/{model_name}"
 
 
 def _link_or_copy(src: str, dst: str) -> None:
@@ -470,7 +489,10 @@ def _verify_start(req: dict) -> dict:
         # against its built-in catalog → no match → silent fallback that
         # makes zero model calls (duration ~0.02s/exercise, cost $0.00).
         # Don't double-prefix if user already passed e.g. "openai/<name>".
-        aider_model = model_name if "/" in model_name else f"openai/{model_name}"
+        # A slash alone is not enough: llama.cpp/ik_llama often reports a
+        # GGUF path (/models/...) as the model id, and bare HF repo ids
+        # (org/model) are not litellm provider-qualified either.
+        aider_model = _qualify_aider_model(model_name)
 
         # Disable Qwen3-style thinking via per-request `extra_body`.
         # vLLM doesn't accept --chat-template-kwargs at the CLI; the
