@@ -6,14 +6,14 @@ This repo ports MIT-licensed bench pack scenarios from the [BenchLocal](https://
 
 | Pack | Upstream repo | Version ported | Upstream commit | License |
 |---|---|---|---|---|
-| ToolCall-15 | [stevibe/ToolCall-15](https://github.com/stevibe/ToolCall-15) | 1.0.1 | `edd6cefe4261b67e8166e9f6d77d671042560294` | MIT |
-| InstructFollow-15 | [stevibe/InstructFollow-15](https://github.com/stevibe/InstructFollow-15) | 1.0.0 | `187af97cb2b892ad57de176b16a254aba7565a65` | MIT |
-| StructOutput-15 | [stevibe/StructOutput-15](https://github.com/stevibe/StructOutput-15) | 1.0.0 | `00de86e9bfc9dd3d86ba397d0cf35bcbc04efd1c` | MIT |
-| ReasonMath-15 | [stevibe/ReasonMath-15](https://github.com/stevibe/ReasonMath-15) | 1.0.0 | `b97632020fa373c52ba92373dbe5dc58b744ce48` | MIT |
-| DataExtract-15 | [stevibe/DataExtract-15](https://github.com/stevibe/DataExtract-15) | 1.0.0 | `00d90bf7506a1d7ffe98943d9ffd8c6eb795dbdb` | MIT |
-| BugFind-15 | [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) | 1.0.1 | `eea2224a531f0937a8fffb4949abcd6db81f4d11` | MIT |
-| HermesAgent-20 | [stevibe/HermesAgent-20](https://github.com/stevibe/HermesAgent-20) | 1.0.0 | `fa40ab9fb84a329421bbdfc3062cf28f1670de71` | MIT |
-| CLI-40 | [stevibe/CLI-40](https://github.com/stevibe/CLI-40) | 1.0.2 | `3b95f86e6edac47183348381a9bb211ffaf09404` | MIT |
+| ToolCall-15 | [stevibe/ToolCall-15](https://github.com/stevibe/ToolCall-15) | 1.0.1 | `615b1576e257a1b859f6e9183d52408bb4e05ee3` | MIT |
+| InstructFollow-15 | [stevibe/InstructFollow-15](https://github.com/stevibe/InstructFollow-15) | 1.0.0 | `536a1044aef0acbfdbc5a19ca49170f5346d3cd4` | MIT |
+| StructOutput-15 | [stevibe/StructOutput-15](https://github.com/stevibe/StructOutput-15) | 1.0.0 | `b82f11cc85bbbb7814c2d85e47fa9fa8104d5c4a` | MIT |
+| ReasonMath-15 | [stevibe/ReasonMath-15](https://github.com/stevibe/ReasonMath-15) | 1.0.0 | `78ef138cc26ad6b11f89238e20430de9a9e862aa` | MIT |
+| DataExtract-15 | [stevibe/DataExtract-15](https://github.com/stevibe/DataExtract-15) | 1.0.0 | `ec3a131ff218ced7c6d0d524af764eae5c25665b` | MIT |
+| BugFind-15 | [stevibe/BugFind-15](https://github.com/stevibe/BugFind-15) | 1.0.1 | `131aadea0ae118ef40cb468e7c35d1fde8676c98` | MIT |
+| HermesAgent-20 | [stevibe/HermesAgent-20](https://github.com/stevibe/HermesAgent-20) | 1.0.0 | `57d7766bf3db8c40696e3ed937d43c8c85f4cd6c` | MIT |
+| CLI-40 | [stevibe/CLI-40](https://github.com/stevibe/CLI-40) | 1.0.2 | `d43939fc6760b6869f14efb558fc8814606c8f41` | MIT |
 
 Each ported pack file (`benchlocal_cli/packs/<name>.jsonl`) carries a header line citing the source commit explicitly.
 

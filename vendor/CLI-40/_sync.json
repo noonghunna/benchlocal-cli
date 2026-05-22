@@ -1,6 +1,6 @@
 {
-  "commit": "3b95f86e6edac47183348381a9bb211ffaf09404",
-  "fetched_at": "2026-05-10T00:26:26.473586Z",
+  "commit": "d43939fc6760b6869f14efb558fc8814606c8f41",
+  "fetched_at": "2026-05-21T17:55:07.260651Z",
   "source_files": [
     "benchlocal.pack.json",
     "lib/benchmark.ts",
