@@ -338,15 +338,26 @@ def _summarize_exercise_result(data: dict) -> dict:
     }
 
 
-def _grade_aider_batch_result(per_exercise: dict[str, dict], threshold: float) -> dict:
+def _grade_aider_batch_result(
+    per_exercise: dict[str, dict],
+    threshold: float,
+    *,
+    score_completed_only: bool = False,
+) -> dict:
     """Aggregate per-exercise outcomes into pass_rate + summary. Pure;
-    tested without docker."""
+    tested without docker.
+
+    Full runs score against the canonical 30-exercise denominator. Timeout-
+    truncated runs can score only completed exercises while still surfacing the
+    canonical denominator separately for traceability.
+    """
     canonical_keys = {f"{e['language']}/{e['name']}" for e in CANONICAL_EXERCISES}
     summaries = {k: _summarize_exercise_result(v) for k, v in per_exercise.items()}
     passed = sum(1 for s in summaries.values() if s["passed"])
-    total = len(canonical_keys)
+    canonical_total = len(canonical_keys)
     found = len(summaries)
-    pass_rate = passed / total if total > 0 else 0.0
+    score_total = found if score_completed_only else canonical_total
+    pass_rate = passed / score_total if score_total > 0 else 0.0
 
     missing_results = sorted(canonical_keys - set(summaries))
     extra_results = sorted(set(summaries) - canonical_keys)
@@ -359,8 +370,10 @@ def _grade_aider_batch_result(per_exercise: dict[str, dict], threshold: float) -
         "failure_mode": failure_mode,
         "pass_rate": pass_rate,
         "passed_count": passed,
-        "total_count": total,
+        "total_count": score_total,
         "found_count": found,
+        "canonical_total_count": canonical_total,
+        "score_completed_only": score_completed_only,
         "threshold": threshold,
         "missing_results": missing_results,
         "extra_results": extra_results,
@@ -566,25 +579,27 @@ def _verify_start(req: dict) -> dict:
             # Recover partial per-exercise data. Aider's benchmark.py writes
             # one .aider.results.json per exercise as it completes, so even if
             # we SIGKILL'd mid-batch, exercises that finished BEFORE the kill
-            # have data on disk. Surface that instead of throwing it away.
+            # have data on disk. Score the completed subset only; unrun
+            # exercises are reported as missing/incomplete, not as failures.
             graded_partial = _grade_aider_batch_result(
-                per_exercise, threshold=threshold
-            ) if per_exercise else None
-            partial_pass_count = graded_partial["passed_count"] if graded_partial else 0
-            partial_total = graded_partial["total_count"] if graded_partial else len(CANONICAL_EXERCISES)
-            partial_found = graded_partial["found_count"] if graded_partial else 0
+                per_exercise, threshold=threshold, score_completed_only=True
+            )
+            partial_pass_count = graded_partial["passed_count"]
+            partial_total = graded_partial["total_count"]
+            partial_found = graded_partial["found_count"]
+            canonical_total = graded_partial["canonical_total_count"]
             return {
                 "action": "verify-final",
                 "passed": False,
                 "failure_mode": "agent_runner_timeout",
                 "detail": (
                     f"{scenario_id}: aider benchmark.py exceeded {SUBPROCESS_TIMEOUT_S:.0f}s "
-                    f"(killed at {elapsed:.0f}s; {partial_found}/{partial_total} exercises "
-                    f"completed before kill, {partial_pass_count} passed)"
+                    f"(killed at {elapsed:.0f}s; {partial_found}/{canonical_total} exercises "
+                    f"completed before kill; partial score {partial_pass_count}/{partial_total})"
                 ),
                 # Surface partial counts as first-class fields so the runner can
                 # log progress even on timeout — matches the success path shape.
-                "pass_rate": (graded_partial["pass_rate"] if graded_partial else None),
+                "pass_rate": graded_partial["pass_rate"],
                 "passed_count": partial_pass_count,
                 "total_count": partial_total,
                 "trace": {
@@ -598,9 +613,11 @@ def _verify_start(req: dict) -> dict:
                     "threshold": threshold,
                     "timed_out": True,
                     "found_count": partial_found,
-                    "upstream_per_exercise": (
-                        graded_partial["per_exercise"] if graded_partial else {}
-                    ),
+                    "canonical_total_count": canonical_total,
+                    "score_completed_only": True,
+                    "missing_results": graded_partial["missing_results"],
+                    "extra_results": graded_partial["extra_results"],
+                    "upstream_per_exercise": graded_partial["per_exercise"],
                     "stderr_tail": (stderr or "")[-2000:],
                 },
             }

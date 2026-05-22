@@ -523,10 +523,10 @@ def config_for_pack(
     env: tuple[tuple[str, str], ...] = config.env
     request_timeout_s = config.request_timeout_s
     if pack_id == "aider-polyglot-30":
-        # v0.9.0: parallelize aider's batch across N threads. Default 4 to
-        # match the vLLM gemma-mtp compose's --max-num-seqs 4. Override
-        # via BENCHLOCAL_AIDER_THREADS env on the runner side.
-        threads = os.environ.get("BENCHLOCAL_AIDER_THREADS", "4")
+        # v0.9.0: parallelize aider's batch across N threads. Default 1 is
+        # conservative for llama.cpp/ik_llama single-slot (-np 1) servers;
+        # users with multi-slot endpoints can raise BENCHLOCAL_AIDER_THREADS.
+        threads = os.environ.get("BENCHLOCAL_AIDER_THREADS", "1")
         env = env + (("AIDER_BENCHMARK_THREADS", threads),)
         # #3: the whole 30-exercise batch runs inside one /verify-start call,
         # so the per-case timeout governs the BATCH budget here. Slow rigs
