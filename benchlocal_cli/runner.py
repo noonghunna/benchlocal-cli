@@ -100,9 +100,15 @@ def build_request(
     thinking_enabled: bool = False,
     thinking_max_tokens: int = 4096,
     extra_body: dict | None = None,
+    sampling_overrides: dict | None = None,
 ) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
     scenario_overrides = scenario.get("sampling_overrides") or {}
+    # CLI-level sampling overrides (--temperature, --top-p, etc.) take
+    # precedence over pack defaults and scenario overrides. Applied here
+    # (before scenario overrides) so per-scenario max_tokens still wins.
+    if sampling_overrides:
+        sampling.update(sampling_overrides)
     if extra_body:
         sampling.update(extra_body)
     if thinking_enabled:
@@ -212,6 +218,7 @@ class Runner:
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
+        sampling_overrides: dict | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -227,6 +234,9 @@ class Runner:
         # See SandboxClient.stop(log_dir=...) for the snapshot.
         self.sandbox_log_dir = sandbox_log_dir
         self.max_transient_retries = max(0, int(max_transient_retries))
+        # CLI-level sampling overrides (--temperature, --top-p, etc.).
+        # When set, the run is tagged as non-canonical in the output.
+        self.sampling_overrides = sampling_overrides or {}
         self._sandbox_clients: dict[str, SandboxClient] = {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
@@ -250,6 +260,13 @@ class Runner:
             total = sum(pack.total for pack in pack_results)
             passed = sum(pack.passed for pack in pack_results)
             finished_at = _utc_now()
+            # Tag non-canonical sampling runs
+            if self.sampling_overrides:
+                override_desc = ", ".join(f"{k}={v}" for k, v in self.sampling_overrides.items())
+                warnings.append(
+                    f"non-canonical sampling overrides active ({override_desc}) — "
+                    f"results are NOT comparable to the default temp=0 baseline"
+                )
             return RunResult(
                 schema_version="1",
                 runner_version=__version__,
@@ -262,6 +279,7 @@ class Runner:
                 totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
                 thinking_enabled=self.thinking_enabled,
                 warnings=warnings,
+                sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
             )
         finally:
             self._stop_sandboxes()
@@ -444,6 +462,7 @@ class Runner:
             thinking_enabled=self.thinking_enabled,
             thinking_max_tokens=self.thinking_max_tokens,
             extra_body=self.extra_body,
+            sampling_overrides=self.sampling_overrides or None,
         )
         scenario_timeout = scenario.get("max_seconds_override") or meta.get("default_max_seconds") or self.timeout_per_case
         timeout = min(float(scenario_timeout), float(self.timeout_per_case))

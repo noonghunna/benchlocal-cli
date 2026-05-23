@@ -125,6 +125,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
+    # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
+    # recommended temperature. Default behavior (per-pack temp=0) unchanged.
+    # Any override tags the run as non-canonical in output + saved JSON.
+    run.add_argument("--temperature", type=float, default=None, help="override sampling temperature (default: per-pack, usually 0)")
+    run.add_argument("--top-p", type=float, default=None, help="override top-p / nucleus sampling (default: per-pack)")
+    run.add_argument("--top-k", type=int, default=None, help="override top-k sampling (default: per-pack)")
+    run.add_argument("--min-p", type=float, default=None, help="override min-p sampling (default: per-pack)")
+    run.add_argument("--repeat-penalty", type=float, default=None, help="override repeat/frequency penalty (default: per-pack)")
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
     # v0.8 — diagnostic tooling
@@ -139,7 +147,8 @@ def _parser() -> argparse.ArgumentParser:
         "--exit-on-regression",
         action="store_true",
         help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
-             "Requires --previous-result to also be set.",
+             "Requires --previous-result to also be set. Blocked when sampling overrides "
+             "are active (non-canonical runs shouldn't gate CI).",
     )
     run.add_argument(
         "--history-file",
@@ -181,8 +190,14 @@ def _markdown(result: RunResult) -> str:
     if result.delta is not None:
         delta_pack_index = {p["pack_id"]: p for p in result.delta.get("by_pack") or []}
 
+    # v0.9.1: non-canonical banner when sampling overrides are active (#19)
+    canonical_tag = ""
+    if result.sampling_overrides:
+        override_str = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
+        canonical_tag = f" ⚠ NON-CANONICAL (sampling: {override_str})"
+
     lines = [
-        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}) ===",
+        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag} ===",
         "",
     ]
     if delta_pack_index is None:
@@ -372,6 +387,29 @@ def main(argv: list[str] | None = None) -> int:
                 pass  # let Runner surface the unknown-pack error
         if args.no_sandboxed_packs and not args.sandboxed_only:
             sandboxed_enabled = False
+        # Build sampling overrides from CLI flags (#19)
+        sampling_overrides: dict = {}
+        if args.temperature is not None:
+            sampling_overrides["temperature"] = args.temperature
+        if args.top_p is not None:
+            sampling_overrides["top_p"] = args.top_p
+        if args.top_k is not None:
+            sampling_overrides["top_k"] = args.top_k
+        if args.min_p is not None:
+            sampling_overrides["min_p"] = args.min_p
+        if args.repeat_penalty is not None:
+            sampling_overrides["repeat_penalty"] = args.repeat_penalty
+
+        # Block --exit-on-regression when sampling is non-canonical
+        if args.exit_on_regression and sampling_overrides:
+            print(
+                "benchlocal-cli: --exit-on-regression is blocked when sampling overrides "
+                "are active (non-canonical runs shouldn't gate CI). Run without overrides "
+                "for the reproducible baseline.",
+                file=sys.stderr,
+            )
+            return 1
+
         runner = Runner(
             endpoint=args.endpoint,
             model=args.model,
@@ -389,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
                 sandboxed_enabled=sandboxed_enabled,
             ),
             max_transient_retries=args.max_transient_retries,
+            sampling_overrides=sampling_overrides or None,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
