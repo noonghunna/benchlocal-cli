@@ -486,23 +486,23 @@ def main(argv: list[str] | None = None) -> int:
         # Build progress callbacks (#23)
         on_pack_complete = None
         on_scenario_complete = None
-        
+
         if args.progress:
             on_scenario_complete = _scenario_progress
-        
+
         # For incremental output, we need to track state for partial JSON saves
         incremental_state = {
             "packs": [],
             "started_at": None,
             "save_path": args.save_json if args.incremental else None,
         }
-        
+
         def _on_pack_complete_incremental(pack: "PackResult") -> None:
             """Callback for per-pack incremental output (#23)."""
             from benchlocal_cli.types import PackResult  # noqa: F811
             # Print the pack line immediately
             print(_pack_line(pack), file=sys.stderr, flush=True)
-            
+
             # Track for incremental JSON save
             if incremental_state["save_path"]:
                 incremental_state["packs"].append(pack)
@@ -528,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
                         json.dump(partial_result.to_dict(), handle, indent=2, sort_keys=True)
                 except Exception as exc:  # noqa: BLE001
                     print(f"benchlocal-cli: warning — incremental save failed: {exc}", file=sys.stderr)
-        
+
         if args.progress or args.incremental:
             on_pack_complete = _on_pack_complete_incremental
 
