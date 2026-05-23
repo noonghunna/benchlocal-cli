@@ -9,6 +9,39 @@ the same content per-version.
 
 ---
 
+## v0.9.5 — 2026-05-23
+
+
+### ✨ Features
+
+- feat: incremental progress output (#23) (#24) ([#24](https://github.com/noonghunna/benchlocal-cli/pull/24) by @noonghunna)
+- feat(cli): add --sampling-from-server to inherit serve-side sampling defaults (#21) (#22) ([#22](https://github.com/noonghunna/benchlocal-cli/pull/22) by @noonghunna)
+- feat(cli): add opt-in --temperature/--top-p/--top-k/--min-p/--repeat-penalty sampling overrides (#19) (#20) ([#20](https://github.com/noonghunna/benchlocal-cli/pull/20) by @noonghunna)
+
+
+### 🐛 Bug fixes
+
+- fix(aider): default to single-thread and score partial timeouts (#18) ([#18](https://github.com/noonghunna/benchlocal-cli/pull/18) by @noonghunna)
+- fix(aider): qualify only known litellm providers (#16) ([#16](https://github.com/noonghunna/benchlocal-cli/pull/16) by @noonghunna)
+- fix(scoring): sanitize leaked reasoning tags (#14) ([#14](https://github.com/noonghunna/benchlocal-cli/pull/14) by @noonghunna)
+- fix(runner): retry transient model endpoint failures (#12) ([#12](https://github.com/noonghunna/benchlocal-cli/pull/12) by @noonghunna)
+- fix(cli): default sandbox logs for sandboxed runs (#10) ([#10](https://github.com/noonghunna/benchlocal-cli/pull/10) by @noonghunna)
+- fix: durable sandbox logs (#6) + aider timeout/partial-headline (#3) (#7) ([#7](https://github.com/noonghunna/benchlocal-cli/pull/7) by @noonghunna)
+- fix(sandbox): pin jest@29.7.0 in aider-polyglot Dockerfile (#5) ([#5](https://github.com/noonghunna/benchlocal-cli/pull/5) by @noonghunna)
+
+
+### 📝 Documentation
+
+- docs: README — document --temperature + --sampling-from-server sampling flags ([cc4b410](https://github.com/noonghunna/benchlocal-cli/commit/cc4b410c73295897982a738cfb444031cd38faba))
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(vendor): refresh bench packs to latest upstream (#8) ([#8](https://github.com/noonghunna/benchlocal-cli/pull/8) by @noonghunna)
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.5`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.4...v0.9.5)
 ## v0.9.4 — 2026-05-15
 
 
