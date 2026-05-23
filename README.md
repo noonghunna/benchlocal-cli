@@ -34,6 +34,19 @@ We needed a headless, scriptable quality gate for compose-release validation on 
 
 Pack selection in each mode follows Codex design-review feedback (2026-05-09) — ToolCall + InstructFollow are the primary signals for IDE-agent regressions; StructOutput catches grammar/JSON drift; ReasonMath defers to `--full` because it leans toward generic benchmark behavior rather than agent-stack-specific. AiderPolyglot-30 is run independently because its harness is a batch runner with multi-turn edit/test loops — different shape from the per-scenario BenchLocal packs.
 
+## Sampling
+
+By default, packs sample at their declared per-pack temperature — the deterministic packs use **temperature 0** (greedy) for reproducible, cross-rig-comparable scoring. This is the **canonical** baseline.
+
+Two opt-in flags evaluate a model at a non-default temperature. Both tag the run **⚠ NON-CANONICAL** (markdown header + JSON) and block `--exit-on-regression` (non-canonical runs shouldn't gate CI):
+
+| Flag | Effect |
+|---|---|
+| `--temperature N` (+ `--top-p` / `--top-k` / `--min-p` / `--repeat-penalty`) | Override sampling with values you specify. |
+| `--sampling-from-server` | Omit **all** sampling params from requests so the *server* applies its own configured defaults (e.g. a compose's `--temp` / `--override-generation-config`). Reads the actual values back via `GET /props` (llama.cpp) and records them as `sampling_source: "server"` + `server_defaults`. Mutually exclusive with `--temperature` et al. |
+
+Use the canonical temp-0 default for regression tracking and cross-model ranking (fixed bar, reproducible). Use the override flags to evaluate a model **as it's served / at its recommended temperature** — e.g. reasoning or exploratory fine-tunes that recommend temp 0.75–1, where greedy decoding under-represents what the model was tuned for.
+
 ## Pack inventory
 
 | Pack | Verifier type | Status |
