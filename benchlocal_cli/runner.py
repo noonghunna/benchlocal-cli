@@ -92,6 +92,16 @@ def list_packs() -> list[dict]:
     return packs
 
 
+# Sampling params that are stripped from the request when
+# --sampling-from-server is active, so the server applies its own defaults.
+_SAMPLING_KEYS = frozenset({
+    "temperature", "top_p", "top_k", "min_p", "repeat_penalty",
+    "presence_penalty", "frequency_penalty", "dynatemp_range",
+    "dynatemp_exponent", "typical_p", "seed", "mirostat",
+    "mirostat_tau", "mirostat_eta",
+})
+
+
 def build_request(
     scenario: dict,
     meta: dict,
@@ -101,6 +111,7 @@ def build_request(
     thinking_max_tokens: int = 4096,
     extra_body: dict | None = None,
     sampling_overrides: dict | None = None,
+    sampling_from_server: bool = False,
 ) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
     scenario_overrides = scenario.get("sampling_overrides") or {}
@@ -124,6 +135,14 @@ def build_request(
     sampling.update(scenario_overrides)
     if thinking_enabled:
         sampling["max_tokens"] = thinking_max_tokens
+    # --sampling-from-server (#21): strip all sampling params from the
+    # request so the server applies its own configured defaults. Keep
+    # max_tokens (length budget) and chat_template_kwargs (thinking gate).
+    if sampling_from_server:
+        sampling = {
+            k: v for k, v in sampling.items()
+            if k not in _SAMPLING_KEYS
+        }
     request = {"model": model, "messages": scenario["messages"], **sampling}
     if scenario.get("tools"):
         request["tools"] = scenario["tools"]
@@ -219,6 +238,7 @@ class Runner:
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
         sampling_overrides: dict | None = None,
+        sampling_from_server: bool = False,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -237,6 +257,12 @@ class Runner:
         # CLI-level sampling overrides (--temperature, --top-p, etc.).
         # When set, the run is tagged as non-canonical in the output.
         self.sampling_overrides = sampling_overrides or {}
+        # --sampling-from-server (#21): omit sampling params from requests
+        # so the server applies its own configured defaults. Mutually
+        # exclusive with sampling_overrides (enforced in cli.py).
+        self.sampling_from_server = sampling_from_server
+        # Populated by _read_server_defaults() before the run starts.
+        self._server_defaults: dict | None = None
         self._sandbox_clients: dict[str, SandboxClient] = {}
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
@@ -255,6 +281,10 @@ class Runner:
         signal.signal(signal.SIGINT, _cleanup_and_raise)
         signal.signal(signal.SIGTERM, _cleanup_and_raise)
         try:
+            # --sampling-from-server (#21): read server defaults before
+            # any requests so we can tag the run and record what was used.
+            if self.sampling_from_server:
+                self._server_defaults = self._read_server_defaults(warnings)
             self._start_sandboxes(pack_ids, warnings)
             pack_results = [self.run_pack(pack_id, repeat=repeat, warnings=warnings) for pack_id in pack_ids]
             total = sum(pack.total for pack in pack_results)
@@ -267,6 +297,18 @@ class Runner:
                     f"non-canonical sampling overrides active ({override_desc}) — "
                     f"results are NOT comparable to the default temp=0 baseline"
                 )
+            if self.sampling_from_server:
+                if self._server_defaults:
+                    sd_desc = ", ".join(f"{k}={v}" for k, v in self._server_defaults.items())
+                    warnings.append(
+                        f"sampling inherited from server ({sd_desc}) — "
+                        f"results are NOT comparable to the default temp=0 baseline"
+                    )
+                else:
+                    warnings.append(
+                        "sampling inherited from server (value not exposed by endpoint) — "
+                        "results are NOT comparable to the default temp=0 baseline"
+                    )
             return RunResult(
                 schema_version="1",
                 runner_version=__version__,
@@ -280,11 +322,53 @@ class Runner:
                 thinking_enabled=self.thinking_enabled,
                 warnings=warnings,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
+                sampling_source="server" if self.sampling_from_server else None,
+                server_defaults=self._server_defaults if self.sampling_from_server else None,
             )
         finally:
             self._stop_sandboxes()
             signal.signal(signal.SIGINT, old_sigint)
             signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _read_server_defaults(self, warnings: list[str]) -> dict | None:
+        """Query the server for its effective sampling defaults (#21).
+
+        llama.cpp: GET /props → default_generation_settings.params
+        vLLM: no clean endpoint; returns None (tagged as 'value not exposed').
+        """
+        import sys
+        endpoint = self.endpoint.rstrip("/")
+        # Normalise: strip /v1 or /v1/chat/completions to get the base URL
+        base = endpoint
+        for suffix in ("/v1/chat/completions", "/v1", "/chat/completions"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        props_url = f"{base}/props"
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.get(props_url)
+            if resp.status_code == 200:
+                body = resp.json()
+                params = (body.get("default_generation_settings") or {}).get("params") or {}
+                # Extract the sampling keys we care about
+                result: dict = {}
+                for key in ("temperature", "top_p", "top_k", "min_p", "repeat_penalty"):
+                    if key in params:
+                        result[key] = params[key]
+                if result:
+                    return result
+                # /props exists but no recognised keys — unusual
+                print(f"benchlocal-cli: warning — /props returned no recognised sampling keys", file=sys.stderr, flush=True)
+                return None
+            # 404 = not llama.cpp (likely vLLM or other engine)
+            if resp.status_code == 404:
+                return None
+            print(f"benchlocal-cli: warning — /props returned HTTP {resp.status_code}", file=sys.stderr, flush=True)
+            return None
+        except Exception as exc:
+            print(f"benchlocal-cli: warning — could not read server defaults: {exc}", file=sys.stderr, flush=True)
+            return None
 
     def _start_sandboxes(self, pack_ids: list[str], warnings: list[str]) -> None:
         import sys
@@ -463,6 +547,7 @@ class Runner:
             thinking_max_tokens=self.thinking_max_tokens,
             extra_body=self.extra_body,
             sampling_overrides=self.sampling_overrides or None,
+            sampling_from_server=self.sampling_from_server,
         )
         scenario_timeout = scenario.get("max_seconds_override") or meta.get("default_max_seconds") or self.timeout_per_case
         timeout = min(float(scenario_timeout), float(self.timeout_per_case))

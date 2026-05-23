@@ -136,6 +136,14 @@ class RunResult:
     # Non-None means the run traded reproducibility for recommended-temp
     # evaluation; results should NOT be compared to the temp=0 baseline.
     sampling_overrides: dict | None = None
+    # v0.9.2: --sampling-from-server (#21): "server" when sampling was
+    # inherited from the serving config; None otherwise. Mutually exclusive
+    # with sampling_overrides in practice (enforced by cli.py).
+    sampling_source: str | None = None
+    # v0.9.2: the actual server defaults read back from /props (llama.cpp)
+    # or None if the endpoint didn't expose them (vLLM). Only populated
+    # when sampling_source == "server".
+    server_defaults: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -155,4 +163,8 @@ class RunResult:
             out["delta"] = self.delta
         if self.sampling_overrides is not None:
             out["sampling_overrides"] = self.sampling_overrides
+        if self.sampling_source is not None:
+            out["sampling_source"] = self.sampling_source
+        if self.server_defaults is not None:
+            out["server_defaults"] = self.server_defaults
         return out
