@@ -131,6 +131,11 @@ class RunResult:
     # None means delta wasn't computed (the default; preserves saved-JSON
     # back-compat with v0.7.x readers per Codex review #9).
     delta: dict | None = None
+    # v0.9.1: CLI-level sampling overrides (--temperature, --top-p, etc.).
+    # None means the run used the pack's default sampling (canonical).
+    # Non-None means the run traded reproducibility for recommended-temp
+    # evaluation; results should NOT be compared to the temp=0 baseline.
+    sampling_overrides: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -148,4 +153,6 @@ class RunResult:
         }
         if self.delta is not None:
             out["delta"] = self.delta
+        if self.sampling_overrides is not None:
+            out["sampling_overrides"] = self.sampling_overrides
         return out
