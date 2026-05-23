@@ -133,6 +133,19 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--top-k", type=int, default=None, help="override top-k sampling (default: per-pack)")
     run.add_argument("--min-p", type=float, default=None, help="override min-p sampling (default: per-pack)")
     run.add_argument("--repeat-penalty", type=float, default=None, help="override repeat/frequency penalty (default: per-pack)")
+    # v0.9.2: inherit sampling from server (#21) — omit all sampling params
+    # from the request so the server applies its own configured defaults.
+    # Mutually exclusive with --temperature/--top-p/--top-k/--min-p/--repeat-penalty.
+    run.add_argument(
+        "--sampling-from-server",
+        action="store_true",
+        help=(
+            "inherit sampling from the serving config (llama.cpp --temp, vLLM "
+            "--override-generation-config). Omits all sampling params from requests "
+            "so the server's defaults apply. Reads back via GET /props (llama.cpp) "
+            "and records the values. Mutually exclusive with --temperature/--top-p/etc."
+        ),
+    )
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
     # v0.8 — diagnostic tooling
@@ -190,9 +203,15 @@ def _markdown(result: RunResult) -> str:
     if result.delta is not None:
         delta_pack_index = {p["pack_id"]: p for p in result.delta.get("by_pack") or []}
 
-    # v0.9.1: non-canonical banner when sampling overrides are active (#19)
+    # v0.9.1/#21: non-canonical banner when sampling is non-default
     canonical_tag = ""
-    if result.sampling_overrides:
+    if result.sampling_source == "server":
+        if result.server_defaults:
+            sd_str = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
+            canonical_tag = f" ⚠ NON-CANONICAL (sampling: server defaults — {sd_str})"
+        else:
+            canonical_tag = " ⚠ NON-CANONICAL (sampling: server defaults — value not exposed by endpoint)"
+    elif result.sampling_overrides:
         override_str = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
         canonical_tag = f" ⚠ NON-CANONICAL (sampling: {override_str})"
 
@@ -400,12 +419,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.repeat_penalty is not None:
             sampling_overrides["repeat_penalty"] = args.repeat_penalty
 
+        # --sampling-from-server is mutually exclusive with explicit overrides (#21)
+        if args.sampling_from_server and sampling_overrides:
+            print(
+                "benchlocal-cli: --sampling-from-server is mutually exclusive with "
+                "--temperature/--top-p/--top-k/--min-p/--repeat-penalty. "
+                "Use one or the other.",
+                file=sys.stderr,
+            )
+            return 1
+
         # Block --exit-on-regression when sampling is non-canonical
-        if args.exit_on_regression and sampling_overrides:
+        if args.exit_on_regression and (sampling_overrides or args.sampling_from_server):
             print(
                 "benchlocal-cli: --exit-on-regression is blocked when sampling overrides "
-                "are active (non-canonical runs shouldn't gate CI). Run without overrides "
-                "for the reproducible baseline.",
+                "or --sampling-from-server are active (non-canonical runs shouldn't gate CI). "
+                "Run without overrides for the reproducible baseline.",
                 file=sys.stderr,
             )
             return 1
@@ -428,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             max_transient_retries=args.max_transient_retries,
             sampling_overrides=sampling_overrides or None,
+            sampling_from_server=args.sampling_from_server,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
