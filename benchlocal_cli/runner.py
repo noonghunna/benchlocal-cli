@@ -239,6 +239,8 @@ class Runner:
         max_transient_retries: int = 3,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
+        on_pack_complete: "callable[[PackResult], None] | None" = None,
+        on_scenario_complete: "callable[[ScenarioRun, int, int], None] | None" = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -264,6 +266,9 @@ class Runner:
         # Populated by _read_server_defaults() before the run starts.
         self._server_defaults: dict | None = None
         self._sandbox_clients: dict[str, SandboxClient] = {}
+        # Callbacks for incremental progress (#23)
+        self._on_pack_complete = on_pack_complete
+        self._on_scenario_complete = on_scenario_complete
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
         started_at = _utc_now()
@@ -286,7 +291,12 @@ class Runner:
             if self.sampling_from_server:
                 self._server_defaults = self._read_server_defaults(warnings)
             self._start_sandboxes(pack_ids, warnings)
-            pack_results = [self.run_pack(pack_id, repeat=repeat, warnings=warnings) for pack_id in pack_ids]
+            pack_results: list[PackResult] = []
+            for pack_id in pack_ids:
+                pack_result = self.run_pack(pack_id, repeat=repeat, warnings=warnings)
+                pack_results.append(pack_result)
+                if self._on_pack_complete is not None:
+                    self._on_pack_complete(pack_result)
             total = sum(pack.total for pack in pack_results)
             passed = sum(pack.passed for pack in pack_results)
             finished_at = _utc_now()
@@ -478,9 +488,15 @@ class Runner:
             )
 
         runs: list[ScenarioRun] = []
+        total_scenarios = len(scenarios) * repeat
+        scenario_index = 0
         for repeat_index in range(1, repeat + 1):
             for scenario in scenarios:
-                runs.append(self.run_scenario(meta, scenario, repeat_index=repeat_index))
+                scenario_index += 1
+                run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
+                runs.append(run)
+                if self._on_scenario_complete is not None:
+                    self._on_scenario_complete(run, scenario_index, total_scenarios)
 
         counted = [run for run in runs if run.result.failure_mode != "verifier_not_implemented"]
         latencies = [run.result.latency_seconds for run in counted if run.result.latency_seconds > 0]

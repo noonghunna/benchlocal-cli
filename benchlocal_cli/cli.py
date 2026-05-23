@@ -39,8 +39,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, list_packs, load_pack
+from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _utc_now, list_packs, load_pack
 from benchlocal_cli.types import RunResult
+from benchlocal_cli import __version__
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -90,6 +91,19 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
     run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
+    # v0.9.3: incremental progress (#23) — live output during long runs
+    run.add_argument(
+        "--progress",
+        action="store_true",
+        help="emit per-scenario progress to stderr as [N/M] pack/scenario pass|fail (Xs). "
+             "Makes long runs observable without waiting for the final scoreboard.",
+    )
+    run.add_argument(
+        "--incremental",
+        action="store_true",
+        help="flush partial JSON to --save-json after each pack completes (not just at end). "
+             "Requires --save-json. A crash mid-run preserves whatever packs finished.",
+    )
     run.add_argument(
         "--enable-sandboxed-packs",
         action="store_true",
@@ -192,6 +206,38 @@ def _mode_from_args(args: argparse.Namespace) -> str:
     if args.full:
         return "full"
     return "medium"
+
+
+def _pack_line(pack: "PackResult") -> str:
+    """Format a single pack result line for incremental output (#23)."""
+    if pack.skipped:
+        status = "skipped"
+    elif pack.status not in ("ok", "stubbed"):
+        status = pack.status
+    else:
+        status = "ok" if pack.total else pack.status
+    score = f"{pack.score:.0%}" if pack.total else "-"
+    p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
+    return f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {status}"
+
+
+def _scenario_progress(run: "ScenarioRun", index: int, total: int) -> None:
+    """Print per-scenario progress line to stderr (#23)."""
+    from benchlocal_cli.types import ScenarioRun  # noqa: F811
+    result_char = "✓" if run.result.passed else "✗"
+    latency = f"{run.result.latency_seconds:.1f}s" if run.result.latency_seconds > 0 else "?"
+    print(
+        f"  [{index}/{total}] {run.id} {result_char} {run.result.failure_mode} ({latency})",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _compute_partial_totals(packs: list) -> dict:
+    """Compute totals for a partial run (incremental JSON save, #23)."""
+    total = sum(p.total for p in packs)
+    passed = sum(p.passed for p in packs)
+    return {"passed": passed, "total": total, "score": (passed / total if total else 0.0)}
 
 
 def _markdown(result: RunResult) -> str:
@@ -429,6 +475,63 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        # --incremental requires --save-json (#23)
+        if args.incremental and not args.save_json:
+            print(
+                "benchlocal-cli: --incremental requires --save-json (nothing to flush to).",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Build progress callbacks (#23)
+        on_pack_complete = None
+        on_scenario_complete = None
+
+        if args.progress:
+            on_scenario_complete = _scenario_progress
+
+        # For incremental output, we need to track state for partial JSON saves
+        incremental_state = {
+            "packs": [],
+            "started_at": None,
+            "save_path": args.save_json if args.incremental else None,
+        }
+
+        def _on_pack_complete_incremental(pack: "PackResult") -> None:
+            """Callback for per-pack incremental output (#23)."""
+            from benchlocal_cli.types import PackResult  # noqa: F811
+            # Print the pack line immediately
+            print(_pack_line(pack), file=sys.stderr, flush=True)
+
+            # Track for incremental JSON save
+            if incremental_state["save_path"]:
+                incremental_state["packs"].append(pack)
+                # Build a partial RunResult and save it
+                from benchlocal_cli.types import RunResult  # noqa: F811
+                partial_result = RunResult(
+                    schema_version="1",
+                    runner_version=__version__,
+                    endpoint=args.endpoint,
+                    model=args.model,
+                    mode=mode,
+                    started_at=incremental_state["started_at"],
+                    finished_at=_utc_now(),
+                    packs=incremental_state["packs"],
+                    totals=_compute_partial_totals(incremental_state["packs"]),
+                    thinking_enabled=args.enable_thinking,
+                    warnings=[],
+                    sampling_overrides=sampling_overrides or None,
+                    sampling_source="server" if args.sampling_from_server else None,
+                )
+                try:
+                    with Path(incremental_state["save_path"]).open("w", encoding="utf-8") as handle:
+                        json.dump(partial_result.to_dict(), handle, indent=2, sort_keys=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"benchlocal-cli: warning — incremental save failed: {exc}", file=sys.stderr)
+
+        if args.progress or args.incremental:
+            on_pack_complete = _on_pack_complete_incremental
+
         # Block --exit-on-regression when sampling is non-canonical
         if args.exit_on_regression and (sampling_overrides or args.sampling_from_server):
             print(
@@ -438,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+
+        # Set started_at for incremental saves before runner.run() sets its own
+        if incremental_state["save_path"]:
+            incremental_state["started_at"] = _utc_now()
 
         runner = Runner(
             endpoint=args.endpoint,
@@ -458,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
             max_transient_retries=args.max_transient_retries,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
+            on_pack_complete=on_pack_complete,
+            on_scenario_complete=on_scenario_complete,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
