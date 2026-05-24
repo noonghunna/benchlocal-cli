@@ -39,9 +39,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _utc_now, list_packs, load_pack
-from benchlocal_cli.types import RunResult
 from benchlocal_cli import __version__
+from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _utc_now, list_packs, load_pack
+from benchlocal_cli.types import PackResult, RunResult, ScenarioRun
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -137,7 +137,22 @@ def _parser() -> argparse.ArgumentParser:
             "or use none to disable"
         ),
     )
-    run.add_argument("--enable-thinking", action="store_true", help="run with reasoning/thinking enabled (default: off)")
+    thinking = run.add_mutually_exclusive_group()
+    thinking.add_argument(
+        "--enable-thinking",
+        dest="thinking_override",
+        action="store_const",
+        const=True,
+        default=None,
+        help="force reasoning/thinking on for every pack (default: use each pack's default_thinking metadata)",
+    )
+    thinking.add_argument(
+        "--no-thinking",
+        dest="thinking_override",
+        action="store_const",
+        const=False,
+        help="force reasoning/thinking off for every pack, ignoring pack defaults",
+    )
     run.add_argument("--thinking-max-tokens", type=int, default=4096)
     # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
     # recommended temperature. Default behavior (per-pack temp=0) unchanged.
@@ -188,13 +203,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _print_list() -> None:
-    print("Pack | Version | Scenarios | Verifier | Status")
-    print("---|---:|---:|---|---")
+    print("Pack | Version | Scenarios | Verifier | Thinking | Status")
+    print("---|---:|---:|---|---|---")
     for meta in list_packs():
         status = "sandboxed" if meta.get("supports_sandboxed_only") else "ready"
+        thinking = meta.get("default_thinking", "off")
         print(
             f"{meta['pack_id']} | {meta['version']} | {meta['scenario_count']} | "
-            f"{meta['verifier_module']} | {status}"
+            f"{meta['verifier_module']} | {thinking} | {status}"
         )
 
 
@@ -208,7 +224,7 @@ def _mode_from_args(args: argparse.Namespace) -> str:
     return "medium"
 
 
-def _pack_line(pack: "PackResult") -> str:
+def _pack_line(pack: PackResult) -> str:
     """Format a single pack result line for incremental output (#23)."""
     if pack.skipped:
         status = "skipped"
@@ -221,9 +237,8 @@ def _pack_line(pack: "PackResult") -> str:
     return f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {status}"
 
 
-def _scenario_progress(run: "ScenarioRun", index: int, total: int) -> None:
+def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
     """Print per-scenario progress line to stderr (#23)."""
-    from benchlocal_cli.types import ScenarioRun  # noqa: F811
     result_char = "✓" if run.result.passed else "✗"
     latency = f"{run.result.latency_seconds:.1f}s" if run.result.latency_seconds > 0 else "?"
     print(
@@ -240,8 +255,23 @@ def _compute_partial_totals(packs: list) -> dict:
     return {"passed": passed, "total": total, "score": (passed / total if total else 0.0)}
 
 
+def _thinking_label(result: RunResult) -> str:
+    if result.thinking_mode == "force-on":
+        return "on"
+    if result.thinking_mode == "force-off":
+        return "off"
+    pack_modes = {pack.thinking_enabled for pack in result.packs}
+    if pack_modes == {True}:
+        return "on(pack-defaults)"
+    if pack_modes == {False}:
+        return "off(pack-defaults)"
+    if pack_modes == {False, True}:
+        return "mixed(pack-defaults)"
+    return "pack-defaults"
+
+
 def _markdown(result: RunResult) -> str:
-    thinking = "on" if result.thinking_enabled else "off"
+    thinking = _thinking_label(result)
     # v0.8: delta column rendered ONLY when --previous-result was actually
     # computed (Codex review #4 — keep default markdown byte-stable for
     # pinned downstream parsers like club-3090's quality-test.sh).
@@ -497,9 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             "save_path": args.save_json if args.incremental else None,
         }
 
-        def _on_pack_complete_incremental(pack: "PackResult") -> None:
+        def _on_pack_complete_incremental(pack: PackResult) -> None:
             """Callback for per-pack incremental output (#23)."""
-            from benchlocal_cli.types import PackResult  # noqa: F811
             # Print the pack line immediately
             print(_pack_line(pack), file=sys.stderr, flush=True)
 
@@ -507,7 +536,6 @@ def main(argv: list[str] | None = None) -> int:
             if incremental_state["save_path"]:
                 incremental_state["packs"].append(pack)
                 # Build a partial RunResult and save it
-                from benchlocal_cli.types import RunResult  # noqa: F811
                 partial_result = RunResult(
                     schema_version="1",
                     runner_version=__version__,
@@ -518,7 +546,12 @@ def main(argv: list[str] | None = None) -> int:
                     finished_at=_utc_now(),
                     packs=incremental_state["packs"],
                     totals=_compute_partial_totals(incremental_state["packs"]),
-                    thinking_enabled=args.enable_thinking,
+                    thinking_enabled=bool(args.thinking_override),
+                    thinking_mode=(
+                        "force-on" if args.thinking_override is True
+                        else "force-off" if args.thinking_override is False
+                        else "pack-defaults"
+                    ),
                     warnings=[],
                     sampling_overrides=sampling_overrides or None,
                     sampling_source="server" if args.sampling_from_server else None,
@@ -526,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     with Path(incremental_state["save_path"]).open("w", encoding="utf-8") as handle:
                         json.dump(partial_result.to_dict(), handle, indent=2, sort_keys=True)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     print(f"benchlocal-cli: warning — incremental save failed: {exc}", file=sys.stderr)
 
         if args.progress or args.incremental:
@@ -552,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_per_case=args.timeout_per_case,
             enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
-            thinking_enabled=args.enable_thinking,
+            thinking_enabled=args.thinking_override,
             thinking_max_tokens=args.thinking_max_tokens,
             extra_body=_load_extra_body(args.extra_body),
             sandbox_image_tag=args.sandbox_image_tag,
@@ -599,7 +632,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 from benchlocal_cli.history import append_run
                 append_run(result_dict, history_path)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(f"benchlocal-cli: warning — history append failed: {exc}", file=sys.stderr)
         if args.output == "json":
             print(json.dumps(result_dict, indent=2, sort_keys=True))

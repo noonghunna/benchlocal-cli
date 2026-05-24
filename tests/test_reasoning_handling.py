@@ -4,8 +4,8 @@ from benchlocal_cli.runner import Runner, build_request
 from benchlocal_cli.scoring.common import content_with_source, sanitize_reasoning_tags
 
 
-def _meta() -> dict:
-    return {
+def _meta(default_thinking: str | None = None) -> dict:
+    meta = {
         "sampling_defaults": {
             "temperature": 0,
             "max_tokens": 1024,
@@ -13,6 +13,9 @@ def _meta() -> dict:
         },
         "default_max_seconds": 60,
     }
+    if default_thinking is not None:
+        meta["default_thinking"] = default_thinking
+    return meta
 
 
 def _scenario(overrides: dict | None = None) -> dict:
@@ -113,3 +116,70 @@ def test_runner_json_records_thinking_state_and_response_field():
 
     run = runner.run([], mode="quick")
     assert run.to_dict()["thinking_enabled"] is True
+
+
+
+def test_build_request_uses_pack_default_thinking_on():
+    request, sampling = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["max_tokens"] == 4096
+    assert sampling["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_build_request_force_no_thinking_overrides_pack_default_on():
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_enabled=False,
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["max_tokens"] == 1024
+
+
+def test_scenario_can_disable_pack_default_thinking_without_token_bump():
+    request, _ = build_request(
+        _scenario({"chat_template_kwargs": {"enable_thinking": False}, "max_tokens": 512}),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["max_tokens"] == 512
+
+
+def test_pack_result_records_effective_thinking_mode(monkeypatch):
+    meta = _meta(default_thinking="on")
+    meta.update({"version": "test", "upstream_commit": "local", "verifier_module": "instruct_follow"})
+    monkeypatch.setattr(
+        "benchlocal_cli.runner.load_pack",
+        lambda pack_id: (meta, [_scenario()]),
+    )
+
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        mock_responses={"x": {"choices": [{"message": {"content": "hello"}}]}},
+    )
+
+    pack = runner.run_pack("instructfollow-15")
+    assert pack.thinking_enabled is True
+    assert pack.to_dict()["thinking_enabled"] is True
+
+    forced = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        thinking_enabled=False,
+        mock_responses={"x": {"choices": [{"message": {"content": "hello"}}]}},
+    )
+    pack_forced = forced.run_pack("instructfollow-15")
+    assert pack_forced.thinking_enabled is False

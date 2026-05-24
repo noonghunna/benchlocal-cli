@@ -21,6 +21,7 @@ Every pack file at `benchlocal_cli/packs/<pack-id>.jsonl` follows this format. E
     "tool_choice": "auto",
     "chat_template_kwargs": {"enable_thinking": false}
   },
+  "default_thinking": "off",
   "default_max_seconds": 60,
   "verifier_module": "tool_call",
   "supports_sandboxed_only": false,
@@ -41,7 +42,8 @@ Field reference:
 | `scenario_count` | yes | int | Number of scenario lines in this file |
 | `license` | yes | string | Usually "MIT" (matches BenchLocal upstream) |
 | `license_text_path` | no | string | Path to attribution doc; defaults to `ATTRIBUTION.md` |
-| `sampling_defaults` | yes | object | Applied to every scenario unless overridden; generated packs include `chat_template_kwargs: {"enable_thinking": false}` so reasoning models default to answer-only mode |
+| `sampling_defaults` | yes | object | Applied to every scenario unless overridden; generated packs include `chat_template_kwargs: {"enable_thinking": false}` as the request-shape base |
+| `default_thinking` | no | `"on"` or `"off"` | Pack-level reasoning default. Missing means `"off"`. Runner default honors this; `--enable-thinking` / `--no-thinking` force all packs on/off. |
 | `default_max_seconds` | yes | int | Default per-scenario timeout |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI; runner skips with warning unless `--enable-sandboxed-packs` |

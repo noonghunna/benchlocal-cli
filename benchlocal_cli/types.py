@@ -96,6 +96,7 @@ class PackResult:
     skipped: bool = False
     status: str = "ok"
     warnings: list[str] = field(default_factory=list)
+    thinking_enabled: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +111,7 @@ class PackResult:
             "skipped": self.skipped,
             "status": self.status,
             "warnings": self.warnings,
+            "thinking_enabled": self.thinking_enabled,
             "scenarios": [scenario.to_dict() for scenario in self.scenarios],
         }
 
@@ -126,6 +128,7 @@ class RunResult:
     packs: list[PackResult]
     totals: dict[str, float | int]
     thinking_enabled: bool = False
+    thinking_mode: str = "pack-defaults"
     warnings: list[str] = field(default_factory=list)
     # v0.8: populated when `--previous-result PATH` was passed to the run.
     # None means delta wasn't computed (the default; preserves saved-JSON
@@ -157,6 +160,7 @@ class RunResult:
             "packs": [pack.to_dict() for pack in self.packs],
             "totals": self.totals,
             "thinking_enabled": self.thinking_enabled,
+            "thinking_mode": self.thinking_mode,
             "warnings": self.warnings,
         }
         if self.delta is not None:

@@ -19,7 +19,7 @@ We needed a headless, scriptable quality gate for compose-release validation on 
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests default to `chat_template_kwargs: {enable_thinking: false}` so reasoning-capable models do not spend the benchmark token budget on hidden deliberation. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests use pack-level `default_thinking` metadata so reasoning-rewarding packs can think while execution/format packs stay answer-only. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
 
 **v0.9.0** added the eval-expansion track — `aider-polyglot-30` ships as the first non-BenchLocal sandboxed pack: 30-exercise multi-language code-editing bench across cpp/go/java/javascript/python/rust, vendored upstream from `Aider-AI/aider`'s `benchmark.py`. Run with `--pack aider-polyglot-30 --enable-sandboxed-packs`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md).
 
@@ -129,11 +129,14 @@ bash tools/build-sandboxes.sh
 # list available packs
 benchlocal-cli list
 
-# run quick mode against a local club-3090 endpoint; thinking is off by default
+# run quick mode against a local club-3090 endpoint; pack metadata picks thinking on/off
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
 
-# diagnostic run with reasoning/thinking enabled and a larger token budget
+# force reasoning/thinking enabled for every pack with a larger token budget
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --enable-thinking
+
+# force answer-only mode for every pack, ignoring pack defaults
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --no-thinking
 
 # pass vendor-specific request body fields
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --extra-body '{"foo":"bar"}'
@@ -158,7 +161,7 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 ## Reasoning models
 
-`benchlocal-cli` sends `chat_template_kwargs: {"enable_thinking": false}` by default. This keeps BenchLocal-style quality prompts comparable on reasoning-capable models such as Qwen3.6, where default thinking can exhaust `max_tokens` before the final answer is emitted. Use `--enable-thinking` for diagnostic runs; it sets `enable_thinking=true` and bumps request `max_tokens` to `--thinking-max-tokens` (default `4096`) so diagnostic thinking runs have enough budget. Use `--extra-body` to pass any other OpenAI-compatible server extension fields.
+`benchlocal-cli` now uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, and `hermesagent-20` run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `4096`). Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
 
 ## Output
 
