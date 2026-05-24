@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from benchlocal_cli.scoring import (
     _stub,
@@ -103,3 +104,71 @@ def test_data_extract_pass_and_fail():
     scenario = {"id": "DE", "verifier": {"asserts": [{"kind": "field_exact_value", "field": "email", "value": "a@example.com"}, {"kind": "no_extra_fields", "allowed": ["email"]}]}}
     assert data_extract.score_scenario(scenario, _response('{"email":"a@example.com"}')).passed
     assert data_extract.score_scenario(scenario, _response('{"email":"b@example.com"}')).failure_mode == "verifier_fail"
+
+
+
+def _pack_record(pack: str, scenario_id: str) -> dict:
+    path = Path(__file__).resolve().parents[1] / "benchlocal_cli" / "packs" / pack
+    for line in path.read_text().splitlines():
+        record = json.loads(line)
+        if record.get("id") == scenario_id:
+            return record
+    raise AssertionError(f"{scenario_id} not found in {pack}")
+
+
+def test_tool_call_pack_preserves_dependent_chain_metadata():
+    scenario = _pack_record("toolcall-15.jsonl", "TC-15")
+    assertion = scenario["verifier"]["asserts"][0]
+    assert assertion["kind"] == "multi_call_order"
+    assert assertion["expected_names"] == ["web_search", "calculator"]
+    assert assertion["dependent"] is True
+
+
+def test_reason_math_upstream_metadata_accepts_alias_and_requires_trace():
+    scenario = _pack_record("reasonmath-15.jsonl", "RM-02")
+    assertion = scenario["verifier"]["asserts"][0]
+    assert assertion["accepted_answers"] == ["ANSWER: kg=0.313"]
+    assert assertion["partial_answers"] == ["ANSWER: grams=312.5"]
+    assert assertion["checkpoints"] == ["grams=312.5", "kg=0.3125"]
+
+    full = reason_math.score_scenario(scenario, _response("grams=312.5\nkg=0.3125\nANSWER: kg=0.313"))
+    assert full.passed
+    assert full.verifier_trace["upstream_style_score"] == 100
+
+    answer_only = reason_math.score_scenario(scenario, _response("ANSWER: kg=0.313"))
+    assert answer_only.failure_mode == "wrong_answer"
+    assert answer_only.verifier_trace["upstream_style_score"] == 70
+
+
+def test_data_extract_expected_scoring_uses_full_upstream_shape():
+    scenario = {
+        "id": "DE-02",
+        "expected": {
+            "items": [
+                {"name": "Americano", "price": 4.75},
+                {"name": "Latte", "price": 5.50},
+            ],
+            "total": 10.25,
+        },
+        "verifier": {"asserts": []},
+    }
+    response = _response(json.dumps({
+        "total": 10.25,
+        "items": [
+            {"name": "Latte", "price": 5.50},
+            {"name": "Americano", "price": 4.75},
+        ],
+        "extra_note": "ignored for score but traced",
+    }))
+    result = data_extract.score_scenario(scenario, response)
+    assert result.passed
+    assert result.verifier_trace["upstream_style_score"] == 100
+    assert result.verifier_trace["compliance_notes"] == ["extra top-level fields: extra_note"]
+
+    bad = _response(json.dumps({
+        "total": 10.25,
+        "items": [{"name": "Americano", "price": 4.00}],
+    }))
+    failed = data_extract.score_scenario(scenario, bad)
+    assert failed.failure_mode == "verifier_fail"
+    assert failed.verifier_trace["upstream_style_score"] < 85
