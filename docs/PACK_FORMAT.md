@@ -25,6 +25,9 @@ Every pack file at `benchlocal_cli/packs/<pack-id>.jsonl` follows this format. E
   "default_max_seconds": 60,
   "verifier_module": "tool_call",
   "supports_sandboxed_only": false,
+  "suite": "benchlocal",
+  "requires_dataset_access": false,
+  "dataset_access_note": null,
   "ported_at": "2026-05-09",
   "porter": "noonghunna"
 }
@@ -46,7 +49,10 @@ Field reference:
 | `default_thinking` | no | `"on"` or `"off"` | Pack-level reasoning default. Missing means `"off"`. Runner default honors this; `--enable-thinking` / `--no-thinking` force all packs on/off. |
 | `default_max_seconds` | yes | int | Default per-scenario timeout |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
-| `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI; runner skips with warning unless `--enable-sandboxed-packs` |
+| `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
+| `suite` | no | string | Logical suite label used by mode selectors; e.g. `reasoning` groups packs for `--reasoning`. |
+| `requires_dataset_access` | no | bool | `true` for gated datasets. Runner returns a skipped `PackResult` with `status: dataset-unavailable` instead of failing the run. |
+| `dataset_access_note` | no | string | Human-readable skip/warning text surfaced when `requires_dataset_access` prevents materializing a pack. |
 | `ported_at` | yes | ISO date | When we ported this pack |
 | `porter` | yes | string | Who did the porting |
 
@@ -104,7 +110,7 @@ Scenario field reference:
 | `messages` | yes | array | OpenAI chat-completions `messages` |
 | `tools` | conditional | array | Required if scenario tests tool calls |
 | `verifier` | yes | object | `{type, asserts}` — type tells runner which `score_scenario()` to call |
-| `verifier.type` | yes | string | One of: `tool_call`, `instruct_follow`, `struct_output`, `reason_math`, `data_extract`, `_stub` |
+| `verifier.type` | yes | string | One of: `tool_call`, `instruct_follow`, `struct_output`, `reason_math`, `data_extract`, `answer_match`, `_stub` |
 | `verifier.asserts` | yes | array | Module-specific assertion objects (see below) |
 | `sampling_overrides` | no | object | Override metadata `sampling_defaults` for this scenario |
 | `max_seconds_override` | no | int / null | Override metadata `default_max_seconds` |
@@ -178,9 +184,19 @@ Scenario field reference:
 {"kind": "no_extra_fields", "allowed": ["name", "email", "phone"]}
 ```
 
+### `verifier.type = "answer_match"`
+
+```json
+{"kind": "exact_numeric", "value": "20"}
+{"kind": "tolerance_numeric", "value": "3.14159", "tolerance": "0.01"}
+{"kind": "exact_letter", "value": "C"}
+```
+
+`answer_match` is intentionally small and deterministic. It is used by reasoning packs that have a single final answer but no executable verifier, such as GSM-Symbolic numeric answers and GPQA multiple-choice letters.
+
 ### `verifier.type = "_stub"`
 
-For execution-backed packs (BugFind / HermesAgent / CLI). Without `--enable-sandboxed-packs`, the runner returns `verifier_not_implemented` and skips these scenarios. With sandboxing enabled, the runner forwards the full scenario, model response, and conversation messages to the pack's Docker verifier over HTTP:
+For execution-backed packs (BugFind / HermesAgent / CLI / AiderPolyglot / HumanEval+ / LiveCodeBench). Without `--enable-sandboxed-packs`, the runner returns `verifier_not_implemented` and skips these scenarios. With sandboxing enabled, the runner forwards the full scenario, model response, and conversation messages to the pack's Docker verifier over HTTP:
 
 ```json
 {"kind": "_stub", "reason": "BugFind requires Docker sandbox"}

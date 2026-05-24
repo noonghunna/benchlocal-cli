@@ -154,7 +154,12 @@ def _parser() -> argparse.ArgumentParser:
         const=False,
         help="force reasoning/thinking off for every pack, ignoring pack defaults",
     )
-    run.add_argument("--thinking-max-tokens", type=int, default=4096)
+    run.add_argument(
+        "--thinking-max-tokens",
+        type=int,
+        default=16384,
+        help="max_tokens to request when thinking is enabled (default: 16384)",
+    )
     # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
     # recommended temperature. Default behavior (per-pack temp=0) unchanged.
     # Any override tags the run as non-canonical in output + saved JSON.

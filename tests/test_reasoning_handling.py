@@ -46,6 +46,17 @@ def test_build_request_enable_thinking_bumps_tokens():
     assert request["max_tokens"] == 4096
 
 
+def test_build_request_enable_thinking_default_budget_is_16k():
+    request, _ = build_request(
+        _scenario(),
+        _meta(),
+        "fake",
+        thinking_enabled=True,
+    )
+
+    assert request["max_tokens"] == 16384
+
+
 def test_build_request_enable_thinking_overrides_scenario_token_budget():
     request, _ = build_request(
         _scenario({"max_tokens": 512}),

@@ -1,9 +1,10 @@
 # benchlocal-cli
 
-CLI for running LLM behavioral evaluation packs against any OpenAI-compatible endpoint, with deterministic verifier-backed scoring (no LLM-as-judge). Two pack families today:
+CLI for running LLM behavioral evaluation packs against any OpenAI-compatible endpoint, with deterministic verifier-backed scoring (no LLM-as-judge). Three pack families today:
 
 - **BenchLocal** ports — tool-call · instruction-follow · structured output · numeric reasoning · data extraction · debug · multi-tool agent · CLI exec (8 packs from [stevibe/BenchLocal](https://github.com/stevibe/BenchLocal), MIT-licensed).
 - **Eval-expansion track** — additional packs vendored from upstream open-source benches. v0.9 ships `aider-polyglot-30` (multi-language code editing via [Aider-AI/aider](https://github.com/Aider-AI/aider)'s `benchmark.py`).
+- **Reasoning suite** — opt-in `--reasoning` packs for code reasoning, symbolic math, and gated science QA: HumanEval+, LiveCodeBench v6, GSM-Symbolic, and GPQA-Diamond metadata.
 
 Companion to [club-3090](https://github.com/noonghunna/club-3090) — primarily intended for measuring quality on quantized models served by club-3090's compose stack, but works against any OpenAI-compatible API.
 
@@ -12,14 +13,14 @@ Companion to [club-3090](https://github.com/noonghunna/club-3090) — primarily 
 We needed a headless, scriptable quality gate for compose-release validation on an inference rig. BenchLocal is a great Electron desktop app for human-in-the-loop quality A/B; this repo turns the same pack semantics into a CLI that:
 
 - Hits any OpenAI-compatible HTTP endpoint
-- Runs BenchLocal's 8 deterministic-verifier packs + agentic eval packs (currently 1: `aider-polyglot-30`)
-- Supports `--quick` / `--medium` / `--full` budget modes for the BenchLocal packs (~30-45 min for `--full`); agentic packs run independently via `--pack <name>`
+- Runs BenchLocal's 8 deterministic-verifier packs + agentic eval packs (currently 1: `aider-polyglot-30`) + the opt-in reasoning suite
+- Supports `--quick` / `--medium` / `--full` budget modes for the BenchLocal packs (~30-45 min for `--full`) plus a separate `--reasoning` mode; agentic packs can also run independently via `--pack <name>`
 - Outputs paste-ready markdown for benchmark tables + JSON for machine consumption
 - Keeps quantized-model quality measurement light enough to run as a CI gate
 
 ## Status
 
-🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests use pack-level `default_thinking` metadata so reasoning-rewarding packs can think while execution/format packs stay answer-only. BugFind-15, HermesAgent-20, CLI-40, and **AiderPolyglot-30** run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
+🟢 **Beta — full BenchLocal prompt fidelity, reasoning-model aware, sandbox-capable, plus eval-expansion track.** JSONL packs are generated from vendored upstream TypeScript mirrors; deterministic packs use upstream system prompts and scenario prompts verbatim. Requests use pack-level `default_thinking` metadata so reasoning-rewarding packs can think while execution/format packs stay answer-only. BugFind-15, HermesAgent-20, CLI-40, **AiderPolyglot-30**, **HumanEval+-30**, and **LiveCodeBench-v6-30** run through Docker-hosted HTTP verifier sandboxes when `--enable-sandboxed-packs` is set.
 
 **v0.9.0** added the eval-expansion track — `aider-polyglot-30` ships as the first non-BenchLocal sandboxed pack: 30-exercise multi-language code-editing bench across cpp/go/java/javascript/python/rust, vendored upstream from `Aider-AI/aider`'s `benchmark.py`. Run with `--pack aider-polyglot-30 --enable-sandboxed-packs`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md).
 
@@ -30,9 +31,10 @@ We needed a headless, scriptable quality gate for compose-release validation on 
 | `--quick` | ToolCall-15 + InstructFollow-15 | ~10-15 min | Per-commit gate; pre-push smoke |
 | `--medium` (default) | + StructOutput-15 + DataExtract-15 | ~25-30 min | Pre-release; pin bumps; new compose authoring |
 | `--full` | + ReasonMath-15 + (BugFind / HermesAgent / CLI when sandboxed) | ~45-60 min | Cross-rig comparison; quality A/B vs another quant |
-| `--pack aider-polyglot-30` | aider-polyglot-30 (independent — not bundled in `--quick`/`--medium`/`--full`) | ~15-25 min | Agentic code-editing signal; cross-model quality A/B for IDE-agent / coding workloads |
+| `--reasoning` | HumanEval+-30 + LiveCodeBench-v6-30 + GPQA-Diamond (gated) + GSM-Symbolic-30 | ~30-90+ min; code packs need Docker | Dedicated reasoning/code suite; structured-CoT / no-think / thinking A/B |
+| `--pack aider-polyglot-30` | aider-polyglot-30 (independent — not bundled in `--quick`/`--medium`/`--full`/`--reasoning`) | ~15-25 min | Agentic code-editing signal; cross-model quality A/B for IDE-agent / coding workloads |
 
-Pack selection in each mode follows Codex design-review feedback (2026-05-09) — ToolCall + InstructFollow are the primary signals for IDE-agent regressions; StructOutput catches grammar/JSON drift; ReasonMath defers to `--full` because it leans toward generic benchmark behavior rather than agent-stack-specific. AiderPolyglot-30 is run independently because its harness is a batch runner with multi-turn edit/test loops — different shape from the per-scenario BenchLocal packs.
+Pack selection in each mode follows Codex design-review feedback (2026-05-09) — ToolCall + InstructFollow are the primary signals for IDE-agent regressions; StructOutput catches grammar/JSON drift; ReasonMath defers to `--full` because it leans toward generic benchmark behavior rather than agent-stack-specific. `--reasoning` stays separate from `--full` because it changes the question from general behavior to code/math/science reasoning under larger thinking budgets. AiderPolyglot-30 is run independently because its harness is a batch runner with multi-turn edit/test loops — different shape from the per-scenario BenchLocal packs.
 
 ## Sampling
 
@@ -60,6 +62,10 @@ Use the canonical temp-0 default for regression tracking and cross-model ranking
 | **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ✅ sandboxed v0.4 verifier |
 | **CLI-40** | **Linux exec sandbox** — command verifier sandbox | ✅ sandboxed v0.4 verifier |
 | **AiderPolyglot-30** | **Multi-language edit/test harness** — wraps upstream `Aider-AI/aider` `benchmark.py` over 30 curated exercises (cpp / go / java / js / python / rust, 5 each) | ✅ sandboxed v0.9 (single-scoreboard) |
+| **HumanEval+-30** | **Execution-backed code reasoning** — HumanEval+ functional tests via the `code-reasoning` sandbox | ✅ sandboxed reasoning subset |
+| **LiveCodeBench-v6-30** | **Execution-backed code reasoning** — public LCB functional tests via the `code-reasoning` sandbox | ✅ sandboxed reasoning subset |
+| **GSM-Symbolic-30** | Deterministic — `answer_match` exact numeric final-answer scoring | ✅ reasoning subset |
+| **GPQA-Diamond** | Deterministic — `answer_match` exact letter final-answer scoring | ⚠ gated metadata-only; no restricted data committed |
 
 ## Repo layout
 
@@ -86,13 +92,18 @@ benchlocal_cli/                 # Python package (CLI entry point + runner)
     ├── bugfind-15.jsonl
     ├── hermesagent-20.jsonl
     ├── cli-40.jsonl
-    └── aider-polyglot-30.jsonl
+    ├── aider-polyglot-30.jsonl
+    ├── humaneval-plus-30.jsonl
+    ├── lcb-v6-30.jsonl
+    ├── gsm-symbolic-30.jsonl
+    └── gpqa-diamond.jsonl
 
 sandboxes/                      # Docker images for execution-backed verifier packs
 ├── bugfind/                    # Python pytest harness for BugFind-15 candidate fixes
 ├── cli/                        # Linux exec sandbox for CLI-40 commands
 ├── hermes/                     # Hermes-agent runtime + Node grader for HermesAgent-20
-└── aider-polyglot/             # Aider + polyglot-benchmark for AiderPolyglot-30
+├── aider-polyglot/             # Aider + polyglot-benchmark for AiderPolyglot-30
+└── code-reasoning/             # Python execution sandbox for HumanEval+ and LCB
 
 vendor/                         # vendored upstream sources for pack generation
 ├── ToolCall-15/  …             # one dir per BenchLocal pack (TypeScript mirror)
@@ -147,6 +158,11 @@ benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-a
 # run full mode including Docker-backed verifier packs
 benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
 
+# run the dedicated reasoning suite; HumanEval+ and LCB need the Docker code sandbox
+benchlocal-cli run --reasoning --enable-sandboxed-packs \
+  --endpoint http://localhost:8020 --model qwen3.6-27b-autoround \
+  --thinking-max-tokens 16384
+
 # run a single deterministic pack with detailed per-scenario output
 benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8020 --model qwen3.6-27b-autoround
 
@@ -161,7 +177,7 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 ## Reasoning models
 
-`benchlocal-cli` now uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, and `hermesagent-20` run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `4096`). Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
+`benchlocal-cli` uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, `hermesagent-20`, and every `--reasoning` pack run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `16384`). HumanEval+ and LiveCodeBench also carry 16K scenario budgets so thinking-on code runs do not measure a 4K truncation failure; hardest LCB items may still exceed 16K, so compare against `--no-thinking` for budget-runaway diagnostics. Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
 
 ## Output
 
@@ -183,6 +199,8 @@ Failure breakdown:
 ```
 
 For agentic packs (e.g. `aider-polyglot-30`), the headline number is `pass_rate` over 30 exercises rather than per-scenario pass/fail; per-exercise breakdown is surfaced in the JSON `verifier_trace.upstream_per_exercise`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md) for the full output shape.
+
+When `--repeat N` is greater than 1, the markdown table adds per-pack `Std` and `CV` columns derived from repeat-arm pass rates. The saved JSON includes the same data under each pack result as `variance: {"repeat", "mean", "std", "cv"}` so cross-rig runs can distinguish real deltas from run-to-run noise.
 
 ## Attribution
 
