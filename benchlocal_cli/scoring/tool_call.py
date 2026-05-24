@@ -95,7 +95,18 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
                 return result(scenario, False, "verifier_fail", f"{assertion['arg']} out of range")
         elif kind == "multi_call_order":
             expected = assertion["expected_names"]
-            if names[: len(expected)] != expected:
+            if assertion.get("dependent"):
+                # Dependent chain run single-shot: each call needs the prior
+                # call's result, which one response can't have yet. A correct
+                # model emits the first step(s) and stops. Pass when the emitted
+                # calls are a correct in-order prefix of the expected chain (the
+                # two agree on their common prefix) — rewarding right first-step
+                # behaviour instead of penalising it. Parallel / independent
+                # chains omit `dependent` and keep the strict all-present check.
+                common = min(len(names), len(expected))
+                if not names or names[:common] != expected[:common]:
+                    return result(scenario, False, "verifier_fail", f"expected tool-chain prefix of {expected}, got {names}")
+            elif names[: len(expected)] != expected:
                 return result(scenario, False, "verifier_fail", f"expected tool order {expected}, got {names}")
         else:
             return result(scenario, False, "verifier_fail", f"unknown tool_call assertion: {kind}")
