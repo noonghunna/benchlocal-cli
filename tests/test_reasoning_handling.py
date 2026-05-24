@@ -69,6 +69,36 @@ def test_build_request_enable_thinking_overrides_scenario_token_budget():
     assert request["max_tokens"] == 4096
 
 
+def test_sampling_override_caps_base_arm_max_tokens():
+    # #28: --max-tokens flows through sampling_overrides and caps the
+    # base/no-think arm (overrides the per-pack default).
+    request, _ = build_request(
+        _scenario(),
+        _meta(),
+        "fake",
+        sampling_overrides={"max_tokens": 512},
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["max_tokens"] == 512  # pack default 1024 overridden
+
+
+def test_thinking_budget_wins_over_sampling_override_max_tokens():
+    # #28: the thinking arm always uses thinking_max_tokens, even when a smaller
+    # --max-tokens was set for the base arm. The CLI resolves the precedence so
+    # an explicit --thinking-max-tokens wins for the thinking arm.
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_max_tokens=16384,
+        sampling_overrides={"max_tokens": 4096},
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["max_tokens"] == 16384
+
+
 def test_extra_body_wins_over_defaults_but_loses_to_scenario_overrides():
     request, _ = build_request(
         _scenario({"foo": "scenario"}),
