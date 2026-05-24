@@ -9,6 +9,35 @@ the same content per-version.
 
 ---
 
+## v0.9.6 — 2026-05-24
+
+
+### ✨ Features
+
+- feat(cli): add --max-tokens global length cap (#28) ([0e7b35e](https://github.com/noonghunna/benchlocal-cli/commit/0e7b35e46676ae3b08ee5ddc58ac887a3dbb0efa))
+- feat: honor pack-level thinking defaults (#26) ([#26](https://github.com/noonghunna/benchlocal-cli/pull/26) by @noonghunna)
+
+
+### 🐛 Bug fixes
+
+- fix(scoring): align deterministic verifier fidelity ([8606e7f](https://github.com/noonghunna/benchlocal-cli/commit/8606e7f333aa26bb8caa6089aa59431bfdd28711))
+- fix(scoring): stop two grader false-negatives (toolcall dependent chains, reasonmath key synonyms) ([ed086e5](https://github.com/noonghunna/benchlocal-cli/commit/ed086e5a8ecc6c9508920b8322962d0f53d7a20f))
+- fix(gpqa pack): base max_tokens 2048 → 4096 (no-think arm truncates otherwise) ([b652a3a](https://github.com/noonghunna/benchlocal-cli/commit/b652a3aad491d01026a953f4e33c53347b8e023f))
+
+
+### 🧹 Other
+
+- Document reasoning suite ([3d99d51](https://github.com/noonghunna/benchlocal-cli/commit/3d99d51ea38bb99f2eb491e8ebfaf349d12e891e))
+- Add reasoning benchmark packs ([2c1d02d](https://github.com/noonghunna/benchlocal-cli/commit/2c1d02d5a421eac4f66c7b893ad0a1a448ece1a2))
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(release): v0.9.6 ([7419d7c](https://github.com/noonghunna/benchlocal-cli/commit/7419d7c90eb529e11ad0d8ff7ffc234046d7fe3e))
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.6`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.5...v0.9.6)
 ## v0.9.5 — 2026-05-23
 
 
