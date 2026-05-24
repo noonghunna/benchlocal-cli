@@ -248,19 +248,19 @@ function toolAsserts(id) {
   const byId = {
     "TC-01": [{ kind: "exact_function_name", value: "get_weather" }, { kind: "required_args_present", args: ["location"] }, { kind: "arg_regex", arg: "location", pattern: "(?i)berlin" }],
     "TC-02": [{ kind: "exact_function_name", value: "get_stock_price" }, { kind: "exact_arg_value", arg: "ticker", value: "AAPL" }],
-    "TC-03": [{ kind: "multi_call_order", expected_names: ["get_contacts", "send_email"] }],
+    "TC-03": [{ kind: "multi_call_order", expected_names: ["get_contacts", "send_email"], dependent: true }],
     "TC-04": [{ kind: "exact_function_name", value: "get_weather" }, { kind: "arg_regex", arg: "location", pattern: "(?i)tokyo" }, { kind: "exact_arg_value", arg: "units", value: "fahrenheit" }],
     "TC-05": [{ kind: "exact_function_name", value: "create_calendar_event" }, { kind: "exact_arg_value", arg: "date", value: "2026-03-23" }, { kind: "exact_arg_value", arg: "time", value: "09:30" }, { kind: "arg_numeric_range", arg: "duration_minutes", min: 30, max: 30 }],
     "TC-06": [{ kind: "multi_call_order", expected_names: ["translate_text", "translate_text"] }, { kind: "tool_call_count", value: 2 }],
-    "TC-07": [{ kind: "multi_call_order", expected_names: ["search_files", "read_file", "get_contacts", "send_email"] }],
-    "TC-08": [{ kind: "multi_call_order", expected_names: ["get_weather", "set_reminder"] }],
+    "TC-07": [{ kind: "multi_call_order", expected_names: ["search_files", "read_file", "get_contacts", "send_email"], dependent: true }],
+    "TC-08": [{ kind: "multi_call_order", expected_names: ["get_weather", "set_reminder"], dependent: true }],
     "TC-09": [{ kind: "tool_call_count", value: 2 }, { kind: "required_function_names", values: ["get_weather", "get_stock_price"] }],
     "TC-10": [{ kind: "tool_call_count", value: 0 }, { kind: "content_regex", pattern: "1945" }],
     "TC-11": [{ kind: "tool_call_count", value: 0 }, { kind: "content_regex", pattern: "\\b30\\b" }],
     "TC-12": [{ kind: "tool_call_count", value: 0 }, { kind: "content_regex", pattern: "(?i)(cannot|can't|not able|available tool|delete)" }],
     "TC-13": [{ kind: "exact_function_name", value: "search_files" }, { kind: "arg_regex", arg: "query", pattern: "(?i)johnson" }],
     "TC-14": [{ kind: "exact_function_name", value: "get_stock_price" }, { kind: "exact_arg_value", arg: "ticker", value: "AAPL" }],
-    "TC-15": [{ kind: "multi_call_order", expected_names: ["web_search", "calculator"] }],
+    "TC-15": [{ kind: "multi_call_order", expected_names: ["web_search", "calculator"], dependent: true }],
   };
   return byId[id] || [];
 }
@@ -314,7 +314,14 @@ function ifAsserts(spec) {
 }
 
 function rmAsserts(spec) {
-  return [{ kind: "exact_string", value: spec.canonicalAnswer.replace(/^ANSWER:\s*/i, "") }];
+  return [{
+    kind: "exact_string",
+    value: spec.canonicalAnswer.replace(/^ANSWER:\s*/i, ""),
+    canonical_answer: spec.canonicalAnswer,
+    accepted_answers: spec.acceptedAnswers || [],
+    partial_answers: spec.partialAnswers || [],
+    checkpoints: spec.checkpoints || [],
+  }];
 }
 
 function structAsserts(spec) {
