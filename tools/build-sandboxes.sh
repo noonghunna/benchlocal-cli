@@ -20,12 +20,13 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-ALL_PACKS=(bugfind cli hermes aider-polyglot)
+ALL_PACKS=(bugfind cli hermes aider-polyglot code-reasoning)
 declare -A VENDOR_PACKS=(
   [bugfind]="BugFind-15"
   [cli]="CLI-40"
   [hermes]="HermesAgent-20"
   [aider-polyglot]="AiderPolyglot-30"
+  [code-reasoning]=""
 )
 PACKS=("$@")
 if [[ ${#PACKS[@]} -eq 0 ]]; then
@@ -38,7 +39,7 @@ for pack in "${PACKS[@]}"; do
     exit 1
   fi
   vendor_pack="${VENDOR_PACKS[$pack]}"
-  if [[ -d "vendor/${vendor_pack}/verification" ]]; then
+  if [[ -n "$vendor_pack" && -d "vendor/${vendor_pack}/verification" ]]; then
     rm -rf "sandboxes/${pack}/verification"
     mkdir -p "sandboxes/${pack}/verification"
     cp -a "vendor/${vendor_pack}/verification/." "sandboxes/${pack}/verification/"
@@ -46,7 +47,7 @@ for pack in "${PACKS[@]}"; do
   # v0.9.0: aider-polyglot uses exercises.json (not a verification/ dir).
   # Re-sync canonical list from vendor/ on each build so the in-sandbox
   # copy never drifts from the source-of-truth.
-  if [[ "$pack" == "aider-polyglot" && -f "vendor/${vendor_pack}/exercises.json" ]]; then
+  if [[ -n "$vendor_pack" && "$pack" == "aider-polyglot" && -f "vendor/${vendor_pack}/exercises.json" ]]; then
     cp "vendor/${vendor_pack}/exercises.json" "sandboxes/${pack}/exercises.json"
   fi
   echo "================================================================"

@@ -84,6 +84,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--quick", action="store_true", help="2 packs, ~5-10 min, no Docker")
     mode.add_argument("--medium", action="store_true", help="5 packs (default), ~15-25 min, no Docker")
     mode.add_argument("--full", action="store_true", help="8 packs incl. sandboxed, ~25-40 min, requires Docker")
+    mode.add_argument("--reasoning", action="store_true", help="reasoning packs: HE+, LCB v6, GPQA metadata, GSM-Symbolic; separate from --full")
     run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
     run.add_argument("--endpoint", required=True, help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
     run.add_argument("--model", required=True, help="model id served by the endpoint")
@@ -206,7 +207,10 @@ def _print_list() -> None:
     print("Pack | Version | Scenarios | Verifier | Thinking | Status")
     print("---|---:|---:|---|---|---")
     for meta in list_packs():
-        status = "sandboxed" if meta.get("supports_sandboxed_only") else "ready"
+        if meta.get("requires_dataset_access"):
+            status = "gated"
+        else:
+            status = "sandboxed" if meta.get("supports_sandboxed_only") else "ready"
         thinking = meta.get("default_thinking", "off")
         print(
             f"{meta['pack_id']} | {meta['version']} | {meta['scenario_count']} | "
@@ -221,6 +225,8 @@ def _mode_from_args(args: argparse.Namespace) -> str:
         return "quick"
     if args.full:
         return "full"
+    if getattr(args, "reasoning", False):
+        return "reasoning"
     return "medium"
 
 
@@ -295,9 +301,14 @@ def _markdown(result: RunResult) -> str:
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag} ===",
         "",
     ]
+    show_variance = delta_pack_index is None and any(pack.variance for pack in result.packs)
     if delta_pack_index is None:
-        lines.append("Pack | Pass / Total | Score | p50 latency | p95 latency | Status")
-        lines.append("---|---:|---:|---:|---:|---")
+        if show_variance:
+            lines.append("Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status")
+            lines.append("---|---:|---:|---:|---:|---:|---:|---")
+        else:
+            lines.append("Pack | Pass / Total | Score | p50 latency | p95 latency | Status")
+            lines.append("---|---:|---:|---:|---:|---")
     else:
         lines.append("Pack | Pass / Total | Score | Δ (vs prev) | p50 latency | p95 latency | Status")
         lines.append("---|---:|---:|---|---:|---:|---")
@@ -315,9 +326,17 @@ def _markdown(result: RunResult) -> str:
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
         if delta_pack_index is None:
-            lines.append(
-                f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {p95} | {status}"
-            )
+            if show_variance:
+                variance = pack.variance or {}
+                std = "-" if variance.get("std") is None else f"{float(variance['std']):.1%}"
+                cv = "-" if variance.get("cv") is None else f"{float(variance['cv']):.2f}"
+                lines.append(
+                    f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {std} | {cv} | {p50} | {p95} | {status}"
+                )
+            else:
+                lines.append(
+                    f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {p95} | {status}"
+                )
         else:
             d = delta_pack_index.get(pack.pack_id)
             if d:
@@ -341,7 +360,7 @@ def _markdown(result: RunResult) -> str:
         lines.extend(
             [
                 "",
-                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
+                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |  |  |" if show_variance else f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
             ]
         )
     else:
