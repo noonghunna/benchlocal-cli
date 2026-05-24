@@ -81,6 +81,22 @@ SANDBOX_REGISTRY = {
         # agent-runner.py runs 10-20 turns of real LLM calls per scenario.
         request_timeout_s=900.0,
     ),
+    "humaneval-plus-30": SandboxConfig(
+        pack_id="humaneval-plus-30",
+        image_name="benchlocal-sandbox-code-reasoning:latest",
+        host_port=9005,
+        network_isolated=True,
+        multi_turn=False,
+        request_timeout_s=300.0,
+    ),
+    "lcb-v6-30": SandboxConfig(
+        pack_id="lcb-v6-30",
+        image_name="benchlocal-sandbox-code-reasoning:latest",
+        host_port=9006,
+        network_isolated=True,
+        multi_turn=False,
+        request_timeout_s=300.0,
+    ),
     "aider-polyglot-30": SandboxConfig(
         pack_id="aider-polyglot-30",
         image_name="benchlocal-sandbox-aider-polyglot:latest",

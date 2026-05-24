@@ -43,15 +43,23 @@ PACK_MODES = {
         "hermesagent-20",
         "cli-40",
     ],
+    # reasoning — opt-in pure/code reasoning suite. Kept separate from
+    # --full so the canonical 8-pack loop stays fast and stable.
+    "reasoning": [
+        "humaneval-plus-30",
+        "lcb-v6-30",
+        "gpqa-diamond",
+        "gsm-symbolic-30",
+    ],
 }
 
 # Modes that require Docker sandbox containers. The runner will auto-enable
 # sandboxed packs (no flag needed) and fail loud if Docker isn't available.
-SANDBOX_MODES = {"full"}
+SANDBOX_MODES = {"full", "reasoning"}
 
 # Just the sandboxed packs — used by `--sandboxed-only` for debug iteration
 # on the verifier containers without paying the deterministic-pack cost.
-SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40"]
+SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40", "humaneval-plus-30", "lcb-v6-30"]
 
 
 def pack_default_thinking(meta: dict) -> bool:
@@ -130,7 +138,7 @@ def build_request(
     model: str,
     *,
     thinking_enabled: bool | None = None,
-    thinking_max_tokens: int = 4096,
+    thinking_max_tokens: int = 16384,
     extra_body: dict | None = None,
     sampling_overrides: dict | None = None,
     sampling_from_server: bool = False,
@@ -242,6 +250,31 @@ def _latency(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def _repeat_variance(runs: list[ScenarioRun], repeat: int) -> dict[str, float | int | None] | None:
+    """Per-pack pass-rate variance across repeats.
+
+    For repeat=1 this stays None to keep default output compact. For repeat>1,
+    compute one pass-rate per repeat arm and report population stddev + CV.
+    """
+    if repeat <= 1:
+        return None
+    rates: list[float] = []
+    for idx in range(1, repeat + 1):
+        counted = [
+            run for run in runs
+            if run.repeat_index == idx and run.result.failure_mode != "verifier_not_implemented"
+        ]
+        if not counted:
+            continue
+        rates.append(sum(1 for run in counted if run.result.passed) / len(counted))
+    if not rates:
+        return {"repeat": repeat, "mean": None, "std": None, "cv": None}
+    mean = statistics.mean(rates)
+    std = statistics.pstdev(rates) if len(rates) > 1 else 0.0
+    cv = (std / mean) if mean else None
+    return {"repeat": repeat, "mean": mean, "std": std, "cv": cv}
+
+
 class Runner:
     def __init__(
         self,
@@ -252,7 +285,7 @@ class Runner:
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
         thinking_enabled: bool | None = None,
-        thinking_max_tokens: int = 4096,
+        thinking_max_tokens: int = 16384,
         extra_body: dict | None = None,
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
@@ -473,6 +506,25 @@ class Runner:
 
     def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
         meta, scenarios = load_pack(pack_id)
+        if meta.get("requires_dataset_access"):
+            warning = meta.get("dataset_access_note") or f"skipping {pack_id}: dataset access required"
+            if warnings is not None:
+                warnings.append(warning)
+            return PackResult(
+                pack_id=pack_id,
+                version=meta["version"],
+                upstream_commit=meta["upstream_commit"],
+                scenario_count=len(scenarios),
+                passed=0,
+                total=0,
+                score=0.0,
+                latency=_latency([]),
+                scenarios=[],
+                skipped=True,
+                status="dataset-unavailable",
+                warnings=[warning],
+                thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+            )
         if meta.get("supports_sandboxed_only") and not self.enable_sandboxed_packs:
             warning = f"skipping {pack_id}: sandboxed verifier not enabled"
             if warnings is not None:
@@ -563,6 +615,7 @@ class Runner:
                     scenarios=runs,
                     status=sb_status,
                     thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                    variance=_repeat_variance(runs, repeat),
                 )
 
         passed = sum(1 for run in counted if run.result.passed)
@@ -579,6 +632,7 @@ class Runner:
             scenarios=runs,
             status="ok" if total else "stubbed",
             thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+            variance=_repeat_variance(runs, repeat),
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:

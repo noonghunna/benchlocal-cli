@@ -97,6 +97,7 @@ class PackResult:
     status: str = "ok"
     warnings: list[str] = field(default_factory=list)
     thinking_enabled: bool = False
+    variance: dict[str, float | int | None] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -112,6 +113,7 @@ class PackResult:
             "status": self.status,
             "warnings": self.warnings,
             "thinking_enabled": self.thinking_enabled,
+            "variance": self.variance,
             "scenarios": [scenario.to_dict() for scenario in self.scenarios],
         }
 
