@@ -157,8 +157,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--thinking-max-tokens",
         type=int,
-        default=16384,
-        help="max_tokens to request when thinking is enabled (default: 16384)",
+        default=None,
+        help="max_tokens to request when thinking is enabled "
+             "(default: --max-tokens if set, else 16384)",
     )
     # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
     # recommended temperature. Default behavior (per-pack temp=0) unchanged.
@@ -168,6 +169,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--top-k", type=int, default=None, help="override top-k sampling (default: per-pack)")
     run.add_argument("--min-p", type=float, default=None, help="override min-p sampling (default: per-pack)")
     run.add_argument("--repeat-penalty", type=float, default=None, help="override repeat/frequency penalty (default: per-pack)")
+    # #28: global length cap for both arms. Overrides the per-pack max_tokens
+    # default for the base/no-think arm; also becomes the thinking-arm budget
+    # unless --thinking-max-tokens is given (which wins for that arm). Lets a
+    # thinking-vs-no-think A/B be pinned symmetric with one flag (e.g.
+    # `--max-tokens 16384`). Tags the run non-canonical like other overrides.
+    run.add_argument("--max-tokens", type=int, default=None, help="override max_tokens / length budget for both arms (default: per-pack; thinking arm uses --thinking-max-tokens if set)")
     # v0.9.2: inherit sampling from server (#21) — omit all sampling params
     # from the request so the server applies its own configured defaults.
     # Mutually exclusive with --temperature/--top-p/--top-k/--min-p/--repeat-penalty.
@@ -518,9 +525,26 @@ def main(argv: list[str] | None = None) -> int:
             sampling_overrides["min_p"] = args.min_p
         if args.repeat_penalty is not None:
             sampling_overrides["repeat_penalty"] = args.repeat_penalty
+        # #28: --max-tokens caps the base/no-think arm (flows through as a
+        # sampling override) and, below, the thinking arm too unless
+        # --thinking-max-tokens overrides it.
+        if args.max_tokens is not None:
+            sampling_overrides["max_tokens"] = args.max_tokens
 
-        # --sampling-from-server is mutually exclusive with explicit overrides (#21)
-        if args.sampling_from_server and sampling_overrides:
+        # --thinking-max-tokens (arm-specific) wins for the thinking arm; else
+        # fall back to --max-tokens (global cap); else the historical 16384.
+        effective_thinking_max = (
+            args.thinking_max_tokens if args.thinking_max_tokens is not None
+            else args.max_tokens if args.max_tokens is not None
+            else 16384
+        )
+
+        # --sampling-from-server is mutually exclusive with explicit sampling-
+        # distribution overrides (#21). --max-tokens is a length budget, not a
+        # distribution param, and is preserved under --sampling-from-server, so
+        # it's allowed alongside it.
+        _distribution_overrides = {k: v for k, v in sampling_overrides.items() if k != "max_tokens"}
+        if args.sampling_from_server and _distribution_overrides:
             print(
                 "benchlocal-cli: --sampling-from-server is mutually exclusive with "
                 "--temperature/--top-p/--top-k/--min-p/--repeat-penalty. "
@@ -610,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
             thinking_enabled=args.thinking_override,
-            thinking_max_tokens=args.thinking_max_tokens,
+            thinking_max_tokens=effective_thinking_max,
             extra_body=_load_extra_body(args.extra_body),
             sandbox_image_tag=args.sandbox_image_tag,
             sandbox_log_dir=_resolve_sandbox_log_dir(
