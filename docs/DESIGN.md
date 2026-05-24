@@ -22,7 +22,7 @@ CLI tool that runs LLM behavioral evaluations against any OpenAI-compatible HTTP
 
 Mode ↔ pack mapping is hardcoded in the runner (not user-configurable), to keep `--quick` / `--medium` / `--full` as well-known semantics. Users wanting flexibility use `--pack <pack-id>` to run a single named pack.
 
-Reasoning-capable model handling is also standardized: requests default to `chat_template_kwargs.enable_thinking=false`. `--enable-thinking` flips it to true and raises the default token budget for diagnostic runs. JSON output records `thinking_enabled` at the top level so downstream compose quality lines can distinguish `thinking=off` from `thinking=on`.
+Reasoning-capable model handling is standardized per pack: metadata declares `default_thinking: on|off` and the runner honors it by default, so reasoning-rewarding packs can use `chat_template_kwargs.enable_thinking=true` while execution/format packs stay answer-only. `--enable-thinking` forces all packs on; `--no-thinking` forces all packs off. JSON output records `thinking_enabled` per pack and `thinking_mode` at the run level so downstream quality lines can distinguish mixed pack-default runs from force-on/off A/Bs.
 
 `BugFind-15` / `HermesAgent-20` / `CLI-40` are execution-backed packs. The runner skips them with a warning by default so users without Docker get deterministic behavior. When `--enable-sandboxed-packs` is set, the runner starts one Docker HTTP verifier per requested sandboxed pack and dispatches those scenarios through `benchlocal_cli.sandbox.SandboxClient`.
 
@@ -76,7 +76,7 @@ Each pack is one file at `benchlocal_cli/packs/<pack-id>.jsonl`. Each line is on
 Required first line: a metadata line with `__meta__: true`:
 
 ```json
-{"__meta__": true, "pack_id": "toolcall-15", "version": "1.0.1", "upstream_repo": "stevibe/ToolCall-15", "upstream_commit": "abc123def456", "scenario_count": 15, "sampling_defaults": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 1024, "tool_choice": "auto", "chat_template_kwargs": {"enable_thinking": false}}, "default_max_seconds": 60}
+{"__meta__": true, "pack_id": "toolcall-15", "version": "1.0.1", "upstream_repo": "stevibe/ToolCall-15", "upstream_commit": "abc123def456", "scenario_count": 15, "sampling_defaults": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 1024, "tool_choice": "auto", "chat_template_kwargs": {"enable_thinking": false}}, "default_thinking": "off", "default_max_seconds": 60}
 ```
 
 Subsequent lines: scenarios. Schema:
@@ -180,6 +180,7 @@ Full structured result blob:
   "endpoint": "http://localhost:8020",
   "model": "qwen3.6-27b-autoround",
   "thinking_enabled": false,
+  "thinking_mode": "pack-defaults",
   "started_at": "2026-05-09T10:30:00Z",
   "finished_at": "2026-05-09T10:55:42Z",
   "mode": "medium",
@@ -189,6 +190,7 @@ Full structured result blob:
       "version": "1.0.1",
       "upstream_commit": "abc123",
       "scenario_count": 15,
+      "thinking_enabled": false,
       "passed": 14,
       "score": 0.933,
       "latency": {"p50": 8.2, "p95": 12.1, "mean": 9.4},

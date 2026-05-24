@@ -8,6 +8,7 @@ import os
 import signal
 import statistics
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -51,6 +52,27 @@ SANDBOX_MODES = {"full"}
 # Just the sandboxed packs — used by `--sandboxed-only` for debug iteration
 # on the verifier containers without paying the deterministic-pack cost.
 SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40"]
+
+
+def pack_default_thinking(meta: dict) -> bool:
+    """Return the pack-declared default thinking mode. Missing means off."""
+    value = meta.get("default_thinking", "off")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"on", "true", "1", "yes"}
+
+
+def resolve_thinking_enabled(meta: dict, override: bool | None) -> bool:
+    """Resolve per-pack thinking: None = pack default; bool = force all."""
+    return pack_default_thinking(meta) if override is None else bool(override)
+
+
+def thinking_mode_from_override(override: bool | None) -> str:
+    if override is True:
+        return "force-on"
+    if override is False:
+        return "force-off"
+    return "pack-defaults"
 
 
 def _utc_now() -> str:
@@ -107,7 +129,7 @@ def build_request(
     meta: dict,
     model: str,
     *,
-    thinking_enabled: bool = False,
+    thinking_enabled: bool | None = None,
     thinking_max_tokens: int = 4096,
     extra_body: dict | None = None,
     sampling_overrides: dict | None = None,
@@ -122,18 +144,16 @@ def build_request(
         sampling.update(sampling_overrides)
     if extra_body:
         sampling.update(extra_body)
-    if thinking_enabled:
-        sampling["chat_template_kwargs"] = {
-            **dict(sampling.get("chat_template_kwargs") or {}),
-            "enable_thinking": True,
-        }
-    else:
-        sampling["chat_template_kwargs"] = {
-            **dict(sampling.get("chat_template_kwargs") or {}),
-            "enable_thinking": False,
-        }
+    resolved_thinking = resolve_thinking_enabled(meta, thinking_enabled)
+    sampling["chat_template_kwargs"] = {
+        **dict(sampling.get("chat_template_kwargs") or {}),
+        "enable_thinking": resolved_thinking,
+    }
     sampling.update(scenario_overrides)
-    if thinking_enabled:
+    request_thinking = bool(
+        dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking", resolved_thinking)
+    )
+    if request_thinking:
         sampling["max_tokens"] = thinking_max_tokens
     # --sampling-from-server (#21): strip all sampling params from the
     # request so the server applies its own configured defaults. Keep
@@ -231,7 +251,7 @@ class Runner:
         timeout_per_case: float = 60.0,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
-        thinking_enabled: bool = False,
+        thinking_enabled: bool | None = None,
         thinking_max_tokens: int = 4096,
         extra_body: dict | None = None,
         sandbox_image_tag: str = "latest",
@@ -239,15 +259,17 @@ class Runner:
         max_transient_retries: int = 3,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
-        on_pack_complete: "callable[[PackResult], None] | None" = None,
-        on_scenario_complete: "callable[[ScenarioRun, int, int], None] | None" = None,
+        on_pack_complete: Callable[[PackResult], None] | None = None,
+        on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
         self.timeout_per_case = timeout_per_case
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
-        self.thinking_enabled = thinking_enabled
+        self.thinking_override = thinking_enabled
+        self.thinking_enabled = bool(thinking_enabled)
+        self.thinking_mode = thinking_mode_from_override(thinking_enabled)
         self.thinking_max_tokens = thinking_max_tokens
         self.extra_body = extra_body or {}
         self.sandbox_image_tag = sandbox_image_tag
@@ -330,6 +352,7 @@ class Runner:
                 packs=pack_results,
                 totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
                 thinking_enabled=self.thinking_enabled,
+                thinking_mode=self.thinking_mode,
                 warnings=warnings,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,
@@ -369,7 +392,7 @@ class Runner:
                 if result:
                     return result
                 # /props exists but no recognised keys — unusual
-                print(f"benchlocal-cli: warning — /props returned no recognised sampling keys", file=sys.stderr, flush=True)
+                print("benchlocal-cli: warning — /props returned no recognised sampling keys", file=sys.stderr, flush=True)
                 return None
             # 404 = not llama.cpp (likely vLLM or other engine)
             if resp.status_code == 404:
@@ -467,6 +490,7 @@ class Runner:
                 skipped=True,
                 status="stubbed",
                 warnings=[warning],
+                thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
             )
         if meta.get("supports_sandboxed_only") and pack_id not in self._sandbox_clients:
             warning = f"skipping {pack_id}: sandbox unavailable"
@@ -485,6 +509,7 @@ class Runner:
                 skipped=True,
                 status="sandbox-unavailable",
                 warnings=[warning],
+                thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
             )
 
         runs: list[ScenarioRun] = []
@@ -537,6 +562,7 @@ class Runner:
                     latency=_latency(latencies),
                     scenarios=runs,
                     status=sb_status,
+                    thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
                 )
 
         passed = sum(1 for run in counted if run.result.passed)
@@ -552,6 +578,7 @@ class Runner:
             latency=_latency(latencies),
             scenarios=runs,
             status="ok" if total else "stubbed",
+            thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
@@ -559,7 +586,7 @@ class Runner:
             scenario,
             meta,
             self.model,
-            thinking_enabled=self.thinking_enabled,
+            thinking_enabled=self.thinking_override,
             thinking_max_tokens=self.thinking_max_tokens,
             extra_body=self.extra_body,
             sampling_overrides=self.sampling_overrides or None,

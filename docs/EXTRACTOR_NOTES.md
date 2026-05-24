@@ -7,7 +7,7 @@
 - `SYSTEM_PROMPT` is extracted from upstream `lib/benchmark.ts` and inserted as the first message for deterministic packs that define one.
 - Scenario IDs, titles, descriptions, success cases, failure cases, and user prompts are extracted from upstream scenario definitions.
 - Metadata records both `upstream_commit` and `_synced_from_commit` from `vendor/<PackName>/_sync.json`.
-- Metadata augments upstream sampling defaults with `chat_template_kwargs: {"enable_thinking": false}`. Upstream BenchLocal packs were calibrated on non-reasoning models; this local augmentation prevents reasoning-capable servers from exhausting benchmark token budgets on hidden thinking by default.
+- Metadata augments upstream sampling defaults with `chat_template_kwargs: {"enable_thinking": false}` as the request-shape base and adds `default_thinking: on|off` at pack level. The runner honors `default_thinking` by default, while `--enable-thinking` / `--no-thinking` provide force-all A/B overrides.
 
 ## Callback translation
 

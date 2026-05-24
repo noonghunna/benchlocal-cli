@@ -17,9 +17,8 @@ import datetime as _dt
 import json
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 # Stable column order. New columns get APPENDED, never reordered.
 HISTORY_FIELDNAMES: list[str] = [
@@ -29,6 +28,7 @@ HISTORY_FIELDNAMES: list[str] = [
     "endpoint",
     "model",
     "thinking",
+    "thinking_mode",
     "total_pass",
     "total",
     "score",
@@ -70,6 +70,7 @@ def _row_from_run(run_dict: dict) -> dict[str, str]:
         "endpoint": run_dict.get("endpoint", ""),
         "model": run_dict.get("model", ""),
         "thinking": "1" if run_dict.get("thinking_enabled") else "0",
+        "thinking_mode": str(run_dict.get("thinking_mode") or ""),
         "total_pass": str(int(totals.get("passed", 0) or 0)),
         "total": str(int(totals.get("total", 0) or 0)),
         "score": f"{float(totals.get('score', 0.0) or 0.0):.4f}",

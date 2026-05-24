@@ -9,14 +9,14 @@ const VENDOR = path.join(ROOT, "vendor");
 const OUT = path.join(ROOT, "benchlocal_cli", "packs");
 
 const PACKS = {
-  "ToolCall-15": { file: "toolcall-15.jsonl", verifier: "tool_call", sandbox: false },
-  "InstructFollow-15": { file: "instructfollow-15.jsonl", verifier: "instruct_follow", sandbox: false },
-  "StructOutput-15": { file: "structoutput-15.jsonl", verifier: "struct_output", sandbox: false },
-  "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false },
-  "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false },
-  "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true },
-  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true },
-  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true },
+  "ToolCall-15": { file: "toolcall-15.jsonl", verifier: "tool_call", sandbox: false, thinking: "off" },
+  "InstructFollow-15": { file: "instructfollow-15.jsonl", verifier: "instruct_follow", sandbox: false, thinking: "on" },
+  "StructOutput-15": { file: "structoutput-15.jsonl", verifier: "struct_output", sandbox: false, thinking: "off" },
+  "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on" },
+  "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false, thinking: "off" },
+  "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true, thinking: "on" },
+  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on" },
+  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off" },
 };
 
 function readText(...parts) {
@@ -59,6 +59,7 @@ function packMeta(packName, scenarioCount) {
     license: "MIT",
     license_text_path: "ATTRIBUTION.md",
     sampling_defaults: sampling,
+    default_thinking: config.thinking || "off",
     default_max_seconds: defaultMaxSeconds,
     verifier_module: config.verifier,
     supports_sandboxed_only: config.sandbox,
