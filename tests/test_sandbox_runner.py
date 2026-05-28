@@ -29,8 +29,10 @@ class FakeMultiTurnSandbox:
         self.config = FakeMultiTurnConfig()
         self.turns = 0
         self.ended = False
+        self.start_kwargs: dict = {}
 
-    def verify_multiturn_start(self, scenario: dict) -> dict:
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        self.start_kwargs = dict(kwargs)
         return {
             "scenario_state_id": "state-1",
             "prompt": scenario["messages"],
@@ -213,6 +215,7 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert run.result.tokens_completion == 8
     assert len(run.tool_calls) == 1
     assert fake.ended is False
+    assert fake.start_kwargs["model_endpoint"] == "http://localhost:9999"
 
 
 def test_runner_scales_timeout_budget_for_slow_measured_tps(monkeypatch):
@@ -531,7 +534,7 @@ class FakeCliLoopExhaustedSandbox:
     def __init__(self) -> None:
         self.ended = False
 
-    def verify_multiturn_start(self, scenario: dict) -> dict:
+    def verify_multiturn_start(self, scenario: dict, **_kwargs) -> dict:
         return {
             "scenario_state_id": "state-loop",
             "prompt": scenario["messages"],

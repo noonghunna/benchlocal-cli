@@ -39,6 +39,39 @@ def test_bugfind_rubric_pass_and_fail():
     assert server._verify("BF-01", scenario, failing)["failure_mode"] == "verifier_fail"
 
 
+
+class _FakeHTTPResponse:
+    def __init__(self, status_code: int = 200, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = "{}"
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeHTTPClient:
+    def __init__(self, *, response: _FakeHTTPResponse | None = None, exc: Exception | None = None) -> None:
+        self.response = response or _FakeHTTPResponse()
+        self.exc = exc
+        self.urls: list[str] = []
+
+    def __call__(self, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def get(self, url: str):
+        self.urls.append(url)
+        if self.exc:
+            raise self.exc
+        return self.response
+
+
 def test_cli_exec_pass_and_unsafe_fail():
     server = _load("cli_server", "sandboxes/cli/server.py")
     scenario = {"id": "CLI-01", "raw_scenario": {"expected": {}, "fixture_status": "rubric-only"}}
@@ -54,6 +87,82 @@ def test_cli_exec_pass_and_unsafe_fail():
 
 
 
+def test_cli_detect_model_endpoint_reachable_ok(monkeypatch):
+    server = _load("cli_server_reach_ok", "sandboxes/cli/server.py")
+    fake_client = _FakeHTTPClient(response=_FakeHTTPResponse(200))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:8000")
+
+    assert out["ok"] is True
+    assert out["probe_url"] == "http://host:8000/v1/models"
+    assert fake_client.urls == ["http://host:8000/v1/models"]
+
+
+def test_cli_detect_model_endpoint_reachable_fails_on_refused(monkeypatch):
+    server = _load("cli_server_reach_refused", "sandboxes/cli/server.py")
+    fake_client = _FakeHTTPClient(exc=server.httpx.ConnectError("connection refused"))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:9999/v1")
+
+    assert out["ok"] is False
+    assert "model server not running" in out["reason"]
+    assert out["probe_url"] == "http://host:9999/v1/models"
+
+
+def test_cli_detect_model_endpoint_reachable_fails_on_timeout(monkeypatch):
+    server = _load("cli_server_reach_timeout", "sandboxes/cli/server.py")
+    fake_client = _FakeHTTPClient(exc=server.httpx.TimeoutException("timed out"))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:9999")
+
+    assert out["ok"] is False
+    assert "no response within 5s" in out["reason"]
+
+
+def test_cli_health_surfaces_unreachable_endpoint(monkeypatch):
+    server = _load("cli_server_health_reach", "sandboxes/cli/server.py")
+    monkeypatch.setattr(
+        server,
+        "_MODEL_ENDPOINT_REACHABLE_CACHE",
+        {"ok": False, "reason": "model server not running at http://host:9999"},
+    )
+
+    health = server._resolve_health()
+
+    assert health["status"] == "setup-error"
+    assert health["model_endpoint_reachable"]["ok"] is False
+
+
+def test_cli_verify_start_fails_fast_on_unreachable_endpoint(monkeypatch):
+    server = _load("cli_server_verify_reach", "sandboxes/cli/server.py")
+    monkeypatch.setattr(
+        server,
+        "_detect_model_endpoint_reachable",
+        lambda endpoint: {"ok": False, "reason": f"model server not running at {endpoint}"},
+    )
+
+    def fail_seed(_scenario_id):
+        raise AssertionError("workspace seed should not run when endpoint preflight fails")
+
+    monkeypatch.setattr(server, "_seed_multiround_workspace", fail_seed)
+    out = server._multiturn_start(
+        "CLI-21",
+        {"raw_scenario": {"kind": "multiround"}, "messages": []},
+        "http://host:9999",
+    )
+
+    assert out["passed"] is False
+    assert out["failure_mode"] == "server_error"
+    assert "model endpoint unreachable from sandbox" in out["detail"]
+    assert out["trace"]["model_endpoint_reachable"]["ok"] is False
+
+
 # ============================================================================
 # v0.7.4 — upstream Node grader proxy (replaces v0.7.3 keyword-match _grade)
 # ============================================================================
@@ -62,6 +171,94 @@ def test_cli_exec_pass_and_unsafe_fail():
 def _hermes_server():
     return _load("hermes_server", "sandboxes/hermes/server.py")
 
+
+
+def test_hermes_detect_model_endpoint_reachable_ok(monkeypatch):
+    server = _hermes_server()
+    fake_client = _FakeHTTPClient(response=_FakeHTTPResponse(200))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:8000/v1/chat/completions")
+
+    assert out["ok"] is True
+    assert out["probe_url"] == "http://host:8000/v1/models"
+    assert fake_client.urls == ["http://host:8000/v1/models"]
+
+
+def test_hermes_detect_model_endpoint_reachable_fails_on_refused(monkeypatch):
+    server = _hermes_server()
+    fake_client = _FakeHTTPClient(exc=server.httpx.ConnectError("connection refused"))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:9999")
+
+    assert out["ok"] is False
+    assert "model server not running" in out["reason"]
+
+
+def test_hermes_detect_model_endpoint_reachable_fails_on_timeout(monkeypatch):
+    server = _hermes_server()
+    fake_client = _FakeHTTPClient(exc=server.httpx.TimeoutException("timed out"))
+    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
+    monkeypatch.setattr(server.httpx, "Client", fake_client)
+
+    out = server._detect_model_endpoint_reachable("http://host:9999")
+
+    assert out["ok"] is False
+    assert "no response within 5s" in out["reason"]
+
+
+def test_hermes_health_surfaces_unreachable_endpoint(monkeypatch, tmp_path):
+    server = _hermes_server()
+    install = tmp_path / "fake-hermes"
+    install.mkdir()
+    (install / "run_agent.py").write_text("# stub")
+    monkeypatch.setattr(server, "HERMES_AGENT_PATH", install)
+    monkeypatch.setattr(server, "_upstream_node_ready", lambda: True)
+    monkeypatch.setattr(
+        server,
+        "_MODEL_ENDPOINT_REACHABLE_CACHE",
+        {"ok": False, "reason": "model server not running at http://host:9999"},
+    )
+
+    health = server._resolve_health()
+
+    assert health["status"] == "setup-error"
+    assert health["model_endpoint_reachable"]["ok"] is False
+
+
+def test_hermes_verify_start_fails_fast_on_unreachable_endpoint(monkeypatch, tmp_path):
+    server = _hermes_server()
+    install = tmp_path / "fake-hermes"
+    install.mkdir()
+    (install / "run_agent.py").write_text("# stub")
+    monkeypatch.setattr(server, "HERMES_AGENT_PATH", install)
+    monkeypatch.setattr(server, "_upstream_node_ready", lambda: True)
+    monkeypatch.setattr(
+        server,
+        "_detect_model_endpoint_reachable",
+        lambda endpoint: {"ok": False, "reason": f"model server not running at {endpoint}"},
+    )
+
+    def fail_post(*_args, **_kwargs):
+        raise AssertionError("upstream agent loop should not run when endpoint preflight fails")
+
+    monkeypatch.setattr(server.httpx, "post", fail_post)
+    out = server._verify_start_via_upstream(
+        {
+            "scenario_id": "HA-01",
+            "scenario": {"id": "HA-01", "messages": []},
+            "model_endpoint": "http://host:9999",
+            "model_name": "fake",
+        }
+    )
+
+    assert out["passed"] is False
+    assert out["failure_mode"] == "server_error"
+    assert "model endpoint unreachable from sandbox" in out["detail"]
+    assert out["trace"]["model_endpoint_reachable"]["ok"] is False
 
 def test_hermes_translate_request_normalizes_endpoint_and_filters_generation():
     server = _hermes_server()

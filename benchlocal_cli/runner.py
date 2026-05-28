@@ -1058,7 +1058,9 @@ class Runner:
         try:
             start_kwargs: dict = {}
             pack_id = scenario.get("pack_id")
-            if pack_id == "hermesagent-20":
+            if pack_id == "cli-40":
+                start_kwargs = {"model_endpoint": self.endpoint}
+            elif pack_id == "hermesagent-20":
                 # Hermes upstream agent-runner makes its own model calls; pass
                 # the runner's endpoint + model so the sandbox can spawn the
                 # upstream agent against the same target the runner is benching.
