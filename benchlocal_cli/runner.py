@@ -139,6 +139,15 @@ DEFAULT_THINKING_SAMPLER = {
 }
 
 
+def _thinking_sampler_for(meta: dict, override: dict | None) -> dict:
+    if override is not None:
+        return dict(override)
+    pack_sampler = meta.get("thinking_sampler")
+    if isinstance(pack_sampler, dict):
+        return dict(pack_sampler)
+    return dict(DEFAULT_THINKING_SAMPLER)
+
+
 def _reference_date_context(scenario: dict) -> str | None:
     date = scenario.get("benchmark_reference_date")
     day = scenario.get("benchmark_reference_day")
@@ -191,10 +200,8 @@ def build_request(
     request_thinking = bool(
         dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking", resolved_thinking)
     )
-    if request_thinking:
-        sampler = DEFAULT_THINKING_SAMPLER if thinking_sampler is None else dict(thinking_sampler)
-        if not sampling_from_server:
-            sampling.update(sampler)
+    if request_thinking and not sampling_from_server:
+        sampling.update(_thinking_sampler_for(meta, thinking_sampler))
     if sampling_overrides:
         sampling.update(sampling_overrides)
     if request_thinking:
@@ -355,7 +362,7 @@ class Runner:
         # so the server applies its own configured defaults. Mutually
         # exclusive with sampling_overrides (enforced in cli.py).
         self.sampling_from_server = sampling_from_server
-        self.thinking_sampler = DEFAULT_THINKING_SAMPLER if thinking_sampler is None else dict(thinking_sampler)
+        self.thinking_sampler = None if thinking_sampler is None else dict(thinking_sampler)
         # Populated by _read_server_defaults() before the run starts.
         self._server_defaults: dict | None = None
         self._sandbox_clients: dict[str, SandboxClient] = {}

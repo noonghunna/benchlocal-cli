@@ -304,6 +304,54 @@ def test_custom_thinking_sampler_is_configurable():
     assert "top_k" not in request
 
 
+
+
+def test_pack_level_thinking_sampler_overrides_recommended_default():
+    meta = _meta(default_thinking="on")
+    meta["thinking_sampler"] = {"temperature": 0}
+
+    request, _ = build_request(
+        _scenario(),
+        meta,
+        "fake",
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["temperature"] == 0
+    assert "top_p" not in request
+    assert "top_k" not in request
+    assert "min_p" not in request
+
+
+def test_cli_thinking_sampler_override_wins_over_pack_level_sampler():
+    meta = _meta(default_thinking="on")
+    meta["thinking_sampler"] = {"temperature": 0}
+
+    request, _ = build_request(
+        _scenario(),
+        meta,
+        "fake",
+        thinking_sampler={"temperature": 0.6, "top_p": 0.9},
+        thinking_max_tokens=4096,
+    )
+
+    assert request["temperature"] == 0.6
+    assert request["top_p"] == 0.9
+
+
+def test_hermes_pack_metadata_uses_deterministic_thinking_sampler():
+    from benchlocal_cli.runner import load_pack
+
+    meta, scenarios = load_pack("hermesagent-20")
+    request, _ = build_request(scenarios[0], meta, "fake", thinking_max_tokens=4096)
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["temperature"] == 0
+    assert request["top_p"] == 1
+    assert "top_k" not in request
+    assert "min_p" not in request
+
 def test_reference_date_metadata_is_injected_into_messages():
     scenario = _scenario()
     scenario.update({"benchmark_reference_date": "2026-03-20", "benchmark_reference_day": "Friday"})

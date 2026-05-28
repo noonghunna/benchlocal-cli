@@ -15,7 +15,7 @@ const PACKS = {
   "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on" },
   "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false, thinking: "off" },
   "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true, thinking: "on" },
-  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on" },
+  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 } },
   "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off" },
 };
 
@@ -48,7 +48,7 @@ function packMeta(packName, scenarioCount) {
   );
   const defaultMaxSeconds = sampling.request_timeout_seconds || 60;
   delete sampling.request_timeout_seconds;
-  return {
+  const meta = {
     __meta__: true,
     pack_id: pack.id,
     version: pack.version,
@@ -66,6 +66,10 @@ function packMeta(packName, scenarioCount) {
     ported_at: "2026-05-09",
     porter: "Codex build-packs.js",
   };
+  if (config.thinkingSampler) {
+    meta.thinking_sampler = config.thinkingSampler;
+  }
+  return meta;
 }
 
 function camelToSnake(value) {
