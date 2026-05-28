@@ -479,7 +479,7 @@ def _multiturn_end(state_id: str) -> dict:
     result = _verify_multiround_commands(state["scenario_id"], state["commands"])
     result["action"] = "verify-final"
     if not result.get("passed"):
-        result["failure_mode"] = "timeout"
+        result["failure_mode"] = "agent_loop_exhausted"
         result["detail"] = f"{state['scenario_id']}: agent loop ended before success"
     result.setdefault("trace", {}).update({"turn_count": state["turn_count"], "commands": state["commands"], "tool_results": state["tool_results"]})
     return result

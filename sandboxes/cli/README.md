@@ -23,6 +23,7 @@ Container runs:
 - Working dir limited to `/tmp/cli-sandbox/` (tmpfs-backed; cleared between requests)
 - Per-command timeout: 10s (configurable per scenario)
 - Output capped at 64 KB
+- Multi-round agent loop exhaustion reports `failure_mode: agent_loop_exhausted`; `timeout` is reserved for real command or wall-clock timeout paths.
 
 ## In a benchlocal-cli run
 
