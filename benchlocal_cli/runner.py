@@ -131,6 +131,40 @@ _SAMPLING_KEYS = frozenset({
     "mirostat_tau", "mirostat_eta",
 })
 
+DEFAULT_THINKING_SAMPLER = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+}
+
+
+def _reference_date_context(scenario: dict) -> str | None:
+    date = scenario.get("benchmark_reference_date")
+    day = scenario.get("benchmark_reference_day")
+    if not date and not day:
+        return None
+    if date and day:
+        return f"Benchmark reference date: {date} ({day})."
+    if date:
+        return f"Benchmark reference date: {date}."
+    return f"Benchmark reference day: {day}."
+
+
+def messages_with_reference_context(scenario: dict) -> list[dict]:
+    """Return scenario messages with benchmark reference-date context injected."""
+    messages = [dict(message) for message in scenario["messages"]]
+    context = _reference_date_context(scenario)
+    if not context:
+        return messages
+    for message in messages:
+        if message.get("role") == "system":
+            content = str(message.get("content") or "")
+            if context not in content:
+                message["content"] = f"{content.rstrip()}\n\n{context}" if content else context
+            return messages
+    return [{"role": "system", "content": context}, *messages]
+
 
 def build_request(
     scenario: dict,
@@ -142,14 +176,10 @@ def build_request(
     extra_body: dict | None = None,
     sampling_overrides: dict | None = None,
     sampling_from_server: bool = False,
+    thinking_sampler: dict | None = None,
 ) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
     scenario_overrides = scenario.get("sampling_overrides") or {}
-    # CLI-level sampling overrides (--temperature, --top-p, etc.) take
-    # precedence over pack defaults and scenario overrides. Applied here
-    # (before scenario overrides) so per-scenario max_tokens still wins.
-    if sampling_overrides:
-        sampling.update(sampling_overrides)
     if extra_body:
         sampling.update(extra_body)
     resolved_thinking = resolve_thinking_enabled(meta, thinking_enabled)
@@ -162,6 +192,12 @@ def build_request(
         dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking", resolved_thinking)
     )
     if request_thinking:
+        sampler = DEFAULT_THINKING_SAMPLER if thinking_sampler is None else dict(thinking_sampler)
+        if not sampling_from_server:
+            sampling.update(sampler)
+    if sampling_overrides:
+        sampling.update(sampling_overrides)
+    if request_thinking:
         sampling["max_tokens"] = thinking_max_tokens
     # --sampling-from-server (#21): strip all sampling params from the
     # request so the server applies its own configured defaults. Keep
@@ -171,7 +207,7 @@ def build_request(
             k: v for k, v in sampling.items()
             if k not in _SAMPLING_KEYS
         }
-    request = {"model": model, "messages": scenario["messages"], **sampling}
+    request = {"model": model, "messages": messages_with_reference_context(scenario), **sampling}
     if scenario.get("tools"):
         request["tools"] = scenario["tools"]
     return request, sampling
@@ -292,6 +328,7 @@ class Runner:
         max_transient_retries: int = 3,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
+        thinking_sampler: dict | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
     ) -> None:
@@ -318,6 +355,7 @@ class Runner:
         # so the server applies its own configured defaults. Mutually
         # exclusive with sampling_overrides (enforced in cli.py).
         self.sampling_from_server = sampling_from_server
+        self.thinking_sampler = DEFAULT_THINKING_SAMPLER if thinking_sampler is None else dict(thinking_sampler)
         # Populated by _read_server_defaults() before the run starts.
         self._server_defaults: dict | None = None
         self._sandbox_clients: dict[str, SandboxClient] = {}
@@ -645,6 +683,7 @@ class Runner:
             extra_body=self.extra_body,
             sampling_overrides=self.sampling_overrides or None,
             sampling_from_server=self.sampling_from_server,
+            thinking_sampler=self.thinking_sampler,
         )
         scenario_timeout = scenario.get("max_seconds_override") or meta.get("default_max_seconds") or self.timeout_per_case
         timeout = min(float(scenario_timeout), float(self.timeout_per_case))

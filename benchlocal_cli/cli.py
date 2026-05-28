@@ -161,6 +161,15 @@ def _parser() -> argparse.ArgumentParser:
         help="max_tokens to request when thinking is enabled "
              "(default: --max-tokens if set, else 16384)",
     )
+    run.add_argument(
+        "--thinking-sampler",
+        help=(
+            "JSON object used as the thinking-on distribution sampler "
+            "(default: {\"temperature\":1.0,\"top_p\":0.95,\"top_k\":20,\"min_p\":0.0}). "
+            "Explicit --temperature/--top-p/--top-k/--min-p flags override this; "
+            "--sampling-from-server omits sampler params from requests."
+        ),
+    )
     # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
     # recommended temperature. Default behavior (per-pack temp=0) unchanged.
     # Any override tags the run as non-canonical in output + saved JSON.
@@ -427,6 +436,15 @@ def _load_extra_body(value: str | None) -> dict | None:
     return data
 
 
+def _load_thinking_sampler(value: str | None) -> dict | None:
+    if not value:
+        return None
+    data = json.loads(value)
+    if not isinstance(data, dict):
+        raise ValueError("--thinking-sampler must be a JSON object")
+    return data
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -646,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             max_transient_retries=args.max_transient_retries,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
+            thinking_sampler=_load_thinking_sampler(args.thinking_sampler),
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,
         )

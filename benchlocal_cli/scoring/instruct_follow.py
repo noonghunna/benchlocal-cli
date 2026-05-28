@@ -44,6 +44,10 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
         elif kind == "required_phrase":
             if assertion["value"] not in text:
                 return result(scenario, False, "verifier_fail", f"missing phrase {assertion['value']!r}")
+        elif kind == "required_phrase_any":
+            values = assertion.get("values") or []
+            if not any(value in text for value in values):
+                return result(scenario, False, "verifier_fail", f"missing one of phrases {values!r}")
         elif kind == "forbidden_phrase":
             if assertion["value"] in text:
                 return result(scenario, False, "verifier_fail", f"forbidden phrase {assertion['value']!r} present")
