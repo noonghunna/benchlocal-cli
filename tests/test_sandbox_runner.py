@@ -408,6 +408,43 @@ def test_no_multiplier_when_thinking_max_below_nominal():
 
     assert runner._timeout_budget_for_meta(meta) == 60 * (100 / 24)
     assert "thinking-budget-multiplier" not in runner._timeout_scaling_note
+class FakeAiderProgressSandbox:
+    def __init__(self) -> None:
+        self.progress_calls = 0
+
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        import time
+
+        time.sleep(0.03)
+        return {"action": "verify-final", "passed": True, "failure_mode": "passed", "detail": "done"}
+
+    def verify_progress(self, scenario_state_id=None) -> dict:
+        self.progress_calls += 1
+        completed = []
+        if self.progress_calls >= 1:
+            completed.append({"id": "python/two-sum", "passed": True, "duration_s": 10})
+        if self.progress_calls >= 2:
+            completed.append({"id": "rust/parser", "passed": False, "duration_s": 20})
+        return {"total_expected": 30, "completed_exercises": completed}
+
+
+def test_runner_polls_progress_for_aider_during_verify_start():
+    events = []
+    runner = Runner(endpoint="http://localhost:9999", model="fake", on_progress_event=events.append)
+    runner.aider_progress_poll_s = 0.01
+    sandbox = FakeAiderProgressSandbox()
+
+    out = runner._verify_aider_start_with_progress(
+        sandbox,
+        {"id": "aider-polyglot-30-batch", "pack_id": "aider-polyglot-30"},
+        {},
+    )
+
+    assert out["passed"] is True
+    assert [event["id"] for event in events] == ["python/two-sum", "rust/parser"]
+    assert events[0]["index"] == 1
+    assert events[1]["index"] == 2
+    assert all(event["total"] == 30 for event in events)
 
 
 def test_runner_uses_pack_timeout_default_when_cli_timeout_unset(monkeypatch):

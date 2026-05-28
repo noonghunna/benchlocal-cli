@@ -23,11 +23,12 @@ import os
 import re
 import shutil
 import signal
+import threading
 import subprocess
 import sys
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = 9000
@@ -106,6 +107,53 @@ def _load_canonical_exercises() -> list[dict]:
 
 CANONICAL_EXERCISES = _load_canonical_exercises()
 CANONICAL_KEYS = sorted({(e["language"], e["name"]) for e in CANONICAL_EXERCISES})
+CANONICAL_TOTAL = len(CANONICAL_EXERCISES)
+
+_BATCH_PROGRESS_LOCK = threading.Lock()
+_BATCH_PROGRESS_STATE: dict = {
+    "active": False,
+    "completed_exercises": [],
+    "total_expected": CANONICAL_TOTAL,
+}
+
+
+def _progress_items_from_run_dir(run_dir: Path) -> list[dict]:
+    per_exercise = _walk_per_exercise_results(run_dir) if run_dir.exists() else {}
+    items = []
+    for key, summary in sorted(
+        _grade_aider_batch_result(per_exercise, DEFAULT_PASS_THRESHOLD)["per_exercise"].items()
+    ):
+        items.append({
+            "id": key,
+            "passed": bool(summary.get("passed")),
+            "duration_s": summary.get("duration"),
+            "tries": summary.get("tries"),
+            "prompt_tokens": summary.get("prompt_tokens"),
+            "completion_tokens": summary.get("completion_tokens"),
+        })
+    return items
+
+
+def _set_progress_state(**updates) -> None:
+    with _BATCH_PROGRESS_LOCK:
+        _BATCH_PROGRESS_STATE.update(updates)
+
+
+def _resolve_progress() -> dict:
+    with _BATCH_PROGRESS_LOCK:
+        state = dict(_BATCH_PROGRESS_STATE)
+    run_dir_value = state.get("run_dir")
+    if state.get("active") and run_dir_value:
+        run_dir = Path(str(run_dir_value))
+        completed = _progress_items_from_run_dir(run_dir)
+        state["completed_exercises"] = completed
+        state["completed_count"] = len(completed)
+    else:
+        completed = state.get("completed_exercises") or []
+        state["completed_count"] = len(completed) if isinstance(completed, list) else 0
+    state.setdefault("total_expected", CANONICAL_TOTAL)
+    return state
+
 
 
 def _resolve_exercise_dirs() -> tuple[list[Path], list[tuple[str, str]]]:
@@ -619,6 +667,18 @@ def _verify_start(req: dict) -> dict:
         # and writes results to <stage>/tmp.benchmarks/<run_name>/.
         env["AIDER_BENCHMARK_DIR"] = str(job_dir / "tmp.benchmarks")
 
+        tmp_benchmarks = job_dir / "tmp.benchmarks"
+        expected_run_dir = tmp_benchmarks / run_name
+        _set_progress_state(
+            active=True,
+            scenario_id=scenario_id,
+            run_name=run_name,
+            run_dir=str(expected_run_dir),
+            completed_exercises=[],
+            total_expected=CANONICAL_TOTAL,
+            started_at=time.time(),
+        )
+
         # Spawn with process-group isolation (same hardening as v0.7.3 hermes)
         started = time.monotonic()
         proc = subprocess.Popen(
@@ -653,6 +713,8 @@ def _verify_start(req: dict) -> dict:
         run_dir = run_dirs[-1] if run_dirs else tmp_benchmarks
 
         per_exercise = _walk_per_exercise_results(run_dir)
+        final_progress = _progress_items_from_run_dir(run_dir)
+        _set_progress_state(active=False, run_dir=str(run_dir), completed_exercises=final_progress)
 
         if timed_out:
             # Recover partial per-exercise data. Aider's benchmark.py writes
@@ -808,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
-        if self.path not in ("/verify", "/verify-start", "/verify-turn", "/verify-end"):
+        if self.path not in ("/verify", "/verify-start", "/verify-turn", "/verify-end", "/verify-progress"):
             self.send_response(404)
             self.end_headers()
             return
@@ -823,6 +885,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/verify-start":
                 result = _verify_start(req)
+            elif self.path == "/verify-progress":
+                result = _resolve_progress()
             else:
                 result = {
                     "action": "verify-final",
@@ -863,7 +927,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     sys.stderr.write(
         f"[aider-polyglot-sandbox] listening on :{PORT} "
         f"(stage=v0.9.0, aider={AIDER_PINNED_COMMIT[:12]}, polyglot={POLYGLOT_PINNED_COMMIT[:12]}, "

@@ -267,6 +267,20 @@ def _pack_line(pack: PackResult) -> str:
     return f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {status}"
 
 
+
+def _sandbox_progress_event(event: dict) -> None:
+    pack_id = event.get("pack_id") or "sandbox"
+    exercise_id = event.get("id") or "?"
+    index = event.get("index") or "?"
+    total = event.get("total") or "?"
+    passed = bool(event.get("passed"))
+    result_char = "✓" if passed else "✗"
+    duration = event.get("duration_s")
+    latency = f"{float(duration):.1f}s" if isinstance(duration, (int, float)) else "?"
+    mode = "pass" if passed else "fail"
+    print(f"  [{index}/{total}] {pack_id}/{exercise_id} {result_char} {mode} ({latency})", file=sys.stderr, flush=True)
+
+
 def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
     """Print per-scenario progress line to stderr (#23)."""
     result_char = "✓" if run.result.passed else "✗"
@@ -585,9 +599,11 @@ def main(argv: list[str] | None = None) -> int:
         # Build progress callbacks (#23)
         on_pack_complete = None
         on_scenario_complete = None
+        on_progress_event = None
 
         if args.progress:
             on_scenario_complete = _scenario_progress
+            on_progress_event = _sandbox_progress_event
 
         # For incremental output, we need to track state for partial JSON saves
         incremental_state = {
@@ -673,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
             thinking_sampler=_load_thinking_sampler(args.thinking_sampler),
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,
+            on_progress_event=on_progress_event,
         )
         result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
 
