@@ -291,6 +291,93 @@ def test_runner_explicit_timeout_per_case_disables_dynamic_scaling(monkeypatch):
     assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300, "timeout_reference_tps": 100}) == 45
 
 
+def test_probe_sends_enable_thinking_false(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake")
+    requests = []
+
+    def fake_post_chat(request, timeout):
+        requests.append(request)
+        return 200, {"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 100}}, None
+
+    monkeypatch.setattr(runner, "_post_chat", fake_post_chat)
+    monkeypatch.setattr("benchlocal_cli.runner.time.perf_counter", iter([0.0, 2.0, 2.0, 4.0, 4.0, 6.0]).__next__)
+
+    assert runner._probe_decode_tps() == 50.0
+    assert len(requests) == 3
+    assert all(req["chat_template_kwargs"] == {"enable_thinking": False} for req in requests)
+
+
+def test_scaled_budget_with_thinking_multiplier():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=24,
+        thinking_enabled=True,
+        thinking_max_tokens=16384,
+    )
+    meta = {
+        "timeout_per_case_default": 60,
+        "timeout_reference_tps": 100,
+        "sampling_defaults": {"max_tokens": 1024},
+        "default_thinking": "off",
+    }
+
+    budget = runner._timeout_budget_for_meta(meta)
+
+    assert budget == 60 * (100 / 24) * (16384 / 1024)
+    assert "measured_decode_tps=24.0" in runner._timeout_scaling_note
+    assert runner._timeout_scaling_note_emitted is True
+
+
+def test_timeout_scaling_note_emits_once_to_stderr(capsys):
+    runner = Runner(endpoint="http://localhost:9999", model="fake", measured_tps=50)
+    meta = {"timeout_per_case_default": 300, "timeout_reference_tps": 100}
+
+    assert runner._timeout_budget_for_meta(meta) == 600
+    assert runner._timeout_budget_for_meta(meta) == 600
+
+    captured = capsys.readouterr()
+    assert captured.err.count("[runner] timeout scaling active") == 1
+    assert "measured_decode_tps=50.0" in captured.err
+
+
+def test_scaled_budget_no_thinking_multiplier_when_thinking_off():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=24,
+        thinking_enabled=False,
+        thinking_max_tokens=16384,
+    )
+    meta = {
+        "timeout_per_case_default": 60,
+        "timeout_reference_tps": 100,
+        "sampling_defaults": {"max_tokens": 1024},
+        "default_thinking": "on",
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 60 * (100 / 24)
+    assert "thinking-budget-multiplier" not in runner._timeout_scaling_note
+
+
+def test_scaled_budget_no_multiplier_when_thinking_max_below_nominal():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=24,
+        thinking_enabled=True,
+        thinking_max_tokens=512,
+    )
+    meta = {
+        "timeout_per_case_default": 60,
+        "timeout_reference_tps": 100,
+        "sampling_defaults": {"max_tokens": 1024},
+        "default_thinking": "off",
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 60 * (100 / 24)
+    assert "thinking-budget-multiplier" not in runner._timeout_scaling_note
+
 def test_runner_uses_pack_timeout_default_when_cli_timeout_unset(monkeypatch):
     import benchlocal_cli.runner as runner_module
 

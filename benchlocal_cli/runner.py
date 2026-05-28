@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import statistics
+import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -351,6 +352,7 @@ class Runner:
         self.timeout_scale_down = bool(timeout_scale_down)
         self._measured_decode_tps: float | None = self.measured_tps_override
         self._timeout_scaling_note: str | None = None
+        self._timeout_scaling_note_emitted = False
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
         self.thinking_override = thinking_enabled
@@ -595,11 +597,42 @@ class Runner:
         if not self.timeout_scale_down:
             scale = max(1.0, scale)
         budget = base_seconds * scale
-        self._timeout_scaling_note = (
-            f"timeout scaling active: measured_decode_tps={measured_tps:.1f}, "
-            f"reference_tps={reference_tps:.1f}, scale={scale:.2f}"
-        )
+        note_parts = [
+            f"timeout scaling active: measured_decode_tps={measured_tps:.1f}",
+            f"reference_tps={reference_tps:.1f}",
+            f"scale={scale:.2f}",
+        ]
+        multiplier = self._thinking_timeout_multiplier(meta)
+        if multiplier > 1.0:
+            budget *= multiplier
+            nominal_max = self._nominal_thinking_max_tokens(meta)
+            note_parts.append(
+                f"thinking-budget-multiplier={self.thinking_max_tokens}/{nominal_max}={multiplier:.2f}"
+            )
+        self._timeout_scaling_note = ", ".join(note_parts)
+        self._emit_timeout_scaling_note_once()
         return budget
+
+    def _emit_timeout_scaling_note_once(self) -> None:
+        if self._timeout_scaling_note_emitted or not self._timeout_scaling_note:
+            return
+        print(f"[runner] {self._timeout_scaling_note}", file=sys.stderr, flush=True)
+        self._timeout_scaling_note_emitted = True
+
+    def _nominal_thinking_max_tokens(self, meta: dict) -> int:
+        sampling_defaults = meta.get("sampling_defaults") or {}
+        try:
+            return int(sampling_defaults.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            return 1024
+
+    def _thinking_timeout_multiplier(self, meta: dict) -> float:
+        if not resolve_thinking_enabled(meta, self.thinking_override):
+            return 1.0
+        nominal_max = self._nominal_thinking_max_tokens(meta)
+        if nominal_max <= 0 or self.thinking_max_tokens <= nominal_max:
+            return 1.0
+        return float(self.thinking_max_tokens) / float(nominal_max)
 
     def _timeout_measured_tps(self) -> float | None:
         if self._measured_decode_tps is not None:
@@ -624,6 +657,7 @@ class Runner:
                 "temperature": 0,
                 "top_p": 1,
                 "max_tokens": 200,
+                "chat_template_kwargs": {"enable_thinking": False},
             }
             started = time.perf_counter()
             _status, response, _trace = self._post_chat(request, 120.0)
