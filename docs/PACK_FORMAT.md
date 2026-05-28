@@ -47,7 +47,8 @@ Field reference:
 | `license_text_path` | no | string | Path to attribution doc; defaults to `ATTRIBUTION.md` |
 | `sampling_defaults` | yes | object | Applied to every scenario unless overridden; generated packs include `chat_template_kwargs: {"enable_thinking": false}` as the request-shape base |
 | `default_thinking` | no | `"on"` or `"off"` | Pack-level reasoning default. Missing means `"off"`. Runner default honors this; `--enable-thinking` / `--no-thinking` force all packs on/off. |
-| `default_max_seconds` | yes | int | Default per-scenario timeout |
+| `default_max_seconds` | yes | int | Default per-scenario timeout from the upstream pack metadata |
+| `timeout_per_case_default` | no | int | Runner wall-clock timeout default for packs that need a larger local-model budget; overridden by `--timeout-per-case` |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
 | `suite` | no | string | Logical suite label used by mode selectors; e.g. `reasoning` groups packs for `--reasoning`. |

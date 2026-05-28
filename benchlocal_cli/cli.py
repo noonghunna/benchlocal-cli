@@ -88,7 +88,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
     run.add_argument("--endpoint", required=True, help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
     run.add_argument("--model", required=True, help="model id served by the endpoint")
-    run.add_argument("--timeout-per-case", type=float, default=60.0, help="per-scenario HTTP timeout (default: 60s)")
+    run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
     run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
