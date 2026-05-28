@@ -87,80 +87,36 @@ def test_cli_exec_pass_and_unsafe_fail():
 
 
 
-def test_cli_detect_model_endpoint_reachable_ok(monkeypatch):
-    server = _load("cli_server_reach_ok", "sandboxes/cli/server.py")
-    fake_client = _FakeHTTPClient(response=_FakeHTTPResponse(200))
-    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
-    monkeypatch.setattr(server.httpx, "Client", fake_client)
-
-    out = server._detect_model_endpoint_reachable("http://host:8000")
-
-    assert out["ok"] is True
-    assert out["probe_url"] == "http://host:8000/v1/models"
-    assert fake_client.urls == ["http://host:8000/v1/models"]
-
-
-def test_cli_detect_model_endpoint_reachable_fails_on_refused(monkeypatch):
-    server = _load("cli_server_reach_refused", "sandboxes/cli/server.py")
-    fake_client = _FakeHTTPClient(exc=server.httpx.ConnectError("connection refused"))
-    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
-    monkeypatch.setattr(server.httpx, "Client", fake_client)
-
-    out = server._detect_model_endpoint_reachable("http://host:9999/v1")
-
-    assert out["ok"] is False
-    assert "model server not running" in out["reason"]
-    assert out["probe_url"] == "http://host:9999/v1/models"
-
-
-def test_cli_detect_model_endpoint_reachable_fails_on_timeout(monkeypatch):
-    server = _load("cli_server_reach_timeout", "sandboxes/cli/server.py")
-    fake_client = _FakeHTTPClient(exc=server.httpx.TimeoutException("timed out"))
-    monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
-    monkeypatch.setattr(server.httpx, "Client", fake_client)
-
-    out = server._detect_model_endpoint_reachable("http://host:9999")
-
-    assert out["ok"] is False
-    assert "no response within 5s" in out["reason"]
-
-
-def test_cli_health_surfaces_unreachable_endpoint(monkeypatch):
-    server = _load("cli_server_health_reach", "sandboxes/cli/server.py")
-    monkeypatch.setattr(
-        server,
-        "_MODEL_ENDPOINT_REACHABLE_CACHE",
-        {"ok": False, "reason": "model server not running at http://host:9999"},
-    )
+def test_cli_health_reports_static_ok():
+    server = _load("cli_server_health", "sandboxes/cli/server.py")
 
     health = server._resolve_health()
 
-    assert health["status"] == "setup-error"
-    assert health["model_endpoint_reachable"]["ok"] is False
+    assert health == {
+        "status": "ok",
+        "pack": "cli-40",
+        "stage": "v0.7.1",
+        "multi_turn": True,
+    }
 
 
-def test_cli_verify_start_fails_fast_on_unreachable_endpoint(monkeypatch):
-    server = _load("cli_server_verify_reach", "sandboxes/cli/server.py")
-    monkeypatch.setattr(
-        server,
-        "_detect_model_endpoint_reachable",
-        lambda endpoint: {"ok": False, "reason": f"model server not running at {endpoint}"},
-    )
+def test_cli_multiturn_start_does_not_probe_model_endpoint(monkeypatch):
+    server = _load("cli_server_verify_no_reach", "sandboxes/cli/server.py")
+    seeded = {"called": False}
 
-    def fail_seed(_scenario_id):
-        raise AssertionError("workspace seed should not run when endpoint preflight fails")
+    def seed(_scenario_id):
+        seeded["called"] = True
+        return {"status": "ok"}
 
-    monkeypatch.setattr(server, "_seed_multiround_workspace", fail_seed)
+    monkeypatch.setattr(server, "_seed_multiround_workspace", seed)
     out = server._multiturn_start(
         "CLI-21",
         {"raw_scenario": {"kind": "multiround"}, "messages": []},
-        "http://host:9999",
     )
 
-    assert out["passed"] is False
-    assert out["failure_mode"] == "server_error"
-    assert "model endpoint unreachable from sandbox" in out["detail"]
-    assert out["trace"]["model_endpoint_reachable"]["ok"] is False
+    assert seeded["called"] is True
+    assert out["action"] == "next-prompt"
+    assert out["scenario_state_id"] in server.STATES
 
 
 # ============================================================================

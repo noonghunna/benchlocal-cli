@@ -215,7 +215,7 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert run.result.tokens_completion == 8
     assert len(run.tool_calls) == 1
     assert fake.ended is False
-    assert fake.start_kwargs["model_endpoint"] == "http://localhost:9999"
+    assert "model_endpoint" not in fake.start_kwargs
 
 
 def test_runner_scales_timeout_budget_for_slow_measured_tps(monkeypatch):
