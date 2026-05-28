@@ -326,6 +326,9 @@ class Runner:
         endpoint: str,
         model: str,
         timeout_per_case: float | None = None,
+        measured_tps: float | None = None,
+        reference_tps: float | None = None,
+        timeout_scale_down: bool = False,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
         thinking_enabled: bool | None = None,
@@ -343,6 +346,11 @@ class Runner:
         self.endpoint = endpoint
         self.model = model
         self.timeout_per_case = None if timeout_per_case is None else float(timeout_per_case)
+        self.measured_tps_override = None if measured_tps is None else float(measured_tps)
+        self.reference_tps_override = None if reference_tps is None else float(reference_tps)
+        self.timeout_scale_down = bool(timeout_scale_down)
+        self._measured_decode_tps: float | None = self.measured_tps_override
+        self._timeout_scaling_note: str | None = None
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
         self.thinking_override = thinking_enabled
@@ -408,6 +416,8 @@ class Runner:
                     f"non-canonical sampling overrides active ({override_desc}) — "
                     f"results are NOT comparable to the default temp=0 baseline"
                 )
+            if self._timeout_scaling_note:
+                warnings.append(self._timeout_scaling_note)
             if self.sampling_from_server:
                 if self._server_defaults:
                     sd_desc = ", ".join(f"{k}={v}" for k, v in self._server_defaults.items())
@@ -554,7 +564,7 @@ class Runner:
         if self.timeout_per_case is not None:
             return self.timeout_per_case
         value = meta.get("timeout_per_case_default") or meta.get("default_max_seconds") or DEFAULT_TIMEOUT_PER_CASE
-        return float(value)
+        return self._scale_timeout_budget(float(value), meta)
 
     def _timeout_budget_for_scenario(self, meta: dict, scenario: dict) -> float:
         if self.timeout_per_case is not None:
@@ -565,7 +575,67 @@ class Runner:
             or meta.get("default_max_seconds")
             or DEFAULT_TIMEOUT_PER_CASE
         )
-        return float(value)
+        return self._scale_timeout_budget(float(value), meta)
+
+    def _scale_timeout_budget(self, base_seconds: float, meta: dict) -> float:
+        reference = self.reference_tps_override or meta.get("timeout_reference_tps")
+        if not reference:
+            return base_seconds
+        try:
+            reference_tps = float(reference)
+        except (TypeError, ValueError):
+            return base_seconds
+        if reference_tps <= 0:
+            return base_seconds
+        measured_tps = self._timeout_measured_tps()
+        if measured_tps is None or measured_tps <= 0:
+            return base_seconds
+        scale = reference_tps / measured_tps
+        if not self.timeout_scale_down:
+            scale = max(1.0, scale)
+        budget = base_seconds * scale
+        self._timeout_scaling_note = (
+            f"timeout scaling active: measured_decode_tps={measured_tps:.1f}, "
+            f"reference_tps={reference_tps:.1f}, scale={scale:.2f}"
+        )
+        return budget
+
+    def _timeout_measured_tps(self) -> float | None:
+        if self._measured_decode_tps is not None:
+            return self._measured_decode_tps
+        try:
+            self._measured_decode_tps = self._probe_decode_tps()
+        except Exception as exc:  # noqa: BLE001
+            self._timeout_scaling_note = f"timeout TPS probe failed; using static pack budgets ({exc})"
+            return None
+        return self._measured_decode_tps
+
+    def _probe_decode_tps(self) -> float | None:
+        samples: list[float] = []
+        prompt = (
+            "Write a concise local-inference benchmark note of about 200 tokens. "
+            "Use plain prose and no lists."
+        )
+        for _ in range(3):
+            request = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "top_p": 1,
+                "max_tokens": 200,
+            }
+            started = time.perf_counter()
+            _status, response, _trace = self._post_chat(request, 120.0)
+            elapsed = max(time.perf_counter() - started, 1e-6)
+            tokens = self._completion_tokens(response)
+            if tokens is None:
+                text = content_with_source(response)[0]
+                tokens = max(1, len(text.split())) if text else None
+            if tokens:
+                samples.append(float(tokens) / elapsed)
+        if not samples:
+            return None
+        return statistics.mean(samples)
 
     def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
         meta, scenarios = load_pack(pack_id)

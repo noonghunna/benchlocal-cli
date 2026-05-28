@@ -89,6 +89,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--endpoint", required=True, help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
     run.add_argument("--model", required=True, help="model id served by the endpoint")
     run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
+    run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
+    run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")
+    run.add_argument("--timeout-scale-down", action="store_true", help="allow dynamic timeout scaling to shrink budgets for faster-than-reference models; off by default")
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
     run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
@@ -649,6 +652,9 @@ def main(argv: list[str] | None = None) -> int:
             endpoint=args.endpoint,
             model=args.model,
             timeout_per_case=args.timeout_per_case,
+            measured_tps=args.measured_tps,
+            reference_tps=args.reference_tps,
+            timeout_scale_down=args.timeout_scale_down,
             enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
             thinking_enabled=args.thinking_override,

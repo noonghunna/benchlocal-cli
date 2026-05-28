@@ -213,6 +213,82 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert fake.ended is False
 
 
+def test_runner_scales_timeout_budget_for_slow_measured_tps(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake", measured_tps=50)
+    meta = {"timeout_per_case_default": 300, "timeout_reference_tps": 100}
+
+    assert runner._timeout_budget_for_meta(meta) == 600
+
+
+def test_runner_keeps_timeout_budget_for_fast_measured_tps_by_default():
+    runner = Runner(endpoint="http://localhost:9999", model="fake", measured_tps=200)
+    meta = {"timeout_per_case_default": 300, "timeout_reference_tps": 100}
+
+    assert runner._timeout_budget_for_meta(meta) == 300
+
+
+def test_runner_can_scale_timeout_budget_down_for_fast_measured_tps():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=200,
+        timeout_scale_down=True,
+    )
+    meta = {"timeout_per_case_default": 300, "timeout_reference_tps": 100}
+
+    assert runner._timeout_budget_for_meta(meta) == 150
+
+
+def test_runner_measured_tps_override_skips_timeout_probe(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake", measured_tps=50)
+
+    def fail_probe():
+        raise AssertionError("probe should not run when --measured-tps is set")
+
+    monkeypatch.setattr(runner, "_probe_decode_tps", fail_probe)
+
+    assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300, "timeout_reference_tps": 100}) == 600
+
+
+def test_runner_probes_tps_once_and_reuses_for_timeout_scaling(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake")
+    calls = 0
+
+    def fake_probe():
+        nonlocal calls
+        calls += 1
+        return 50.0
+
+    monkeypatch.setattr(runner, "_probe_decode_tps", fake_probe)
+    meta = {"timeout_per_case_default": 300, "timeout_reference_tps": 100}
+
+    assert runner._timeout_budget_for_meta(meta) == 600
+    assert runner._timeout_budget_for_scenario(meta, {"id": "CLI-01"}) == 600
+    assert calls == 1
+
+
+def test_runner_pack_without_timeout_reference_uses_static_budget(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake")
+
+    def fail_probe():
+        raise AssertionError("probe should not run without timeout_reference_tps")
+
+    monkeypatch.setattr(runner, "_probe_decode_tps", fail_probe)
+
+    assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300}) == 300
+
+
+def test_runner_explicit_timeout_per_case_disables_dynamic_scaling(monkeypatch):
+    runner = Runner(endpoint="http://localhost:9999", model="fake", timeout_per_case=45)
+
+    def fail_probe():
+        raise AssertionError("probe should not run with explicit timeout_per_case")
+
+    monkeypatch.setattr(runner, "_probe_decode_tps", fail_probe)
+
+    assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300, "timeout_reference_tps": 100}) == 45
+
+
 def test_runner_uses_pack_timeout_default_when_cli_timeout_unset(monkeypatch):
     import benchlocal_cli.runner as runner_module
 
