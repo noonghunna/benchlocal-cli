@@ -36,7 +36,7 @@ def _is_markdown_separator(line: str, width: int) -> bool:
     cells = _normalize_markdown_row(line)
     if cells is None or len(cells) != width:
         return False
-    return all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells)
+    return all(re.fullmatch(r":?-+:?", cell.replace(" ", "")) for cell in cells)
 
 
 def _minimal_yaml_parse(text: str) -> dict:

@@ -225,5 +225,13 @@ def test_so10_markdown_header_allows_spacing_and_requires_separator():
     scenario = _pack_record("structoutput-15.jsonl", "SO-10")
     good = "| name  | score | grade |\n| --- | ---: | --- |\n| Alice | 95 | A |\n"
     assert struct_output.score_scenario(scenario, _response(good)).passed
+    aligned = "| name | score | grade |\n| :---: | --- | ---: |\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(aligned)).passed
     no_separator = "| name | score | grade |\n| Alice | 95 | A |\n"
     assert struct_output.score_scenario(scenario, _response(no_separator)).failure_mode == "wrong_structure"
+
+
+def test_so10_markdown_header_accepts_gfm_single_hyphen_separator():
+    scenario = _pack_record("structoutput-15.jsonl", "SO-10")
+    response = "| name | score | grade |\n|-|-|-|\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(response)).passed
