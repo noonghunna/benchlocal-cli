@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import statistics
+import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -351,6 +352,7 @@ class Runner:
         self.timeout_scale_down = bool(timeout_scale_down)
         self._measured_decode_tps: float | None = self.measured_tps_override
         self._timeout_scaling_note: str | None = None
+        self._timeout_scaling_note_emitted = False
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
         self.thinking_override = thinking_enabled
@@ -579,27 +581,92 @@ class Runner:
         return self._scale_timeout_budget(float(value), meta)
 
     def _scale_timeout_budget(self, base_seconds: float, meta: dict) -> float:
+        # The returned budget is a deliberately-generous CEILING, not an SLA.
+        # It composes two independent factors, both required for thinking-ON runs:
+        #
+        #   1. rig-speed scale  = reference_tps / measured_decode_tps
+        #        Probe measures EMPTY-context decode TPS, which over-estimates the
+        #        loaded rate (~3x on a filled KV cache). That over-estimate makes
+        #        the budget *more* generous, which is safe for a ceiling.
+        #   2. thinking multiplier = thinking_max_tokens / nominal_max_tokens
+        #        Thinking-ON raises the emission ceiling ~16x (1024 -> 16384), so a
+        #        scenario legitimately decodes far longer than the flat base budget.
+        #
+        # CRITICAL: the thinking multiplier must apply EVEN WHEN no reference_tps is
+        # set (deterministic/reasoning packs). A previous attempt gated it behind the
+        # reference check, making it dead code for exactly the packs that broke (#54).
+        # Do NOT "tighten" this budget back toward the empty-context probe estimate —
+        # at the loaded decode rate a 16384-token thinking response needs ~1490s, far
+        # above the naive probe-based estimate, so the generous margin is intentional.
+        note_parts: list[str] = []
+        budget = base_seconds
+
+        scale = self._reference_speed_scale(meta)
+        if scale is not None:
+            budget *= scale
+            note_parts.append(
+                f"timeout scaling active: measured_decode_tps={self._measured_decode_tps:.1f}"
+            )
+            reference = self.reference_tps_override or meta.get("timeout_reference_tps")
+            note_parts.append(f"reference_tps={float(reference):.1f}")
+            note_parts.append(f"scale={scale:.2f}")
+
+        multiplier = self._thinking_timeout_multiplier(meta)
+        if multiplier > 1.0:
+            budget *= multiplier
+            nominal_max = self._nominal_thinking_max_tokens(meta)
+            note_parts.append(
+                f"thinking-budget-multiplier={self.thinking_max_tokens}/{nominal_max}={multiplier:.2f}"
+            )
+
+        if note_parts:
+            if not note_parts[0].startswith("timeout scaling active"):
+                note_parts.insert(0, "timeout scaling active")
+            self._timeout_scaling_note = ", ".join(note_parts)
+            self._emit_timeout_scaling_note_once()
+        return budget
+
+    def _reference_speed_scale(self, meta: dict) -> float | None:
+        """rig-speed scale (reference_tps / measured_tps), or None when inapplicable."""
         reference = self.reference_tps_override or meta.get("timeout_reference_tps")
         if not reference:
-            return base_seconds
+            return None
         try:
             reference_tps = float(reference)
         except (TypeError, ValueError):
-            return base_seconds
+            return None
         if reference_tps <= 0:
-            return base_seconds
+            return None
         measured_tps = self._timeout_measured_tps()
         if measured_tps is None or measured_tps <= 0:
-            return base_seconds
+            return None
         scale = reference_tps / measured_tps
         if not self.timeout_scale_down:
             scale = max(1.0, scale)
-        budget = base_seconds * scale
-        self._timeout_scaling_note = (
-            f"timeout scaling active: measured_decode_tps={measured_tps:.1f}, "
-            f"reference_tps={reference_tps:.1f}, scale={scale:.2f}"
-        )
-        return budget
+        return scale
+
+    def _emit_timeout_scaling_note_once(self) -> None:
+        if self._timeout_scaling_note_emitted or not self._timeout_scaling_note:
+            return
+        print(f"[runner] {self._timeout_scaling_note}", file=sys.stderr, flush=True)
+        self._timeout_scaling_note_emitted = True
+
+    def _nominal_thinking_max_tokens(self, meta: dict) -> int:
+        sampling_defaults = meta.get("sampling_defaults") or {}
+        try:
+            return int(sampling_defaults.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            return 1024
+
+    def _thinking_timeout_multiplier(self, meta: dict) -> float:
+        if not resolve_thinking_enabled(meta, self.thinking_override):
+            return 1.0
+        if self.thinking_max_tokens is None:
+            return 1.0
+        nominal_max = self._nominal_thinking_max_tokens(meta)
+        if nominal_max <= 0 or self.thinking_max_tokens <= nominal_max:
+            return 1.0
+        return float(self.thinking_max_tokens) / float(nominal_max)
 
     def _timeout_measured_tps(self) -> float | None:
         if self._measured_decode_tps is not None:
@@ -624,6 +691,10 @@ class Runner:
                 "temperature": 0,
                 "top_p": 1,
                 "max_tokens": 200,
+                # Probe content-decode TPS deterministically: force thinking OFF so
+                # we never measure reasoning-decode rate on a server whose chat
+                # template defaults to reasoning when no toggle is sent (#54).
+                "chat_template_kwargs": {"enable_thinking": False},
             }
             started = time.perf_counter()
             _status, response, _trace = self._post_chat(request, 120.0)
