@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -121,6 +122,18 @@ SANDBOX_REGISTRY = {
 }
 
 
+_LOOPBACK_ENDPOINT_RE = re.compile(
+    r"^https?://(?:[^/@]+@)?(?:localhost(?::|/|$)|127\.|\[::1\](?::|/|$)|\[::\](?::|/|$))",
+    re.IGNORECASE,
+)
+
+
+def endpoint_is_loopback(endpoint: str) -> bool:
+    """Return True for HTTP(S) loopback endpoints that need host-gateway
+    routing when called from inside a Docker sandbox container."""
+    return bool(endpoint and _LOOPBACK_ENDPOINT_RE.search(endpoint))
+
+
 def resolve_endpoint_for_container(endpoint: str) -> str:
     """v0.9.0 helper (Codex 2nd-pass #2): rewrite host-side endpoint URLs to
     container-reachable form when a sandbox needs to call out to the runner's
@@ -137,7 +150,8 @@ def resolve_endpoint_for_container(endpoint: str) -> str:
     Linux note: `host.docker.internal` only resolves inside a container that
     was started with `--add-host=host.docker.internal:host-gateway`. The
     runner adds that flag to docker run for sandboxes that opt into this
-    rewrite (default-on for aider-polyglot, opt-in via env for hermes).
+    rewrite (default-on for aider-polyglot and loopback Hermes endpoints;
+    env-gated for non-loopback Hermes endpoints).
     """
     if not endpoint:
         return endpoint
@@ -149,12 +163,7 @@ def resolve_endpoint_for_container(endpoint: str) -> str:
             "endpoint host is 0.0.0.0 (bind-only, not a routable target). "
             "Pass a real host or use 127.0.0.1/localhost."
         )
-    is_loopback = (
-        host == "localhost"
-        or host == "::1"
-        or host.startswith("127.")
-    )
-    if not is_loopback:
+    if not endpoint_is_loopback(endpoint):
         return endpoint
     # Reassemble with the new host. preserve port + path + query + fragment.
     port_suffix = f":{parsed.port}" if parsed.port else ""
@@ -297,8 +306,9 @@ class SandboxClient:
             result = client.verify(...)
     """
 
-    def __init__(self, config: SandboxConfig) -> None:
+    def __init__(self, config: SandboxConfig, *, model_endpoint: str = "") -> None:
         self.config = config
+        self.model_endpoint = model_endpoint
         self._container_id: str | None = None
 
     def _build_docker_run_argv(self, name: str, run_dir: str | None) -> list[str]:
@@ -328,14 +338,14 @@ class SandboxClient:
             cmd.extend(["-v", f"{run_dir}:{self.config.run_output_dir}"])
             for key, value in self.config.run_mount_env:
                 cmd.extend(["-e", f"{key}={value}"])
-        # v0.9.0: aider-polyglot needs to call out to the runner's model
-        # endpoint from inside the container. On Linux, host.docker.internal
-        # only resolves with this --add-host flag (Codex 2nd-pass #2).
-        # Default-on for aider-polyglot; opt-in for hermes (preserves
-        # existing hermes deployments where service-name resolution
-        # already works).
+        # v0.9.0: agentic sandboxes may need to call back to the runner's
+        # host-side model endpoint. On Linux, host.docker.internal only
+        # resolves with this --add-host flag. Aider always uses the rewrite;
+        # Hermes auto-enables it for loopback endpoints and keeps the env gate
+        # for non-loopback hosts where service-name deployments are ambiguous.
         if (
             self.config.pack_id == "aider-polyglot-30"
+            or (self.config.pack_id == "hermesagent-20" and endpoint_is_loopback(self.model_endpoint))
             or os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1"
         ):
             cmd.extend(["--add-host", "host.docker.internal:host-gateway"])
