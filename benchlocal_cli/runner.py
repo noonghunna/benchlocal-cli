@@ -343,6 +343,7 @@ class Runner:
         thinking_sampler: dict | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
+        on_progress_event: Callable[[dict], None] | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.model = model
@@ -380,6 +381,16 @@ class Runner:
         # Callbacks for incremental progress (#23)
         self._on_pack_complete = on_pack_complete
         self._on_scenario_complete = on_scenario_complete
+        self._on_progress_event = on_progress_event
+        self.aider_progress_poll_s = self._aider_progress_poll_interval()
+
+    @staticmethod
+    def _aider_progress_poll_interval() -> float:
+        try:
+            value = float(os.environ.get("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "5"))
+        except (TypeError, ValueError):
+            return 5.0
+        return max(0.25, value)
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
         started_at = _utc_now()
@@ -1000,6 +1011,61 @@ class Runner:
 
         raise AssertionError("unreachable transient retry loop exit")
 
+
+    def _verify_aider_start_with_progress(
+        self,
+        sandbox_client: SandboxClient,
+        scenario: dict,
+        start_kwargs: dict,
+    ) -> dict:
+        import threading
+
+        done = threading.Event()
+        holder: dict = {}
+
+        def _target() -> None:
+            try:
+                holder["payload"] = sandbox_client.verify_multiturn_start(scenario, **start_kwargs)
+            except BaseException as exc:  # noqa: BLE001
+                holder["exc"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_target, daemon=True)
+        thread.start()
+        seen: set[str] = set()
+        while not done.wait(self.aider_progress_poll_s):
+            self._poll_aider_progress(sandbox_client, seen)
+        self._poll_aider_progress(sandbox_client, seen)
+        thread.join()
+        if "exc" in holder:
+            raise holder["exc"]
+        return holder.get("payload") or {}
+
+    def _poll_aider_progress(self, sandbox_client: SandboxClient, seen: set[str]) -> None:
+        if self._on_progress_event is None:
+            return
+        try:
+            payload = sandbox_client.verify_progress()
+        except Exception:  # noqa: BLE001
+            return
+        completed = payload.get("completed_exercises")
+        if not isinstance(completed, list):
+            return
+        total = int(payload.get("total_expected") or 0)
+        for item in completed:
+            if not isinstance(item, dict):
+                continue
+            exercise_id = str(item.get("id") or "")
+            if not exercise_id or exercise_id in seen:
+                continue
+            seen.add(exercise_id)
+            event = dict(item)
+            event.setdefault("pack_id", "aider-polyglot-30")
+            event["index"] = len(seen)
+            event["total"] = total
+            self._on_progress_event(event)
+
     @staticmethod
     def _inject_transient_trace(result: ScenarioResult, trace: dict | None) -> ScenarioResult:
         if not trace:
@@ -1092,7 +1158,10 @@ class Runner:
                     "model_api_key": "benchlocal-cli-aider-polyglot",  # non-empty placeholder
                     "sampling": dict(sampling),
                 }
-            start_payload = sandbox_client.verify_multiturn_start(scenario, **start_kwargs)
+            if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:
+                start_payload = self._verify_aider_start_with_progress(sandbox_client, scenario, start_kwargs)
+            else:
+                start_payload = sandbox_client.verify_multiturn_start(scenario, **start_kwargs)
             if start_payload.get("action") == "verify-final":
                 latency = time.perf_counter() - started
                 # Preserve upstream forensics in the early-out path too —

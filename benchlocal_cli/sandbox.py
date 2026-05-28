@@ -468,6 +468,11 @@ class SandboxClient:
         """Explicit 'model gave up' or turn-limit completion."""
         return self._post("/verify-end", {"scenario_state_id": scenario_state_id})
 
+    def verify_progress(self, scenario_state_id: str | None = None) -> dict:
+        """Fetch sandbox-specific live progress, if supported."""
+        payload = {} if scenario_state_id is None else {"scenario_state_id": scenario_state_id}
+        return self._post("/verify-progress", payload, timeout_s=5.0)
+
     # Back-compat aliases kept for existing Hermes tests/callers.
     def verify_hermes_start(self, scenario: dict) -> dict:
         return self.verify_multiturn_start(scenario)
