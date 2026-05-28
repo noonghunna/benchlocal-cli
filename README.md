@@ -77,6 +77,21 @@ The bolded "sandboxed" packs above (`BugFind-15`, `HermesAgent-20`, `CLI-40`, `A
 
 If a sandboxed pack scores 0/N with uniform short latencies, networking is the first thing to check. See [`docs/SANDBOX_PROTOCOL.md`](docs/SANDBOX_PROTOCOL.md) for per-pack protocol details and [`docs/PACK_FORMAT.md`](docs/PACK_FORMAT.md) for metadata schema.
 
+## Per-case timeouts
+
+Each scenario's timeout is sized by precedence (highest wins):
+
+1. **`--timeout-per-case N`** (env `TIMEOUT_PER_CASE`) — explicit override, used verbatim.
+2. **Auto-scaling (default)** — `timeout = base × max(1, reference_tps / measured_tps) × thinking_multiplier`:
+   - `base` = the pack's `default_max_seconds` metadata.
+   - `reference_tps` = the pack's `timeout_reference_tps` (the decode rate `base` assumes; override with `--reference-tps`).
+   - `measured_tps` = a one-shot startup decode-TPS probe of the endpoint (sent with `enable_thinking=false`; skip it by passing `--measured-tps N`). The probe runs a reachability preflight (`GET /v1/models`, 5s, no retry) and **fails fast** — it never hangs a run against a dead or blackholed endpoint.
+   - `thinking_multiplier` = `thinking_max_tokens / nominal_max_tokens`, applied only when thinking is enabled and the budget exceeds the nominal output. Prevents thinking-on runs from spuriously timing out (#54).
+   - `max(1, …)` means a faster rig never shrinks the budget below `base`. The result deliberately **over-budgets** — a timeout is a ceiling, not a target.
+3. **Static default** — the pack's `default_max_seconds`, when no `reference_tps` is set or the probe is unavailable.
+
+A **timeout is not retried** as transient (a timeout means the budget was genuinely hit); connection errors and HTTP 5xx still retry. `--retry-on-timeout` (default off) restores the old retry behavior.
+
 ## Repo layout
 
 ```
