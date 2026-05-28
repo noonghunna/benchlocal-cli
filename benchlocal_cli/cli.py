@@ -134,6 +134,16 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--retry-on-timeout",
+        action="store_true",
+        default=_env_bool("BENCHLOCAL_RETRY_ON_TIMEOUT", False),
+        help=(
+            "retry per-request timeouts as transient failures (default: off; a timeout "
+            "means the budget was genuinely exceeded, so retrying just burns another full "
+            "budget — env BENCHLOCAL_RETRY_ON_TIMEOUT)"
+        ),
+    )
+    run.add_argument(
         "--sandbox-log-dir",
         help=(
             "capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
@@ -458,6 +468,13 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _pack_ids_include_sandboxed(pack_ids: list[str]) -> bool:
     for pack_id in pack_ids:
         try:
@@ -668,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
                 sandboxed_enabled=sandboxed_enabled,
             ),
             max_transient_retries=args.max_transient_retries,
+            retry_on_timeout=args.retry_on_timeout,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
             thinking_sampler=_load_thinking_sampler(args.thinking_sampler),

@@ -338,6 +338,7 @@ class Runner:
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
+        retry_on_timeout: bool = False,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
         thinking_sampler: dict | None = None,
@@ -366,6 +367,11 @@ class Runner:
         # See SandboxClient.stop(log_dir=...) for the snapshot.
         self.sandbox_log_dir = sandbox_log_dir
         self.max_transient_retries = max(0, int(max_transient_retries))
+        # A timeout means the per-request budget was genuinely exceeded; retrying
+        # just burns another full budget for the same outcome (#58). Default to
+        # failing fast on the first timeout. Connection errors / HTTP 5xx are
+        # genuinely transient and keep retrying regardless of this flag.
+        self.retry_on_timeout = bool(retry_on_timeout)
         # CLI-level sampling overrides (--temperature, --top-p, etc.).
         # When set, the run is tagged as non-canonical in the output.
         self.sampling_overrides = sampling_overrides or {}
@@ -678,7 +684,37 @@ class Runner:
             return None
         return self._measured_decode_tps
 
+    def _endpoint_reachable(self, timeout: float = 5.0) -> bool:
+        """Cheap host-side reachability check before the TPS probe.
+
+        A blackholed endpoint (silently drops packets) would otherwise make the
+        probe's `_post_chat` calls block for their full read timeout. Probe a
+        lightweight `GET .../v1/models` (falling back to `.../models`) with a
+        short timeout and NO transient retry; if nothing answers, the caller
+        skips the decode probe and falls back to static pack budgets.
+        """
+        base = self.endpoint.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        for suffix in ("/v1/models", "/models"):
+            url = f"{base}{suffix}"
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.get(url)
+            except httpx.HTTPError:
+                continue
+            # Any HTTP response (even 4xx/5xx) means the host is reachable and
+            # answering; only transport-level failures count as unreachable.
+            if response.status_code < 500:
+                return True
+        return False
+
     def _probe_decode_tps(self) -> float | None:
+        if not self._endpoint_reachable():
+            self._timeout_scaling_note = (
+                "endpoint unreachable on preflight; skipping TPS probe, using static pack budgets"
+            )
+            return None
         samples: list[float] = []
         prompt = (
             "Write a concise local-inference benchmark note of about 200 tokens. "
@@ -697,7 +733,12 @@ class Runner:
                 "chat_template_kwargs": {"enable_thinking": False},
             }
             started = time.perf_counter()
-            _status, response, _trace = self._post_chat(request, 120.0)
+            # The probe must never be the thing that hangs a run: bounded read
+            # budget and NO transient retry (max_attempts=1). Combined with the
+            # preflight above and the #58 no-retry-on-timeout fix, a dead or
+            # blackholed endpoint costs at most one short timeout per sample
+            # instead of 3 x (retry loop x 120s).
+            _status, response, _trace = self._post_chat(request, 30.0, max_attempts=1)
             elapsed = max(time.perf_counter() - started, 1e-6)
             tokens = self._completion_tokens(response)
             if tokens is None:
@@ -962,9 +1003,16 @@ class Runner:
             return 20
         return 15
 
-    def _post_chat(self, request: dict, timeout: float) -> tuple[int, dict, dict | None]:
+    def _post_chat(
+        self, request: dict, timeout: float, *, max_attempts: int | None = None
+    ) -> tuple[int, dict, dict | None]:
         transient_errors: list[str] = []
-        max_attempts = self.max_transient_retries + 1
+        # `max_attempts` lets callers (e.g. the startup TPS probe) opt out of the
+        # transient-retry loop so they can never hang a run on a dead endpoint.
+        if max_attempts is None:
+            max_attempts = self.max_transient_retries + 1
+        else:
+            max_attempts = max(1, int(max_attempts))
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -972,7 +1020,10 @@ class Runner:
                     response = client.post(_chat_url(self.endpoint), json=request)
             except httpx.TimeoutException as exc:
                 transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
-                if attempt >= max_attempts:
+                # A timeout means the budget was genuinely exceeded — retrying just
+                # burns another full budget for the same outcome (#58). Fail fast
+                # unless explicitly configured to retry timeouts.
+                if attempt >= max_attempts or not self.retry_on_timeout:
                     trace = _transient_trace(transient_errors, attempt) or {}
                     raise _TransientPostFailure("timeout", f"timed out after {timeout}s", trace) from exc
                 self._sleep_before_transient_retry(attempt)
