@@ -30,6 +30,30 @@ def test_reasoning_pack_metadata_defaults_to_thinking_on():
             assert len(scenarios) == 30
 
 
+def test_all_packs_carry_timeout_reference_tps():
+    # Guard for #54: every deterministic + reasoning pack must carry
+    # timeout_reference_tps so per-case timeout budgets scale by measured rig TPS.
+    # The agentic packs already had it; these are the ones that regressed.
+    # Catches the build-packs.js generator (or a manual edit) dropping the field.
+    deterministic = (
+        "toolcall-15",
+        "instructfollow-15",
+        "structoutput-15",
+        "dataextract-15",
+        "reasonmath-15",
+    )
+    reasoning = (
+        "humaneval-plus-30",
+        "lcb-v6-30",
+        "gsm-symbolic-30",
+        "gpqa-diamond",
+        "bugfind-15",
+    )
+    for pack_id in deterministic + reasoning:
+        meta, _ = load_pack(pack_id)
+        assert meta.get("timeout_reference_tps") == 100, pack_id
+
+
 def test_answer_match_numeric_prefers_final_answer_line():
     scenario = {"id": "GSM", "verifier": {"asserts": [{"kind": "exact_numeric", "value": "20"}]}}
     assert answer_match.score_scenario(scenario, _response("Rough work mentions 20, but final says ANSWER: 21")).failure_mode == "wrong_answer"
