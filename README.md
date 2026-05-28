@@ -67,6 +67,16 @@ Use the canonical temp-0 default for regression tracking and cross-model ranking
 | **GSM-Symbolic-30** | Deterministic — `answer_match` exact numeric final-answer scoring | ✅ reasoning subset |
 | **GPQA-Diamond** | Deterministic — `answer_match` exact letter final-answer scoring | ⚠ gated metadata-only; no restricted data committed |
 
+## Sandboxed packs — networking
+
+The bolded "sandboxed" packs above (`BugFind-15`, `HermesAgent-20`, `CLI-40`, `AiderPolyglot-30`, `HumanEval+-30`, `LiveCodeBench-v6-30`) run their verifier inside a Docker container that calls back out to **your** model endpoint. The networking gotcha: `localhost` inside the container is the *container's own* loopback, not the host. The CLI handles this automatically in most cases:
+
+- **Loopback endpoints (`localhost`, `127.x`, `[::1]`, `[::]`)** — auto-resolved to `host.docker.internal` and `--add-host=host.docker.internal:host-gateway` is injected into the sandbox container. **No env var needed.** Works out of the box for `--endpoint http://localhost:PORT`.
+- **Non-loopback endpoints (LAN IPs, k8s service names, docker-compose service DNS)** — passed through verbatim. Assumes you've set up networking so the sandbox container can resolve and reach the host. The container's own DNS is used.
+- **Force the host-gateway rewrite for non-loopback** — if you have a custom hostname that actually needs the rewrite (e.g., the name resolves on the host but not inside containers), set `BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1`. This forces the same rewrite + `--add-host` for hermes-style packs regardless of host type. Aider always uses the rewrite; this flag controls the hermes/cli-class behavior for non-loopback hosts.
+
+If a sandboxed pack scores 0/N with uniform short latencies, networking is the first thing to check. See [`docs/SANDBOX_PROTOCOL.md`](docs/SANDBOX_PROTOCOL.md) for per-pack protocol details and [`docs/PACK_FORMAT.md`](docs/PACK_FORMAT.md) for metadata schema.
+
 ## Repo layout
 
 ```
