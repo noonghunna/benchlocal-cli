@@ -25,6 +25,20 @@ def _jsonpath(data: Any, path: str) -> Any:
     return get_path(data, path[2:])
 
 
+def _normalize_markdown_row(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return [cell.strip().lower() for cell in stripped.strip("|").split("|")]
+
+
+def _is_markdown_separator(line: str, width: int) -> bool:
+    cells = _normalize_markdown_row(line)
+    if cells is None or len(cells) != width:
+        return False
+    return all(re.fullmatch(r":?-+:?", cell.replace(" ", "")) for cell in cells)
+
+
 def _minimal_yaml_parse(text: str) -> dict:
     data: dict[str, Any] = {}
     for line in strip_code_fence(text).splitlines():
@@ -111,13 +125,20 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
             if [column.strip() for column in columns] != assertion["expected"]:
                 return result(scenario, False, "wrong_structure", "CSV columns mismatch")
         elif kind == "markdown_structure":
-            lines = [line.strip() for line in text.splitlines()]
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            normalized_lines = [_normalize_markdown_row(line) for line in lines]
             positions = []
             for header in assertion["headers"]:
+                expected = _normalize_markdown_row(header)
+                if expected is None:
+                    return result(scenario, False, "wrong_structure", f"invalid markdown header spec {header!r}")
                 try:
-                    positions.append(lines.index(header))
+                    idx = normalized_lines.index(expected)
                 except ValueError:
                     return result(scenario, False, "wrong_structure", f"missing markdown header {header}")
+                if idx + 1 >= len(lines) or not _is_markdown_separator(lines[idx + 1], len(expected)):
+                    return result(scenario, False, "wrong_structure", "missing markdown separator")
+                positions.append(idx)
             if positions != sorted(positions):
                 return result(scenario, False, "wrong_structure", "markdown headers out of order")
         elif kind == "format_regex":

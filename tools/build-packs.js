@@ -306,7 +306,11 @@ function ifAsserts(spec) {
     "IF-03": [{ kind: "required_phrase", value: "Coffee" }, { kind: "max_length_words", value: 59 }, { kind: "format_regex", pattern: "\\?$" }],
     "IF-04": [{ kind: "bullet_count", value: 6 }, { kind: "forbidden_phrase", value: "banana" }],
     "IF-10": [{ kind: "exact_length_words", value: 50 }, { kind: "format_regex", pattern: "^Humanity\\b[\\s\\S]*\\bstars\\.?$" }],
-    "IF-12": [{ kind: "required_phrase", value: "IMPOSSIBLE -" }, { kind: "required_phrase", value: "30" }, { kind: "required_phrase", value: "25" }],
+    "IF-12": [
+      { kind: "required_phrase", value: "IMPOSSIBLE -" },
+      { kind: "required_phrase_any", values: ["30", "thirty"] },
+      { kind: "required_phrase_any", values: ["25", "twenty-five", "twenty five"] },
+    ],
     "IF-14": [{ kind: "case_only", value: "uppercase" }, { kind: "required_phrase", value: "RAIN" }],
     "IF-15": [{ kind: "format_regex", pattern: "^[A-Za-z]+,\\s*[A-Za-z]+,\\s*[A-Za-z]+,\\s*[A-Za-z]+$" }],
   };
@@ -324,15 +328,60 @@ function rmAsserts(spec) {
   }];
 }
 
+const SO07_SCHEMA = {
+  type: "object",
+  required: ["user", "metadata"],
+  properties: {
+    user: {
+      type: "object",
+      required: ["id", "username", "email", "roles", "address", "phone_numbers"],
+      properties: {
+        id: { const: 42 },
+        username: { const: "j_doe" },
+        email: { type: "null" },
+        roles: { type: "array", prefixItems: [{ const: "editor" }, { const: "viewer" }], minItems: 2, maxItems: 2 },
+        address: {
+          type: "object",
+          required: ["street", "city", "state", "zip"],
+          properties: {
+            street: { const: "123 Main St" },
+            city: { const: "Springfield" },
+            state: { const: "IL" },
+            zip: { const: "62704" },
+          },
+        },
+        phone_numbers: {
+          type: "array",
+          prefixItems: [
+            { type: "object", required: ["type", "number", "primary"], properties: { type: { const: "mobile" }, number: { const: "+1-555-0123" }, primary: { const: true } } },
+            { type: "object", required: ["type", "number", "primary"], properties: { type: { const: "work" }, number: { type: "null" }, primary: { const: false } } },
+          ],
+          minItems: 2,
+          maxItems: 2,
+        },
+      },
+    },
+    metadata: {
+      type: "object",
+      required: ["last_login", "login_count"],
+      properties: {
+        last_login: { const: "2026-03-15T10:30:00Z" },
+        login_count: { const: 847 },
+      },
+    },
+  },
+};
+
 function structAsserts(spec) {
   if (spec.id === "SO-01") {
     return [{ kind: "json_parse_required" }, { kind: "jsonpath_assertion", path: "$.title", value: "The Great Gatsby" }, { kind: "jsonpath_assertion", path: "$.year", value: 1925 }];
   }
-  if (["SO-02", "SO-08", "SO-14"].includes(spec.id)) {
+  if (["SO-02", "SO-14"].includes(spec.id)) {
     return [{ kind: "csv_columns", expected: spec.id === "SO-02" ? ["name", "age", "city", "email"] : ["id", "description", "formula", "notes"] }];
   }
+  if (spec.id === "SO-08") return [{ kind: "csv_columns", expected: ["company", "description", "revenue", "ceo"] }];
   if (spec.id === "SO-03") return [{ kind: "yaml_parse_required" }];
-  if (spec.id === "SO-07") return [{ kind: "json_parse_required" }, { kind: "jsonpath_assertion", path: "$.user.id", value: 42 }];
+  if (spec.id === "SO-07") return [{ kind: "json_parse_required" }, { kind: "json_schema", schema: SO07_SCHEMA }];
   if (spec.id === "SO-10") return [{ kind: "markdown_structure", headers: ["| name | score | grade |"] }];
   if (spec.id === "SO-13") return [{ kind: "json_parse_required" }, { kind: "jsonpath_assertion", path: "$.zero", value: 0 }];
   return [{ kind: "format_regex", pattern: ".+" }];

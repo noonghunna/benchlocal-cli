@@ -172,3 +172,66 @@ def test_data_extract_expected_scoring_uses_full_upstream_shape():
     failed = data_extract.score_scenario(scenario, bad)
     assert failed.failure_mode == "verifier_fail"
     assert failed.verifier_trace["upstream_style_score"] < 85
+
+
+
+def test_if12_accepts_spelled_out_numbers_but_requires_impossible_contract():
+    scenario = _pack_record("instructfollow-15.jsonl", "IF-12")
+    good = (
+        "IMPOSSIBLE - Three sentences of exactly ten words each would total thirty words, "
+        "which directly contradicts the requirement for a total of exactly twenty-five words."
+    )
+    assert instruct_follow.score_scenario(scenario, _response(good)).passed
+    assert instruct_follow.score_scenario(scenario, _response("IMPOSSIBLE - The counts conflict.")).failure_mode == "verifier_fail"
+    assert instruct_follow.score_scenario(scenario, _response("30 words conflicts with 25 words.")).failure_mode == "verifier_fail"
+
+
+def test_so07_validates_nested_json_contract_and_required_nulls():
+    scenario = _pack_record("structoutput-15.jsonl", "SO-07")
+    good = {
+        "user": {
+            "id": 42,
+            "username": "j_doe",
+            "email": None,
+            "roles": ["editor", "viewer"],
+            "address": {"street": "123 Main St", "city": "Springfield", "state": "IL", "zip": "62704"},
+            "phone_numbers": [
+                {"type": "mobile", "number": "+1-555-0123", "primary": True},
+                {"type": "work", "number": None, "primary": False},
+            ],
+        },
+        "metadata": {"last_login": "2026-03-15T10:30:00Z", "login_count": 847},
+    }
+    assert struct_output.score_scenario(scenario, _response(json.dumps(good))).passed
+
+    missing_null = dict(good)
+    missing_null["user"] = dict(good["user"])
+    missing_null["user"]["email"] = "null"
+    assert struct_output.score_scenario(scenario, _response(json.dumps(missing_null))).failure_mode == "schema_violation"
+
+    under_checked_old_false_positive = {"user": {"id": 42}}
+    assert struct_output.score_scenario(scenario, _response(json.dumps(under_checked_old_false_positive))).failure_mode == "schema_violation"
+
+
+def test_so08_expects_requested_csv_columns():
+    scenario = _pack_record("structoutput-15.jsonl", "SO-08")
+    good = 'company,description,revenue,ceo\n"Acme, Inc.","Makes everything, from anvils to rockets",$1.2B,"Jane ""JJ"" Smith"\n'
+    assert struct_output.score_scenario(scenario, _response(good)).passed
+    bad = 'id,description,formula,notes\n1,x,y,z\n'
+    assert struct_output.score_scenario(scenario, _response(bad)).failure_mode == "wrong_structure"
+
+
+def test_so10_markdown_header_allows_spacing_and_requires_separator():
+    scenario = _pack_record("structoutput-15.jsonl", "SO-10")
+    good = "| name  | score | grade |\n| --- | ---: | --- |\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(good)).passed
+    aligned = "| name | score | grade |\n| :---: | --- | ---: |\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(aligned)).passed
+    no_separator = "| name | score | grade |\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(no_separator)).failure_mode == "wrong_structure"
+
+
+def test_so10_markdown_header_accepts_gfm_single_hyphen_separator():
+    scenario = _pack_record("structoutput-15.jsonl", "SO-10")
+    response = "| name | score | grade |\n|-|-|-|\n| Alice | 95 | A |\n"
+    assert struct_output.score_scenario(scenario, _response(response)).passed

@@ -224,3 +224,95 @@ def test_pack_result_records_effective_thinking_mode(monkeypatch):
     )
     pack_forced = forced.run_pack("instructfollow-15")
     assert pack_forced.thinking_enabled is False
+
+
+
+def test_thinking_on_uses_recommended_sampler_over_greedy_defaults():
+    request, sampling = build_request(
+        _scenario({"temperature": 0, "top_p": 1}),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["temperature"] == 1.0
+    assert request["top_p"] == 0.95
+    assert request["top_k"] == 20
+    assert request["min_p"] == 0.0
+    assert request["max_tokens"] == 4096
+    assert sampling["temperature"] == 1.0
+
+
+def test_thinking_off_preserves_greedy_defaults():
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="off"),
+        "fake",
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["temperature"] == 0
+    assert "top_k" not in request
+    assert "min_p" not in request
+
+
+def test_sampling_from_server_strips_recommended_thinking_sampler():
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        sampling_from_server=True,
+        thinking_max_tokens=4096,
+    )
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["max_tokens"] == 4096
+    assert "temperature" not in request
+    assert "top_p" not in request
+    assert "top_k" not in request
+    assert "min_p" not in request
+
+
+def test_cli_sampling_override_wins_over_recommended_thinking_sampler():
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        sampling_overrides={"temperature": 0.7, "top_p": 0.8, "top_k": 40, "min_p": 0.05},
+        thinking_max_tokens=4096,
+    )
+
+    assert request["temperature"] == 0.7
+    assert request["top_p"] == 0.8
+    assert request["top_k"] == 40
+    assert request["min_p"] == 0.05
+    assert request["max_tokens"] == 4096
+
+
+def test_custom_thinking_sampler_is_configurable():
+    request, _ = build_request(
+        _scenario(),
+        _meta(default_thinking="on"),
+        "fake",
+        thinking_sampler={"temperature": 0.6, "top_p": 0.9},
+        thinking_max_tokens=4096,
+    )
+
+    assert request["temperature"] == 0.6
+    assert request["top_p"] == 0.9
+    assert "top_k" not in request
+
+
+def test_reference_date_metadata_is_injected_into_messages():
+    scenario = _scenario()
+    scenario.update({"benchmark_reference_date": "2026-03-20", "benchmark_reference_day": "Friday"})
+    scenario["messages"] = [
+        {"role": "system", "content": "Use available tools."},
+        {"role": "user", "content": "Schedule this for next Monday."},
+    ]
+
+    request, _ = build_request(scenario, _meta(), "fake")
+
+    assert "Benchmark reference date: 2026-03-20 (Friday)." in request["messages"][0]["content"]
+    assert scenario["messages"][0]["content"] == "Use available tools."
