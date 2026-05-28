@@ -149,6 +149,50 @@ REQUIRED_BENCHMARK_FLAGS = (
 
 
 _BENCHMARK_CLI_SIGNATURE_CACHE: dict | None = None
+_AIDER_GIT_CONTRACT_CACHE: dict | None = None
+
+
+def _detect_aider_git_contract() -> dict:
+    """Validate the baked Aider checkout is the git repo benchmark.py expects.
+
+    Upstream benchmark.py reads files such as `HEAD:aider/__init__.py` from the
+    current git repository. Running from the staged exercise workspace creates a
+    synthetic commit that lacks those paths, producing errors like:
+    `fatal: path 'aider/__init__.py' does not exist in '<sha>'`.
+    """
+    global _AIDER_GIT_CONTRACT_CACHE
+    if _AIDER_GIT_CONTRACT_CACHE is not None:
+        return _AIDER_GIT_CONTRACT_CACHE
+    if not AIDER_DIR.is_dir():
+        _AIDER_GIT_CONTRACT_CACHE = {"ok": False, "reason": f"aider dir not found at {AIDER_DIR}"}
+        return _AIDER_GIT_CONTRACT_CACHE
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(AIDER_DIR), "rev-parse", "--verify", "HEAD"],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        if head.returncode != 0:
+            _AIDER_GIT_CONTRACT_CACHE = {
+                "ok": False,
+                "reason": f"aider git HEAD unavailable: {(head.stderr or '')[-300:]}",
+            }
+            return _AIDER_GIT_CONTRACT_CACHE
+        path_check = subprocess.run(
+            ["git", "-C", str(AIDER_DIR), "cat-file", "-e", "HEAD:aider/__init__.py"],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        if path_check.returncode != 0:
+            _AIDER_GIT_CONTRACT_CACHE = {
+                "ok": False,
+                "reason": "aider git HEAD lacks aider/__init__.py",
+                "head": (head.stdout or "").strip(),
+            }
+            return _AIDER_GIT_CONTRACT_CACHE
+        _AIDER_GIT_CONTRACT_CACHE = {"ok": True, "head": (head.stdout or "").strip()}
+        return _AIDER_GIT_CONTRACT_CACHE
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        _AIDER_GIT_CONTRACT_CACHE = {"ok": False, "reason": f"aider git contract check failed: {exc}"}
+        return _AIDER_GIT_CONTRACT_CACHE
 
 
 def _detect_benchmark_cli_signature() -> dict:
@@ -444,6 +488,16 @@ def _verify_start(req: dict) -> dict:
         return _mock_pass_response(scenario_id)
 
     # Validate setup
+    git_contract = _detect_aider_git_contract()
+    if not git_contract.get("ok"):
+        return {
+            "action": "verify-final",
+            "passed": False,
+            "failure_mode": "server_error",
+            "detail": f"aider git checkout contract broken: {git_contract.get('reason')}",
+            "trace": {"schema_version": SCHEMA_VERSION, "aider_git_contract": git_contract},
+        }
+
     cli_sig = _detect_benchmark_cli_signature()
     if not cli_sig.get("ok"):
         return {
@@ -569,7 +623,10 @@ def _verify_start(req: dict) -> dict:
         started = time.monotonic()
         proc = subprocess.Popen(
             argv,
-            cwd=str(job_dir),
+            # Run from the real Aider checkout so upstream benchmark.py sees
+            # a git HEAD containing aider/__init__.py. The staged exercises and
+            # results still live under AIDER_BENCHMARK_DIR below.
+            cwd=str(AIDER_DIR),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -713,8 +770,9 @@ def _verify_start(req: dict) -> dict:
 
 def _resolve_health() -> dict:
     cli_sig = _detect_benchmark_cli_signature()
+    git_contract = _detect_aider_git_contract()
     ex_status = _exercise_count_status()
-    overall = "ok" if (cli_sig.get("ok") and ex_status["exact_match"]) else "setup-error"
+    overall = "ok" if (cli_sig.get("ok") and git_contract.get("ok") and ex_status["exact_match"]) else "setup-error"
     return {
         "status": overall,
         "pack": "aider-polyglot-30",
@@ -727,6 +785,7 @@ def _resolve_health() -> dict:
         "polyglot_pinned_commit": POLYGLOT_PINNED_COMMIT,
         "exercises": ex_status,
         "benchmark_cli_signature": cli_sig,
+        "aider_git_contract": git_contract,
         "subprocess_timeout_s": SUBPROCESS_TIMEOUT_S,
         "default_edit_format": DEFAULT_EDIT_FORMAT,
         "default_pass_threshold": DEFAULT_PASS_THRESHOLD,
