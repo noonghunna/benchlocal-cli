@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from benchlocal_cli.runner import Runner
 from benchlocal_cli.types import ScenarioResult
 
@@ -538,6 +540,114 @@ class FakeHermesEarlyOutSandbox:
         self.end_called = True
         return {"action": "verify-final", "passed": False, "failure_mode": "timeout", "detail": "", "trace": {}}
 
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://localhost:9999",
+        "http://127.0.0.1:9999/v1",
+        "http://127.1.2.3:9999",
+        "http://[::1]:9999/v1/chat/completions",
+        "http://[::]:9999",
+    ],
+)
+def test_endpoint_is_loopback_covers_local_variants(endpoint):
+    from benchlocal_cli.sandbox import endpoint_is_loopback
+
+    assert endpoint_is_loopback(endpoint) is True
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://example.com:9999",
+        "http://host.docker.internal:9999",
+        "http://10.0.0.5:9999",
+        "https://model.internal/v1",
+    ],
+)
+def test_endpoint_is_loopback_rejects_non_loopback(endpoint):
+    from benchlocal_cli.sandbox import endpoint_is_loopback
+
+    assert endpoint_is_loopback(endpoint) is False
+
+
+def test_hermes_docker_argv_adds_host_gateway_for_loopback_without_env(monkeypatch):
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    monkeypatch.delenv("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST", raising=False)
+    client = SandboxClient(config_for_pack("hermesagent-20"), model_endpoint="http://localhost:9999/v1")
+    argv = client._build_docker_run_argv("test-name", None)
+
+    assert "--add-host" in argv
+    assert "host.docker.internal:host-gateway" in argv
+
+
+def test_hermes_docker_argv_keeps_non_loopback_env_gated(monkeypatch):
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    monkeypatch.delenv("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST", raising=False)
+    client = SandboxClient(config_for_pack("hermesagent-20"), model_endpoint="http://host.docker.internal:9999/v1")
+    argv = client._build_docker_run_argv("test-name", None)
+
+    assert "--add-host" not in argv
+    assert "host.docker.internal:host-gateway" not in argv
+
+
+def test_runner_rewrites_hermes_loopback_endpoint_without_env(monkeypatch):
+    monkeypatch.delenv("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST", raising=False)
+    runner = Runner(
+        endpoint="http://localhost:9999/v1/chat/completions",
+        model="qwen3.6-27b-autoround",
+        enable_sandboxed_packs=True,
+    )
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["hermesagent-20"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenario = {
+        "id": "HA-01",
+        "pack_id": "hermesagent-20",
+        "messages": [{"role": "user", "content": "remember CockroachDB"}],
+        "raw_scenario": {"kind": "memory_replace_contradiction"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert fake.start_kwargs["model_endpoint"] == "http://host.docker.internal:9999/v1/chat/completions"
+
+
+def test_runner_preserves_hermes_non_loopback_endpoint_without_env(monkeypatch):
+    monkeypatch.delenv("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST", raising=False)
+    runner = Runner(
+        endpoint="http://host.docker.internal:9999/v1",
+        model="qwen3.6-27b-autoround",
+        enable_sandboxed_packs=True,
+    )
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["hermesagent-20"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenario = {
+        "id": "HA-01",
+        "pack_id": "hermesagent-20",
+        "messages": [{"role": "user", "content": "remember CockroachDB"}],
+        "raw_scenario": {"kind": "memory_replace_contradiction"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert fake.start_kwargs["model_endpoint"] == "http://host.docker.internal:9999/v1"
 
 def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint():
     runner = Runner(

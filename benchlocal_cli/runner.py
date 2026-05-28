@@ -516,7 +516,8 @@ class Runner:
                         pack_id,
                         self.sandbox_image_tag,
                         batch_timeout_s=self._timeout_budget_for_meta(meta),
-                    )
+                    ),
+                    model_endpoint=self.endpoint,
                 )
                 # #6: when --sandbox-log-dir is set, give the sandbox a writable
                 # host run-dir so per-unit artifacts persist live (survive --rm/
@@ -993,16 +994,16 @@ class Runner:
                 # Sampling is included so upstream's request_overrides
                 # (temperature, top_p, max_tokens, etc.) match runner defaults.
                 #
-                # Endpoint resolution: opt-in via BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1.
-                # When set, rewrites localhost/127.x/[::1] → host.docker.internal so
-                # the hermes-agent inside the sandbox container can reach the runner's
-                # host-side vLLM. Pairs with the --add-host flag already added by
-                # sandbox.py:290-294. Default-off preserves existing hermes deployments
-                # where service-name resolution (k8s, docker-compose internal) already
-                # works without rewrite.
+                # Endpoint resolution: loopback endpoints can never be Docker
+                # or k8s service names, so rewrite them unconditionally. Keep
+                # BENCHLOCAL_HERMES_RESOLVE_LOCALHOST as the opt-in for
+                # non-loopback hosts where deployment topology is ambiguous.
+                from benchlocal_cli.sandbox import endpoint_is_loopback, resolve_endpoint_for_container
                 hermes_endpoint = self.endpoint
-                if os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1":
-                    from benchlocal_cli.sandbox import resolve_endpoint_for_container
+                if (
+                    endpoint_is_loopback(self.endpoint)
+                    or os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1"
+                ):
                     hermes_endpoint = resolve_endpoint_for_container(self.endpoint)
                 start_kwargs = {
                     "model_endpoint": hermes_endpoint,
