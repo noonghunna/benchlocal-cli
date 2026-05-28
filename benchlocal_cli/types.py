@@ -16,6 +16,7 @@ FailureMode = Literal[
     "schema_violation",
     "wrong_structure",
     "timeout",
+    "agent_loop_exhausted",
     "http_error",
     "server_error",
     "verifier_not_implemented",

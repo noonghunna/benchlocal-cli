@@ -276,6 +276,154 @@ def test_runner_explicit_timeout_per_case_wins_over_pack_default(monkeypatch):
     assert FakeHTTPClient.timeouts == [45, 45]
 
 
+class FakeAlwaysToolHTTPClient:
+    timeouts: list[float] = []
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+        self.timeouts.append(timeout)
+
+    def __enter__(self) -> "FakeAlwaysToolHTTPClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+        return FakeHTTPResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-loop",
+                                    "type": "function",
+                                    "function": {"name": "bash", "arguments": "{\"command\":\"pwd\"}"},
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"completion_tokens": 1},
+            }
+        )
+
+
+class FakeTimeoutHTTPClient:
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def __enter__(self) -> "FakeTimeoutHTTPClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+        import benchlocal_cli.runner as runner_module
+
+        raise runner_module.httpx.TimeoutException("read timed out")
+
+
+class FakeCliLoopExhaustedSandbox:
+    config = FakeMultiTurnConfig()
+
+    def __init__(self) -> None:
+        self.ended = False
+
+    def verify_multiturn_start(self, scenario: dict) -> dict:
+        return {
+            "scenario_state_id": "state-loop",
+            "prompt": scenario["messages"],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "bash", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
+        }
+
+    def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
+        assert scenario_state_id == "state-loop"
+        return {
+            "action": "next-prompt",
+            "prompt": [{"role": "tool", "tool_call_id": "call-loop", "name": "bash", "content": "{}"}],
+            "tools": [],
+        }
+
+    def verify_multiturn_end(self, scenario_state_id: str) -> dict:
+        assert scenario_state_id == "state-loop"
+        self.ended = True
+        return {
+            "action": "verify-final",
+            "passed": False,
+            "failure_mode": "agent_loop_exhausted",
+            "detail": "CLI-21: agent loop ended before success",
+            "trace": {"turn_count": 1},
+        }
+
+
+def test_cli_multiturn_agent_loop_exhausted_is_not_timeout(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    FakeAlwaysToolHTTPClient.timeouts = []
+    monkeypatch.setattr(runner_module.httpx, "Client", FakeAlwaysToolHTTPClient)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
+    fake = FakeCliLoopExhaustedSandbox()
+    runner._sandbox_clients["cli-40"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "timeout_per_case_default": 300,
+        "sampling_defaults": {"max_tokens": 16},
+    }
+    scenario = {
+        "id": "CLI-21",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "use the shell"}],
+        "raw_scenario": {"kind": "multiround", "max_turns": 1},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is False
+    assert run.result.failure_mode == "agent_loop_exhausted"
+    assert "agent loop ended before success" in run.result.detail
+    assert FakeAlwaysToolHTTPClient.timeouts == [300]
+    assert fake.ended is True
+
+
+def test_cli_multiturn_wall_clock_timeout_remains_timeout(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    monkeypatch.setattr(runner_module.httpx, "Client", FakeTimeoutHTTPClient)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
+    fake = FakeCliLoopExhaustedSandbox()
+    runner._sandbox_clients["cli-40"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "timeout_per_case_default": 300,
+        "sampling_defaults": {"max_tokens": 16},
+    }
+    scenario = {
+        "id": "CLI-21",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "use the shell"}],
+        "raw_scenario": {"kind": "multiround", "max_turns": 1},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is False
+    assert run.result.failure_mode == "timeout"
+    assert "timed out after 300" in run.result.detail
+    assert fake.ended is True
+
+
 class FakeHermesEarlyOutSandbox:
     """Hermes v0.7.3 sandbox: /verify-start returns verify-final directly,
     no /verify-turn loop. Captures the start kwargs so we can assert the

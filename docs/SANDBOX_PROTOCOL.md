@@ -121,7 +121,8 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 | `verifier_fail` | Real test failure (e.g., pytest red, command output mismatch, trace mismatch) |
 | `wrong_answer` | Model emitted unexpected response shape (e.g., text instead of tool call) |
 | `invalid_json` | Tool call arguments didn't parse, or fix wasn't valid Python, etc |
-| `timeout` | Hit per-scenario time limit (10s for CLI commands; 20-turn limit for HermesAgent) |
+| `timeout` | Hit a real wall-clock/subprocess/command time limit. |
+| `agent_loop_exhausted` | Multi-turn agent loop ended without a successful solution before any wall-clock timeout fired. |
 | `agent_runner_timeout` | (Hermes v0.7.3) upstream subprocess exceeded wall-clock cap (default 900s) |
 | `agent_runner_crashed` | (Hermes v0.7.3) upstream exited nonzero or didn't write `result.json` |
 | `result_json_malformed` | (Hermes v0.7.3) upstream's `result.json` couldn't be parsed |
