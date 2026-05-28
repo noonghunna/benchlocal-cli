@@ -167,11 +167,38 @@ def test_single_turn_exhausted_remote_protocol_error_fails_with_trace(monkeypatc
     assert len(run.result.verifier_trace["transient_errors"]) == 2
 
 
-def test_single_turn_retries_timeout_then_passes(monkeypatch):
+def test_single_turn_does_not_retry_timeout_by_default(monkeypatch):
+    # #58: a timeout means the budget was genuinely exceeded; retrying just burns
+    # another full budget for the same outcome. Fail fast after the FIRST timeout.
     import benchlocal_cli.runner as runner_module
 
     _install_sequence_client(monkeypatch, runner_module, [httpx.ReadTimeout("slow read"), (200, _ok_payload())])
-    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True, max_transient_retries=1)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True, max_transient_retries=3)
+    runner._sandbox_clients["bugfind-15"] = FakeSandbox()
+
+    run = runner.run_scenario(_sandbox_meta(), _single_scenario())
+
+    assert run.result.passed is False
+    assert run.result.failure_mode == "timeout"
+    # Exactly one attempt — the (200, ...) follow-up event is never consumed.
+    assert SequenceHTTPClient.calls == 1
+    assert run.result.verifier_trace is not None
+    assert run.result.verifier_trace["transient_retries"] == 0
+    assert "ReadTimeout" in run.result.verifier_trace["transient_errors"][0]
+
+
+def test_single_turn_retries_timeout_when_opted_in(monkeypatch):
+    # Opt-in regression guard: --retry-on-timeout restores the old behavior.
+    import benchlocal_cli.runner as runner_module
+
+    _install_sequence_client(monkeypatch, runner_module, [httpx.ReadTimeout("slow read"), (200, _ok_payload())])
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        max_transient_retries=1,
+        retry_on_timeout=True,
+    )
     runner._sandbox_clients["bugfind-15"] = FakeSandbox()
 
     run = runner.run_scenario(_sandbox_meta(), _single_scenario())
@@ -231,3 +258,116 @@ def test_multiturn_retries_transient_post_and_preserves_trace(monkeypatch):
     assert run.result.verifier_trace["trace"] == {"turn_count": 1}
     assert run.result.verifier_trace["transient_retries"] == 1
     assert "RemoteProtocolError" in run.result.verifier_trace["transient_errors"][0]
+
+
+class ProbeHTTPClient:
+    """Counts GET (preflight) and POST (decode probe) calls for probe tests."""
+
+    get_calls = 0
+    post_calls = 0
+    get_behavior: object = None  # exception to raise, or status code to return
+    post_payload: dict | None = None
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def __enter__(self) -> ProbeHTTPClient:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def get(self, url: str) -> FakeHTTPResponse:
+        cls = type(self)
+        cls.get_calls += 1
+        behavior = cls.get_behavior
+        if isinstance(behavior, BaseException):
+            raise behavior
+        return FakeHTTPResponse({}, status_code=int(behavior or 200))
+
+    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+        cls = type(self)
+        cls.post_calls += 1
+        return FakeHTTPResponse(cls.post_payload or {}, status_code=200)
+
+
+def _install_probe_client(monkeypatch, *, get_behavior, post_payload=None) -> None:
+    import benchlocal_cli.runner as runner_module
+
+    ProbeHTTPClient.get_calls = 0
+    ProbeHTTPClient.post_calls = 0
+    ProbeHTTPClient.get_behavior = get_behavior
+    ProbeHTTPClient.post_payload = post_payload
+    monkeypatch.setattr(runner_module.httpx, "Client", ProbeHTTPClient)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda delay: None)
+
+
+def test_probe_fails_fast_when_endpoint_unreachable(monkeypatch):
+    # A blackholed/unreachable endpoint must NOT trigger 3 samples x retry-loop of
+    # _post_chat. The preflight catches it and the probe returns None immediately.
+    _install_probe_client(monkeypatch, get_behavior=httpx.ConnectError("blackholed"))
+    runner = Runner(endpoint="http://localhost:9999", model="fake", max_transient_retries=3)
+
+    measured = runner._probe_decode_tps()
+
+    assert measured is None
+    # Preflight tried /v1/models and /models, then bailed — no probe POSTs at all.
+    assert ProbeHTTPClient.get_calls == 2
+    assert ProbeHTTPClient.post_calls == 0
+
+
+def test_probe_measures_tps_when_endpoint_reachable(monkeypatch):
+    # Regression guard: a reachable endpoint still measures TPS normally.
+    _install_probe_client(
+        monkeypatch,
+        get_behavior=200,
+        post_payload={
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"completion_tokens": 200},
+        },
+    )
+    runner = Runner(endpoint="http://localhost:9999/v1", model="fake", max_transient_retries=3)
+
+    measured = runner._probe_decode_tps()
+
+    assert measured is not None
+    assert measured > 0
+    # Preflight answered on the first probe (/v1/models), then 3 decode samples.
+    assert ProbeHTTPClient.get_calls == 1
+    assert ProbeHTTPClient.post_calls == 3
+
+
+def test_probe_post_does_not_retry_on_dead_endpoint(monkeypatch):
+    # Even if the preflight is somehow satisfied but the chat POST then stalls,
+    # the probe's _post_chat(max_attempts=1) must not loop through retries.
+    import benchlocal_cli.runner as runner_module
+
+    state = {"get_calls": 0, "post_calls": 0}
+
+    class StallAfterPreflightClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def get(self, url: str) -> FakeHTTPResponse:
+            state["get_calls"] += 1
+            return FakeHTTPResponse({}, status_code=200)
+
+        def post(self, url: str, json: dict):
+            state["post_calls"] += 1
+            raise httpx.ReadTimeout("stalled")
+
+    monkeypatch.setattr(runner_module.httpx, "Client", StallAfterPreflightClient)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda delay: None)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", max_transient_retries=3)
+
+    measured = runner._timeout_measured_tps()
+
+    assert measured is None
+    # Exactly one POST attempt despite max_transient_retries=3 (max_attempts=1).
+    assert state["post_calls"] == 1

@@ -298,10 +298,11 @@ def test_probe_sends_enable_thinking_false(monkeypatch):
     runner = Runner(endpoint="http://localhost:9999", model="fake")
     requests = []
 
-    def fake_post_chat(request, timeout):
+    def fake_post_chat(request, timeout, *, max_attempts=None):
         requests.append(request)
         return 200, {"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": 100}}, None
 
+    monkeypatch.setattr(runner, "_endpoint_reachable", lambda *a, **k: True)
     monkeypatch.setattr(runner, "_post_chat", fake_post_chat)
     monkeypatch.setattr(
         "benchlocal_cli.runner.time.perf_counter",
