@@ -113,6 +113,81 @@ def _hermes_agent_source() -> str:
     return "unknown"
 
 
+
+_MODEL_ENDPOINT_REACHABLE_CACHE: dict | None = None
+
+
+def _model_models_url(endpoint: str) -> str:
+    base = (endpoint or "").rstrip("/")
+    for suffix in ("/v1/chat/completions", "/chat/completions"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    base = base.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return f"{base}/models"
+
+
+def _endpoint_failure_reason(endpoint: str, exc: Exception) -> str:
+    text = str(exc)
+    host_hint = "host does not resolve from inside sandbox; try a loopback URL or BENCHLOCAL_HERMES_RESOLVE_LOCALHOST=1 for non-loopback hostnames"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"no response within 5s from {endpoint}; check firewall / port"
+    if isinstance(exc, httpx.ConnectError):
+        lowered = text.lower()
+        if "name" in lowered or "resolve" in lowered or "temporary failure" in lowered:
+            return f"{host_hint}: {text}"
+        return f"model server not running at {endpoint}; check the model is up: {text}"
+    return f"could not reach {endpoint}: {text}"
+
+
+def _detect_model_endpoint_reachable(endpoint: str) -> dict:
+    """Cached sanity check that the sandbox can reach the model endpoint."""
+    global _MODEL_ENDPOINT_REACHABLE_CACHE
+    if _MODEL_ENDPOINT_REACHABLE_CACHE is not None:
+        return _MODEL_ENDPOINT_REACHABLE_CACHE
+    if not endpoint:
+        _MODEL_ENDPOINT_REACHABLE_CACHE = {"ok": False, "reason": "no model endpoint provided to sandbox"}
+        return _MODEL_ENDPOINT_REACHABLE_CACHE
+    probe_url = _model_models_url(endpoint)
+    try:
+        with httpx.Client(timeout=5.0, follow_redirects=True, max_redirects=1) as client:
+            resp = client.get(probe_url)
+        if resp.status_code != 200:
+            _MODEL_ENDPOINT_REACHABLE_CACHE = {
+                "ok": False,
+                "endpoint": endpoint,
+                "probe_url": probe_url,
+                "status_code": resp.status_code,
+                "reason": (
+                    f"endpoint returned HTTP {resp.status_code}; check the path; "
+                    f"{probe_url} should return 200 on an OpenAI-compatible server"
+                ),
+            }
+            return _MODEL_ENDPOINT_REACHABLE_CACHE
+        _MODEL_ENDPOINT_REACHABLE_CACHE = {"ok": True, "endpoint": endpoint, "probe_url": probe_url}
+        return _MODEL_ENDPOINT_REACHABLE_CACHE
+    except (httpx.HTTPError, ValueError) as exc:
+        _MODEL_ENDPOINT_REACHABLE_CACHE = {
+            "ok": False,
+            "endpoint": endpoint,
+            "probe_url": probe_url,
+            "reason": _endpoint_failure_reason(endpoint, exc),
+        }
+        return _MODEL_ENDPOINT_REACHABLE_CACHE
+
+
+def _endpoint_preflight_response(scenario_id: str, reach: dict) -> dict:
+    return {
+        "action": "verify-final",
+        "passed": False,
+        "failure_mode": "server_error",
+        "detail": f"{scenario_id}: model endpoint unreachable from sandbox: {reach.get('reason')}",
+        "trace": {"schema_version": SCHEMA_VERSION, "model_endpoint_reachable": reach},
+    }
+
+
 def _upstream_node_ready() -> bool:
     """Best-effort probe of upstream's /health (Codex review #8 split-brain
     prevention). Returns True if upstream Node responds with `{ok: true}`.
@@ -132,10 +207,13 @@ def _resolve_health() -> dict:
     """
     install_ok = HERMES_AGENT_PATH.is_dir() and (HERMES_AGENT_PATH / "run_agent.py").is_file()
     upstream_ok = _upstream_node_ready() if install_ok else False
+    endpoint_reach = _MODEL_ENDPOINT_REACHABLE_CACHE
     if not install_ok:
         status = "missing-hermes-agent"
     elif not upstream_ok:
         status = "upstream-node-unreachable"
+    elif endpoint_reach is not None and not endpoint_reach.get("ok"):
+        status = "setup-error"
     else:
         status = "ok"
     return {
@@ -150,6 +228,7 @@ def _resolve_health() -> dict:
         "hermes_agent_source": _hermes_agent_source(),
         "hermes_agent_commit": _commit_from_path(HERMES_AGENT_PATH),
         "subprocess_timeout_s": SUBPROCESS_TIMEOUT_S,
+        "model_endpoint_reachable": endpoint_reach or {"ok": None, "reason": "not checked yet"},
     }
 
 
@@ -427,6 +506,10 @@ def _verify_start_via_upstream(req: dict) -> dict:
     # Upstream Node grader healthy? (split-brain check #2 — Codex review #8)
     if not _upstream_node_ready():
         return _upstream_unreachable_response(scenario_id, "/health probe failed")
+
+    reach = _detect_model_endpoint_reachable(str(req.get("model_endpoint") or ""))
+    if not reach.get("ok"):
+        return _endpoint_preflight_response(scenario_id, reach)
 
     upstream_request = _translate_request(req)
     started = time.monotonic()

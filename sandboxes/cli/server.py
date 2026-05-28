@@ -19,10 +19,12 @@ import subprocess
 import sys
 import tempfile
 import uuid
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 PORT = 9000
+SCHEMA_VERSION = "2"
 MAX_OUTPUT = 64 * 1024
 WORKSPACE = Path("/workspace")
 STATES: dict[str, dict] = {}
@@ -55,6 +57,7 @@ FORBIDDEN = {
     "ncat",
     "telnet",
 }
+
 
 
 def _response_text(response: dict) -> str:
@@ -549,13 +552,24 @@ def _verify_with_upstream_runtime(scenario_id: str, scenario: dict, answer: str)
     return _payload_to_result(scenario_id, payload, proc.stderr)
 
 
+
+
+def _resolve_health() -> dict:
+    return {
+        "status": "ok",
+        "pack": "cli-40",
+        "stage": "v0.7.1",
+        "multi_turn": True,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         sys.stderr.write(f"[cli-sandbox] {fmt % args}\n")
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send({"status": "ok", "pack": "cli-40", "stage": "v0.7.1", "multi_turn": True})
+            self._send(_resolve_health())
             return
         self.send_response(404)
         self.end_headers()
@@ -578,7 +592,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = _verify(scenario_id, req.get("scenario", {}), req.get("response", {}))
             elif self.path == "/verify-start":
                 scenario = req.get("scenario", {})
-                result = _multiturn_start(req.get("scenario_id") or scenario.get("id", "?"), scenario)
+                result = _multiturn_start(
+                    req.get("scenario_id") or scenario.get("id", "?"),
+                    scenario,
+                )
             elif self.path == "/verify-turn":
                 result = _multiturn_turn(str(req.get("scenario_state_id", "")), req.get("model_response", {}))
             else:
