@@ -123,6 +123,178 @@ def test_build_benchmark_args_num_tests_optional():
 
 
 # ============================================================================
+# Aider checkout contract — benchmark.py must see the real Aider git repo
+# ============================================================================
+
+
+def test_detect_aider_git_contract_ok(tmp_path, monkeypatch):
+    server = _server()
+    aider_dir = tmp_path / "aider"
+    aider_dir.mkdir()
+    monkeypatch.setattr(server, "AIDER_DIR", aider_dir)
+    monkeypatch.setattr(server, "_AIDER_GIT_CONTRACT_CACHE", None)
+
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+
+        class Result:
+            returncode = 0
+            stdout = "abc123\n" if "rev-parse" in argv else ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    out = server._detect_aider_git_contract()
+
+    assert out == {"ok": True, "head": "abc123"}
+    assert calls[0][-3:] == ["rev-parse", "--verify", "HEAD"]
+    assert calls[1][-3:] == ["cat-file", "-e", "HEAD:aider/__init__.py"]
+
+
+def test_detect_aider_git_contract_fails_when_head_lacks_aider_package(tmp_path, monkeypatch):
+    server = _server()
+    aider_dir = tmp_path / "aider"
+    aider_dir.mkdir()
+    monkeypatch.setattr(server, "AIDER_DIR", aider_dir)
+    monkeypatch.setattr(server, "_AIDER_GIT_CONTRACT_CACHE", None)
+
+    def fake_run(argv, **_kwargs):
+        class Result:
+            stdout = ""
+            stderr = ""
+
+        result = Result()
+        if "rev-parse" in argv:
+            result.returncode = 0
+            result.stdout = "f46766c\n"
+        else:
+            result.returncode = 1
+            result.stderr = "fatal: path 'aider/__init__.py' does not exist"
+        return result
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    out = server._detect_aider_git_contract()
+
+    assert out["ok"] is False
+    assert out["head"] == "f46766c"
+    assert out["reason"] == "aider git HEAD lacks aider/__init__.py"
+
+
+def test_resolve_health_surfaces_broken_aider_git_contract(monkeypatch):
+    server = _server()
+    monkeypatch.setattr(server, "_detect_benchmark_cli_signature", lambda: {"ok": True})
+    monkeypatch.setattr(
+        server,
+        "_detect_aider_git_contract",
+        lambda: {"ok": False, "reason": "aider git HEAD lacks aider/__init__.py"},
+    )
+    monkeypatch.setattr(
+        server,
+        "_exercise_count_status",
+        lambda: {"canonical_count": 30, "resolved_count": 30, "missing": [], "exact_match": True},
+    )
+
+    out = server._resolve_health()
+
+    assert out["status"] == "setup-error"
+    assert out["aider_git_contract"]["ok"] is False
+    assert "aider/__init__.py" in out["aider_git_contract"]["reason"]
+
+
+def test_verify_start_fails_fast_on_broken_aider_git_contract(monkeypatch):
+    server = _server()
+    monkeypatch.setattr(
+        server,
+        "_detect_aider_git_contract",
+        lambda: {"ok": False, "reason": "aider git HEAD lacks aider/__init__.py"},
+    )
+
+    out = server._verify_start(
+        {
+            "scenario_id": "aider-polyglot-30-batch",
+            "scenario": {"messages": []},
+            "model_endpoint": "http://host.docker.internal:8010/v1",
+            "model_name": "qwen",
+        }
+    )
+
+    assert out["passed"] is False
+    assert out["failure_mode"] == "server_error"
+    assert "aider git checkout contract broken" in out["detail"]
+    assert out["trace"]["aider_git_contract"]["ok"] is False
+
+
+def test_verify_start_runs_benchmark_from_aider_checkout(tmp_path, monkeypatch):
+    server = _server()
+    aider_dir = tmp_path / "aider"
+    aider_dir.mkdir()
+    monkeypatch.setattr(server, "AIDER_DIR", aider_dir)
+    monkeypatch.setattr(server, "_detect_aider_git_contract", lambda: {"ok": True, "head": "abc123"})
+    monkeypatch.setattr(server, "_detect_benchmark_cli_signature", lambda: {"ok": True})
+    monkeypatch.setattr(
+        server,
+        "_exercise_count_status",
+        lambda: {"canonical_count": 30, "resolved_count": 30, "missing": [], "exact_match": True},
+    )
+    monkeypatch.setattr(server, "_stage_exercises_workspace", lambda _job_dir: None)
+    monkeypatch.setattr(server, "_build_benchmark_args", lambda **_kwargs: ["python3", "benchmark.py", "run"])
+    monkeypatch.setattr(server, "_walk_per_exercise_results", lambda _run_dir: {"python/foo": {}})
+    monkeypatch.setattr(
+        server,
+        "_grade_aider_batch_result",
+        lambda _per, threshold=0.5, score_completed_only=False: {
+            "passed": True,
+            "failure_mode": "passed",
+            "pass_rate": 1.0,
+            "passed_count": 30,
+            "total_count": 30,
+            "found_count": 30,
+            "missing_results": [],
+            "extra_results": [],
+            "per_exercise": {},
+        },
+    )
+
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        pid = 12345
+
+        def communicate(self, timeout=None):
+            captured["timeout"] = timeout
+            return "stdout", "stderr"
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    out = server._verify_start(
+        {
+            "scenario_id": "aider-polyglot-30-batch",
+            "scenario": {"messages": []},
+            "model_endpoint": "http://host.docker.internal:8010/v1/chat/completions",
+            "model_name": "local-model",
+        }
+    )
+
+    assert out["passed"] is True
+    assert captured["cwd"] == str(aider_dir)
+    assert captured["env"]["AIDER_BENCHMARK_DIR"].startswith("/tmp/aider-polyglot-runs/")
+    assert captured["env"]["AIDER_BENCHMARK_DIR"].endswith("/tmp.benchmarks")
+    assert captured["env"]["OPENAI_BASE_URL"] == "http://host.docker.internal:8010/v1"
+    assert captured["env"]["OPENAI_API_BASE"] == "http://host.docker.internal:8010/v1"
+
+
+# ============================================================================
 # _qualify_aider_model — litellm provider routing
 # ============================================================================
 
