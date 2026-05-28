@@ -15,8 +15,8 @@ const PACKS = {
   "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on" },
   "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false, thinking: "off" },
   "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true, thinking: "on" },
-  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 }, timeoutPerCaseDefault: 300 },
-  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off", timeoutPerCaseDefault: 300 },
+  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 }, timeoutPerCaseDefault: 300, timeoutReferenceTps: 100 },
+  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off", timeoutPerCaseDefault: 300, timeoutReferenceTps: 100 },
 };
 
 function readText(...parts) {
@@ -71,6 +71,9 @@ function packMeta(packName, scenarioCount) {
   }
   if (config.timeoutPerCaseDefault) {
     meta.timeout_per_case_default = config.timeoutPerCaseDefault;
+  }
+  if (config.timeoutReferenceTps) {
+    meta.timeout_reference_tps = config.timeoutReferenceTps;
   }
   return meta;
 }

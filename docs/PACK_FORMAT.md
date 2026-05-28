@@ -49,6 +49,7 @@ Field reference:
 | `default_thinking` | no | `"on"` or `"off"` | Pack-level reasoning default. Missing means `"off"`. Runner default honors this; `--enable-thinking` / `--no-thinking` force all packs on/off. |
 | `default_max_seconds` | yes | int | Default per-scenario timeout from the upstream pack metadata |
 | `timeout_per_case_default` | no | int | Runner wall-clock timeout default for packs that need a larger local-model budget; overridden by `--timeout-per-case` |
+| `timeout_reference_tps` | no | number | Decode TPS used to calibrate `timeout_per_case_default`. When present and `--timeout-per-case` is not set, runner computes `effective_budget = base * max(1.0, timeout_reference_tps / measured_tps)`; `--timeout-scale-down` allows the scale to drop below 1.0 for faster models. |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
 | `suite` | no | string | Logical suite label used by mode selectors; e.g. `reasoning` groups packs for `--reasoning`. |
@@ -56,6 +57,10 @@ Field reference:
 | `dataset_access_note` | no | string | Human-readable skip/warning text surfaced when `requires_dataset_access` prevents materializing a pack. |
 | `ported_at` | yes | ISO date | When we ported this pack |
 | `porter` | yes | string | Who did the porting |
+
+## Dynamic timeout scaling
+
+Agentic packs may include both `timeout_per_case_default` and `timeout_reference_tps`. The runner measures decode TPS once per `benchlocal-cli run` when a referenced pack needs scaling, unless `--measured-tps N` is provided. Slow models get proportionally larger wall-clock budgets; faster models keep the calibrated budget unless `--timeout-scale-down` is set. `--reference-tps N` overrides pack metadata for experiments. Explicit `--timeout-per-case` disables dynamic scaling and remains the exact per-scenario budget.
 
 ## Scenario line
 
