@@ -538,6 +538,9 @@ def config_for_pack(
     host_mounts: tuple[tuple[str, str], ...] = config.host_mounts
     env: tuple[tuple[str, str], ...] = config.env
     request_timeout_s = config.request_timeout_s
+    if pack_id != "aider-polyglot-30" and batch_timeout_s and batch_timeout_s > request_timeout_s:
+        request_timeout_s = float(batch_timeout_s)
+
     if pack_id == "aider-polyglot-30":
         # v0.9.0: parallelize aider's batch across N threads. Default 1 is
         # conservative for llama.cpp/ik_llama single-slot (-np 1) servers;

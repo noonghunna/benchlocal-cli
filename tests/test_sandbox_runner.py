@@ -143,9 +143,11 @@ class FakeHTTPResponse:
 
 class FakeHTTPClient:
     calls = 0
+    timeouts: list[float] = []
 
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
+        self.timeouts.append(timeout)
 
     def __enter__(self) -> FakeHTTPClient:
         return self
@@ -183,6 +185,7 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     import benchlocal_cli.runner as runner_module
 
     FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
     monkeypatch.setattr(runner_module.httpx, "Client", FakeHTTPClient)
     runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
     fake = FakeMultiTurnSandbox()
@@ -208,6 +211,69 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert run.result.tokens_completion == 8
     assert len(run.tool_calls) == 1
     assert fake.ended is False
+
+
+def test_runner_uses_pack_timeout_default_when_cli_timeout_unset(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
+    monkeypatch.setattr(runner_module.httpx, "Client", FakeHTTPClient)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
+    fake = FakeMultiTurnSandbox()
+    runner._sandbox_clients["cli-40"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "timeout_per_case_default": 300,
+        "sampling_defaults": {"max_tokens": 16},
+    }
+    scenario = {
+        "id": "CLI-36",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "use jq"}],
+        "raw_scenario": {"kind": "multiround"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert FakeHTTPClient.timeouts == [300, 300]
+
+
+def test_runner_explicit_timeout_per_case_wins_over_pack_default(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
+    monkeypatch.setattr(runner_module.httpx, "Client", FakeHTTPClient)
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        timeout_per_case=45,
+    )
+    fake = FakeMultiTurnSandbox()
+    runner._sandbox_clients["cli-40"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "timeout_per_case_default": 300,
+        "sampling_defaults": {"max_tokens": 16},
+    }
+    scenario = {
+        "id": "CLI-36",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "use jq"}],
+        "raw_scenario": {"kind": "multiround"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert FakeHTTPClient.timeouts == [45, 45]
 
 
 class FakeHermesEarlyOutSandbox:
@@ -559,6 +625,14 @@ def test_config_for_pack_aider_default_batch_timeout():
     assert env["AIDER_BENCHMARK_TIMEOUT_S"] == "3600"
     assert config.request_timeout_s == 3900.0
 
+
+
+def test_config_for_pack_cli_raises_request_timeout_from_pack_budget():
+    from benchlocal_cli import sandbox as sandbox_module
+
+    config = sandbox_module.config_for_pack("cli-40", batch_timeout_s=300)
+
+    assert config.request_timeout_s == 300.0
 
 def test_config_for_pack_aider_threads_env_override(monkeypatch):
     from benchlocal_cli import sandbox as sandbox_module

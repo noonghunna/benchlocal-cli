@@ -60,6 +60,7 @@ SANDBOX_MODES = {"full", "reasoning"}
 # Just the sandboxed packs — used by `--sandboxed-only` for debug iteration
 # on the verifier containers without paying the deterministic-pack cost.
 SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40", "humaneval-plus-30", "lcb-v6-30"]
+DEFAULT_TIMEOUT_PER_CASE = 60.0
 
 
 def pack_default_thinking(meta: dict) -> bool:
@@ -324,7 +325,7 @@ class Runner:
         *,
         endpoint: str,
         model: str,
-        timeout_per_case: float = 60.0,
+        timeout_per_case: float | None = None,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
         thinking_enabled: bool | None = None,
@@ -341,7 +342,7 @@ class Runner:
     ) -> None:
         self.endpoint = endpoint
         self.model = model
-        self.timeout_per_case = timeout_per_case
+        self.timeout_per_case = None if timeout_per_case is None else float(timeout_per_case)
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
         self.thinking_override = thinking_enabled
@@ -504,7 +505,7 @@ class Runner:
                     config_for_pack(
                         pack_id,
                         self.sandbox_image_tag,
-                        batch_timeout_s=self.timeout_per_case,
+                        batch_timeout_s=self._timeout_budget_for_meta(meta),
                     )
                 )
                 # #6: when --sandbox-log-dir is set, give the sandbox a writable
@@ -548,6 +549,23 @@ class Runner:
         for client in list(self._sandbox_clients.values()):
             client.stop(log_dir=log_dir)
         self._sandbox_clients.clear()
+
+    def _timeout_budget_for_meta(self, meta: dict) -> float:
+        if self.timeout_per_case is not None:
+            return self.timeout_per_case
+        value = meta.get("timeout_per_case_default") or meta.get("default_max_seconds") or DEFAULT_TIMEOUT_PER_CASE
+        return float(value)
+
+    def _timeout_budget_for_scenario(self, meta: dict, scenario: dict) -> float:
+        if self.timeout_per_case is not None:
+            return self.timeout_per_case
+        value = (
+            scenario.get("max_seconds_override")
+            or meta.get("timeout_per_case_default")
+            or meta.get("default_max_seconds")
+            or DEFAULT_TIMEOUT_PER_CASE
+        )
+        return float(value)
 
     def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
         meta, scenarios = load_pack(pack_id)
@@ -692,8 +710,7 @@ class Runner:
             sampling_from_server=self.sampling_from_server,
             thinking_sampler=self.thinking_sampler,
         )
-        scenario_timeout = scenario.get("max_seconds_override") or meta.get("default_max_seconds") or self.timeout_per_case
-        timeout = min(float(scenario_timeout), float(self.timeout_per_case))
+        timeout = self._timeout_budget_for_scenario(meta, scenario)
         started = time.perf_counter()
         status_code: int | None = None
         raw_response: dict | None = None
