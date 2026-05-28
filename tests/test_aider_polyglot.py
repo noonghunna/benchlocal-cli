@@ -343,6 +343,40 @@ def test_aider_progress_endpoint_returns_final_state_after_subprocess_exits(monk
     assert out["completed_count"] == 1
     assert out["completed_exercises"] == final
 
+def test_aider_progress_state_clears_active_when_verify_start_raises(monkeypatch):
+    server = _server()
+    monkeypatch.setattr(server, "_detect_aider_git_contract", lambda: {"ok": True, "head": "abc123"})
+    monkeypatch.setattr(server, "_detect_benchmark_cli_signature", lambda: {"ok": True})
+    monkeypatch.setattr(
+        server,
+        "_exercise_count_status",
+        lambda: {"canonical_count": 30, "resolved_count": 30, "missing": [], "exact_match": True},
+    )
+    monkeypatch.setattr(server, "_stage_exercises_workspace", lambda _job_dir: None)
+    monkeypatch.setattr(server, "_build_benchmark_args", lambda **_kwargs: ["python3", "benchmark.py", "run"])
+    monkeypatch.setattr(
+        server,
+        "_BATCH_PROGRESS_STATE",
+        {"active": False, "completed_exercises": [], "total_expected": 30},
+    )
+
+    def fail_popen(*_args, **_kwargs):
+        raise RuntimeError("boom after progress activation")
+
+    monkeypatch.setattr(server.subprocess, "Popen", fail_popen)
+
+    with pytest.raises(RuntimeError, match="boom after progress activation"):
+        server._verify_start(
+            {
+                "scenario_id": "aider-polyglot-30-batch",
+                "scenario": {"messages": []},
+                "model_endpoint": "http://host.docker.internal:8010/v1",
+                "model_name": "local-model",
+            }
+        )
+
+    assert server._BATCH_PROGRESS_STATE["active"] is False
+
 
 # ============================================================================
 # _qualify_aider_model — litellm provider routing

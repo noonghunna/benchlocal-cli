@@ -446,6 +446,19 @@ def test_runner_polls_progress_for_aider_during_verify_start():
     assert events[1]["index"] == 2
     assert all(event["total"] == 30 for event in events)
 
+def test_runner_clamps_aider_progress_poll_interval(monkeypatch):
+    monkeypatch.setenv("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "0")
+    assert Runner(endpoint="http://localhost:9999", model="fake").aider_progress_poll_s == 0.25
+
+    monkeypatch.setenv("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "-10")
+    assert Runner(endpoint="http://localhost:9999", model="fake").aider_progress_poll_s == 0.25
+
+    monkeypatch.setenv("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "garbage")
+    assert Runner(endpoint="http://localhost:9999", model="fake").aider_progress_poll_s == 5.0
+
+    monkeypatch.setenv("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "1.5")
+    assert Runner(endpoint="http://localhost:9999", model="fake").aider_progress_poll_s == 1.5
+
 
 def test_runner_uses_pack_timeout_default_when_cli_timeout_unset(monkeypatch):
     import benchlocal_cli.runner as runner_module

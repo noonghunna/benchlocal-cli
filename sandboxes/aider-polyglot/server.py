@@ -585,6 +585,8 @@ def _verify_start(req: dict) -> dict:
     job_id = str(uuid.uuid4())
     job_dir = Path("/tmp") / "aider-polyglot-runs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    progress_active = False
+    progress_finalized = False
     try:
         _stage_exercises_workspace(job_dir)
 
@@ -678,6 +680,7 @@ def _verify_start(req: dict) -> dict:
             total_expected=CANONICAL_TOTAL,
             started_at=time.time(),
         )
+        progress_active = True
 
         # Spawn with process-group isolation (same hardening as v0.7.3 hermes)
         started = time.monotonic()
@@ -715,6 +718,7 @@ def _verify_start(req: dict) -> dict:
         per_exercise = _walk_per_exercise_results(run_dir)
         final_progress = _progress_items_from_run_dir(run_dir)
         _set_progress_state(active=False, run_dir=str(run_dir), completed_exercises=final_progress)
+        progress_finalized = True
 
         if timed_out:
             # Recover partial per-exercise data. Aider's benchmark.py writes
@@ -817,6 +821,8 @@ def _verify_start(req: dict) -> dict:
             },
         }
     finally:
+        if progress_active and not progress_finalized:
+            _set_progress_state(active=False)
         # Best-effort job dir cleanup. Hard-linked exercises so cheap to remove.
         # Set BENCHLOCAL_AIDER_KEEP_JOBDIRS=1 to retain for forensic inspection.
         if os.environ.get("BENCHLOCAL_AIDER_KEEP_JOBDIRS") != "1":

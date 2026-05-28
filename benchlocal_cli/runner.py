@@ -382,7 +382,15 @@ class Runner:
         self._on_pack_complete = on_pack_complete
         self._on_scenario_complete = on_scenario_complete
         self._on_progress_event = on_progress_event
-        self.aider_progress_poll_s = float(os.environ.get("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "5"))
+        self.aider_progress_poll_s = self._aider_progress_poll_interval()
+
+    @staticmethod
+    def _aider_progress_poll_interval() -> float:
+        try:
+            value = float(os.environ.get("BENCHLOCAL_AIDER_PROGRESS_POLL_S", "5"))
+        except (TypeError, ValueError):
+            return 5.0
+        return max(0.25, value)
 
     def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
         started_at = _utc_now()
