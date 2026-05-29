@@ -218,14 +218,28 @@ DataExtract-15 (v1.0.0)   |   12 / 15    |  80%  |     7.3s    |     10.5s   | �
 TOTAL                     |   54 / 60    |  90%  |             |             |
 
 Failure breakdown:
-  ToolCall-15           1 wrong-arg-value
-  InstructFollow-15     1 word-count-violation, 1 citation-format-fail
-  DataExtract-15        2 missing-field, 1 wrong-format
+- toolcall-15 TC-07: verifier_fail (wrong arg value for "filename": expected report.pdf, got output.pdf)
+- instructfollow-15 IF-03: verifier_fail (word count 247, target 250 ±5)
+- dataextract-15 DE-05: verifier_fail (7/14 atomic fields correct (50%). product_name: mismatch)
 ```
 
 For agentic packs (e.g. `aider-polyglot-30`), the headline number is `pass_rate` over 30 exercises rather than per-scenario pass/fail; per-exercise breakdown is surfaced in the JSON `verifier_trace.upstream_per_exercise`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md) for the full output shape.
 
 When `--repeat N` is greater than 1, the markdown table adds per-pack `Std` and `CV` columns derived from repeat-arm pass rates. The saved JSON includes the same data under each pack result as `variance: {"repeat", "mean", "std", "cv"}` so cross-rig runs can distinguish real deltas from run-to-run noise.
+
+## Inspecting failures
+
+The `Failure breakdown:` block above is the quickest read — `failure_mode` + full detail per failed scenario, printed at the end of every run. For deeper forensics, any run with `--save-json` (which `quality-test.sh` sets) records per-scenario tokens, latency, and the full verifier trace; the `inspect` subcommand reads it back:
+
+```
+benchlocal-cli inspect results.json --failed                 # every failure + reason + tokens + latency
+benchlocal-cli inspect results.json --scenario IF-10 --full  # full prompt/response/verifier trace + conversation
+benchlocal-cli inspect results.json --mode timeout           # only this failure_mode
+benchlocal-cli inspect results.json --diff previous.json     # side-by-side vs a prior run (regressions + latency delta)
+benchlocal-cli inspect results.json --logs ./sandbox-logs    # pull sandboxed-pack stdout/stderr
+```
+
+`failure_mode` is one of `verifier_fail`, `timeout`, `agent_runner_timeout`, `agent_runner_crashed`, `server_error`, `http_error`, `model_endpoint_unreachable`, `result_json_malformed`, `wrong_answer`, `verifier_not_implemented`.
 
 ## Attribution
 
