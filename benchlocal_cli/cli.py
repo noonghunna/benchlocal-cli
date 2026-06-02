@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from benchlocal_cli import __version__
-from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _utc_now, list_packs, load_pack
+from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _SpendGuardExceeded, _utc_now, list_packs, load_pack
 from benchlocal_cli.types import PackResult, RunResult, ScenarioRun
 
 
@@ -211,6 +211,26 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
+    # Cloud endpoints (OpenRouter / DashScope / DeepInfra / …): Bearer auth + a spend guard.
+    run.add_argument(
+        "--api-key",
+        default=os.environ.get("BENCHLOCAL_API_KEY") or os.environ.get("OPENAI_API_KEY") or None,
+        help=(
+            "Bearer token for cloud OpenAI-compatible endpoints; sent as "
+            "'Authorization: Bearer <key>' on every request + probe. "
+            "Default: $BENCHLOCAL_API_KEY or $OPENAI_API_KEY. Local vLLM/llama.cpp need none. "
+            "Pin a provider/quant with e.g. --extra-body '{\"provider\":{\"only\":[\"DeepInfra\"],\"allow_fallbacks\":false}}'."
+        ),
+    )
+    run.add_argument(
+        "--max-total-tokens",
+        type=int,
+        default=_env_int("BENCHLOCAL_MAX_TOTAL_TOKENS", 0) or None,
+        help=(
+            "cloud spend guard: stop the run once cumulative reported usage tokens exceed N "
+            "(default: unlimited; env BENCHLOCAL_MAX_TOTAL_TOKENS)"
+        ),
+    )
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
     # v0.8 — diagnostic tooling
     run.add_argument(
@@ -693,6 +713,8 @@ def main(argv: list[str] | None = None) -> int:
             thinking_enabled=args.thinking_override,
             thinking_max_tokens=effective_thinking_max,
             extra_body=_load_extra_body(args.extra_body),
+            api_key=args.api_key,
+            max_total_tokens=args.max_total_tokens,
             sandbox_image_tag=args.sandbox_image_tag,
             sandbox_log_dir=_resolve_sandbox_log_dir(
                 requested=args.sandbox_log_dir,
@@ -709,7 +731,16 @@ def main(argv: list[str] | None = None) -> int:
             on_scenario_complete=on_scenario_complete,
             on_progress_event=on_progress_event,
         )
-        result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
+        try:
+            result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
+        except _SpendGuardExceeded as exc:
+            print(f"\n[spend-guard] {exc}", file=sys.stderr)
+            print(
+                f"[spend-guard] run stopped after {exc.tokens_used} tokens (cap {exc.cap}); "
+                "completed packs preserved only if --incremental + --save-json were set.",
+                file=sys.stderr,
+            )
+            return 2
 
         # v0.8: --previous-result delta classification
         if args.previous_result:

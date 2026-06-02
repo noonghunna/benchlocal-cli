@@ -159,7 +159,7 @@ class FakeHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+    def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         FakeHTTPClient.calls += 1
         if FakeHTTPClient.calls == 1:
             return FakeHTTPResponse(
@@ -540,7 +540,7 @@ class FakeAlwaysToolHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+    def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         return FakeHTTPResponse(
             {
                 "choices": [
@@ -573,7 +573,7 @@ class FakeTimeoutHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+    def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         import benchlocal_cli.runner as runner_module
 
         raise runner_module.httpx.TimeoutException("read timed out")
