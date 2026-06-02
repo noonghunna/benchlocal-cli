@@ -354,6 +354,7 @@ class Runner:
         extra_body: dict | None = None,
         api_key: str | None = None,
         max_total_tokens: int | None = None,
+        request_delay: float = 0.0,
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
@@ -389,6 +390,11 @@ class Runner:
         # Cumulative token spend guard (cloud-cost safety). None = unlimited.
         self.max_total_tokens = max_total_tokens
         self.tokens_used = 0
+        # Proactive pacing (cloud throttle avoidance): min seconds between model
+        # requests. 0 = no pacing (local / generous providers). Complements the
+        # 429 retry — pace to avoid, retry to recover.
+        self.request_delay = float(request_delay or 0.0)
+        self._last_request_monotonic = 0.0
         self.sandbox_image_tag = sandbox_image_tag
         # If set, sandbox container stderr/stdout is captured to
         # `<sandbox_log_dir>/sandbox-<pack_id>.log` before container teardown.
@@ -1051,6 +1057,15 @@ class Runner:
             max_attempts = self.max_transient_retries + 1
         else:
             max_attempts = max(1, int(max_attempts))
+
+        # Proactive pacing: keep >= request_delay seconds between model requests so we
+        # stay under provider rate limits — avoids the 429 rather than recovering from it
+        # (a min-interval throttle, so it adds nothing when requests are already slower).
+        if self.request_delay > 0:
+            wait = self.request_delay - (time.monotonic() - self._last_request_monotonic)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_request_monotonic = time.monotonic()
 
         for attempt in range(1, max_attempts + 1):
             try:

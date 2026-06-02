@@ -193,6 +193,26 @@ def test_retry_after_header_honored_and_capped(monkeypatch):
     assert slept == [7.0, 30.0, 2.0]
 
 
+def test_request_delay_paces_requests(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    _install_sequence_client(monkeypatch, runner_module, [(200, _ok_payload()), (200, _ok_payload())])
+    clock = {"t": 1000.0}
+    slept: list[float] = []
+    monkeypatch.setattr(runner_module.time, "monotonic", lambda: clock["t"])
+
+    def _sleep(d):
+        slept.append(d)
+        clock["t"] += d
+
+    monkeypatch.setattr(runner_module.time, "sleep", _sleep)  # overrides the helper's no-op
+
+    runner = Runner(endpoint="http://x", model="m", request_delay=5.0, max_transient_retries=0)
+    runner._post_chat({"messages": []}, 10.0)  # first call: nothing to wait for
+    runner._post_chat({"messages": []}, 10.0)  # immediate 2nd call → paced to the 5s min interval
+    assert slept == [5.0]
+
+
 def test_single_turn_exhausted_remote_protocol_error_fails_with_trace(monkeypatch):
     import benchlocal_cli.runner as runner_module
 
