@@ -22,6 +22,23 @@ from benchlocal_cli.sandbox import SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
+
+class _SpendGuardExceeded(BaseException):
+    """Cumulative token budget (`--max-total-tokens`) exceeded mid-run.
+
+    Subclasses BaseException (like KeyboardInterrupt) so the per-scenario
+    `except Exception` paths don't swallow it — it must propagate up to the
+    top-level run() caller, which stops the run and reports partial results.
+    """
+
+    def __init__(self, tokens_used: int, cap: int) -> None:
+        self.tokens_used = tokens_used
+        self.cap = cap
+        super().__init__(
+            f"spend guard: cumulative {tokens_used} tokens exceeded --max-total-tokens={cap}"
+        )
+
+
 PACK_MODES = {
     # quick — 30 scenarios, no Docker, ~5-10 min
     "quick": ["toolcall-15", "instructfollow-15"],
@@ -335,6 +352,8 @@ class Runner:
         thinking_enabled: bool | None = None,
         thinking_max_tokens: int = 16384,
         extra_body: dict | None = None,
+        api_key: str | None = None,
+        max_total_tokens: int | None = None,
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
@@ -362,6 +381,14 @@ class Runner:
         self.thinking_mode = thinking_mode_from_override(thinking_enabled)
         self.thinking_max_tokens = thinking_max_tokens
         self.extra_body = extra_body or {}
+        self.api_key = api_key
+        # Bearer auth for cloud OpenAI-compatible endpoints (OpenRouter, DashScope, …);
+        # empty for local vLLM / llama.cpp, which need no auth. Applied to every
+        # model call + the reachability/props probes.
+        self._request_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        # Cumulative token spend guard (cloud-cost safety). None = unlimited.
+        self.max_total_tokens = max_total_tokens
+        self.tokens_used = 0
         self.sandbox_image_tag = sandbox_image_tag
         # If set, sandbox container stderr/stdout is captured to
         # `<sandbox_log_dir>/sandbox-<pack_id>.log` before container teardown.
@@ -488,7 +515,7 @@ class Runner:
         props_url = f"{base}/props"
         try:
             with httpx.Client(timeout=5.0) as client:
-                resp = client.get(props_url)
+                resp = client.get(props_url, headers=self._request_headers)
             if resp.status_code == 200:
                 body = resp.json()
                 params = (body.get("default_generation_settings") or {}).get("params") or {}
@@ -711,7 +738,7 @@ class Runner:
             url = f"{base}{suffix}"
             try:
                 with httpx.Client(timeout=timeout) as client:
-                    response = client.get(url)
+                    response = client.get(url, headers=self._request_headers)
             except httpx.HTTPError:
                 continue
             # Any HTTP response (even 4xx/5xx) means the host is reachable and
@@ -1028,7 +1055,7 @@ class Runner:
         for attempt in range(1, max_attempts + 1):
             try:
                 with httpx.Client(timeout=timeout) as client:
-                    response = client.post(_chat_url(self.endpoint), json=request)
+                    response = client.post(_chat_url(self.endpoint), json=request, headers=self._request_headers)
             except httpx.TimeoutException as exc:
                 transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
                 # A timeout means the budget was genuinely exceeded — retrying just
@@ -1057,6 +1084,13 @@ class Runner:
                 if attempt < max_attempts:
                     self._sleep_before_transient_retry(attempt)
                     continue
+
+            # Spend guard: accumulate reported usage (cloud-cost safety). Trips on
+            # the cumulative cap mid-run; _SpendGuardExceeded propagates past the
+            # per-scenario except-Exception handlers to the top-level run() caller.
+            self.tokens_used += int((raw_response.get("usage") or {}).get("total_tokens") or 0)
+            if self.max_total_tokens is not None and self.tokens_used > self.max_total_tokens:
+                raise _SpendGuardExceeded(self.tokens_used, self.max_total_tokens)
 
             return response.status_code, raw_response, _transient_trace(transient_errors, attempt)
 

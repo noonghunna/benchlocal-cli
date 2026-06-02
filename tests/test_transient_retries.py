@@ -29,7 +29,7 @@ class SequenceHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+    def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         cls = type(self)
         event = cls.events[cls.calls]
         cls.calls += 1
@@ -277,7 +277,7 @@ class ProbeHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def get(self, url: str) -> FakeHTTPResponse:
+    def get(self, url: str, **_kwargs) -> FakeHTTPResponse:
         cls = type(self)
         cls.get_calls += 1
         behavior = cls.get_behavior
@@ -285,7 +285,7 @@ class ProbeHTTPClient:
             raise behavior
         return FakeHTTPResponse({}, status_code=int(behavior or 200))
 
-    def post(self, url: str, json: dict) -> FakeHTTPResponse:
+    def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         cls = type(self)
         cls.post_calls += 1
         return FakeHTTPResponse(cls.post_payload or {}, status_code=200)
@@ -354,11 +354,11 @@ def test_probe_post_does_not_retry_on_dead_endpoint(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return None
 
-        def get(self, url: str) -> FakeHTTPResponse:
+        def get(self, url: str, **_kwargs) -> FakeHTTPResponse:
             state["get_calls"] += 1
             return FakeHTTPResponse({}, status_code=200)
 
-        def post(self, url: str, json: dict):
+        def post(self, url: str, json: dict, **_kwargs):
             state["post_calls"] += 1
             raise httpx.ReadTimeout("stalled")
 
