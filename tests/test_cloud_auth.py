@@ -111,3 +111,48 @@ def test_no_spend_guard_when_cap_unset(monkeypatch):
     for _ in range(3):
         r._post_chat({"messages": []}, 10.0)
     assert r.tokens_used == 30_000  # accumulates, never trips
+
+
+# --- sandbox-key forwarding -------------------------------------------------
+# The hermes sandbox spawns its OWN agent that calls the model from inside the
+# container, so it needs the real key forwarded (not the hardcoded "dummy", which
+# only works for auth-less local vLLM). cli-40 / bugfind drive turns via the host
+# _post_chat (already keyed), so only hermes (+ aider) carry the key.
+
+class _CapturingMultiTurnSandbox:
+    config = type("Cfg", (), {"multi_turn": True})()
+
+    def __init__(self) -> None:
+        self.start_kwargs: dict | None = None
+
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        self.start_kwargs = kwargs
+        return {"action": "verify-final", "passed": True, "failure_mode": "passed", "detail": "ok"}
+
+
+_HERMES_META = {"supports_sandboxed_only": True, "default_max_seconds": 60, "sampling_defaults": {"max_tokens": 16}}
+
+
+def _hermes_scenario() -> dict:
+    return {"id": "HA-01", "pack_id": "hermesagent-20",
+            "messages": [{"role": "user", "content": "x"}],
+            "verifier": {"type": "_stub", "asserts": []}}
+
+
+def test_hermes_sandbox_gets_real_api_key_when_set():
+    runner = Runner(endpoint="https://openrouter.ai/api/v1", model="m",
+                    api_key="sk-cloud", enable_sandboxed_packs=True)
+    sb = _CapturingMultiTurnSandbox()
+    runner._sandbox_clients["hermesagent-20"] = sb
+    runner.run_scenario(_HERMES_META, _hermes_scenario())
+    assert sb.start_kwargs is not None
+    assert sb.start_kwargs["model_api_key"] == "sk-cloud"  # forwarded to the container agent
+
+
+def test_hermes_sandbox_uses_placeholder_key_for_local():
+    runner = Runner(endpoint="http://localhost:8010", model="m",
+                    enable_sandboxed_packs=True)  # no api_key
+    sb = _CapturingMultiTurnSandbox()
+    runner._sandbox_clients["hermesagent-20"] = sb
+    runner.run_scenario(_HERMES_META, _hermes_scenario())
+    assert sb.start_kwargs["model_api_key"] == "dummy"  # unchanged for auth-less local

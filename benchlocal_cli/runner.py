@@ -1276,7 +1276,7 @@ class Runner:
                 start_kwargs = {
                     "model_endpoint": hermes_endpoint,
                     "model_name": self.model,
-                    "model_api_key": "dummy",  # vLLM doesn't validate; upstream still requires a value
+                    "model_api_key": self.api_key or "dummy",  # forward the real key for cloud endpoints; "dummy" for local vLLM (doesn't validate)
                     "sampling": dict(sampling),
                 }
             elif pack_id == "aider-polyglot-30":
@@ -1286,7 +1286,7 @@ class Runner:
                 start_kwargs = {
                     "model_endpoint": resolve_endpoint_for_container(self.endpoint),
                     "model_name": self.model,
-                    "model_api_key": "benchlocal-cli-aider-polyglot",  # non-empty placeholder
+                    "model_api_key": self.api_key or "benchlocal-cli-aider-polyglot",  # forward the real key for cloud endpoints; placeholder for local
                     "sampling": dict(sampling),
                 }
             if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:
