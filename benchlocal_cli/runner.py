@@ -1079,10 +1079,20 @@ class Runner:
             except ValueError:
                 raw_response = {"text": response.text}
 
-            if response.status_code >= 500:
+            # 429 (rate-limited) and 5xx are transient — retry with backoff. 429 is the
+            # common cloud-provider throttle (OpenRouter/DashScope/…), so without this a
+            # rate-limit hit becomes a scored failure and depresses the result. Honor the
+            # server's Retry-After when present. Other 4xx stay hard failures (real client
+            # errors). Exhausted retries fall through and return the status (caller fails it).
+            if response.status_code == 429 or response.status_code >= 500:
                 transient_errors.append(f"attempt {attempt}: HTTP {response.status_code}")
                 if attempt < max_attempts:
-                    self._sleep_before_transient_retry(attempt)
+                    retry_after = (
+                        self._retry_after_seconds(response)
+                        if response.status_code == 429
+                        else None
+                    )
+                    self._sleep_before_transient_retry(attempt, retry_after=retry_after)
                     continue
 
             # Spend guard: accumulate reported usage (cloud-cost safety). Trips on
@@ -1160,10 +1170,31 @@ class Runner:
         return replace(result, verifier_trace=existing)
 
     @staticmethod
-    def _sleep_before_transient_retry(attempt: int) -> None:
-        delay = 2 ** (attempt - 1)
+    def _sleep_before_transient_retry(attempt: int, retry_after: float | None = None) -> None:
+        # Honor a server-provided Retry-After (429/503) when present + sane; else
+        # exponential backoff. Capped so a hostile/large header can't stall the run.
+        if retry_after is not None and retry_after > 0:
+            delay = min(float(retry_after), 30.0)
+        else:
+            delay = 2 ** (attempt - 1)
         if delay > 0:
             time.sleep(delay)
+
+    @staticmethod
+    def _retry_after_seconds(response) -> float | None:
+        """Parse a 429/503 `Retry-After` header (delta-seconds form), else None.
+
+        Defensive: test doubles / responses without `.headers` → None (backoff).
+        HTTP-date form is unsupported and falls back to exponential backoff.
+        """
+        headers = getattr(response, "headers", None) or {}
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _message_from_response(raw_response: dict) -> dict:

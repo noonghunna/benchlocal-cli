@@ -146,6 +146,53 @@ def test_single_turn_retries_5xx_then_passes(monkeypatch):
     assert run.result.verifier_trace["transient_errors"] == ["attempt 1: HTTP 503"]
 
 
+def test_single_turn_retries_429_then_passes(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    # 429 = rate-limited = transient (common cloud-provider throttle): retry, then pass.
+    _install_sequence_client(monkeypatch, runner_module, [(429, {"error": "rate limited"}), (200, _ok_payload())])
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True, max_transient_retries=2)
+    runner._sandbox_clients["bugfind-15"] = FakeSandbox()
+
+    run = runner.run_scenario(_sandbox_meta(), _single_scenario())
+
+    assert run.result.passed is True
+    assert SequenceHTTPClient.calls == 2
+    assert run.result.verifier_trace["transient_retries"] == 1
+    assert run.result.verifier_trace["transient_errors"] == ["attempt 1: HTTP 429"]
+
+
+def test_single_turn_429_exhausted_is_http_error(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    # Persistent 429 → retries exhaust → return the 429 → scored http_error (not a hang).
+    _install_sequence_client(monkeypatch, runner_module, [(429, {}), (429, {}), (429, {})])
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True, max_transient_retries=2)
+    runner._sandbox_clients["bugfind-15"] = FakeSandbox()
+
+    run = runner.run_scenario(_sandbox_meta(), _single_scenario())
+
+    assert run.result.passed is False
+    assert run.result.failure_mode == "http_error"
+    assert SequenceHTTPClient.calls == 3
+
+
+def test_retry_after_header_honored_and_capped(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    slept: list[float] = []
+    monkeypatch.setattr(runner_module.time, "sleep", lambda d: slept.append(d))
+
+    class _RespWithHeader:
+        def __init__(self, value):
+            self.headers = {"retry-after": value}
+
+    Runner._sleep_before_transient_retry(1, retry_after=Runner._retry_after_seconds(_RespWithHeader("7")))    # honored
+    Runner._sleep_before_transient_retry(1, retry_after=Runner._retry_after_seconds(_RespWithHeader("999")))  # capped at 30s
+    Runner._sleep_before_transient_retry(2, retry_after=Runner._retry_after_seconds(object()))                # no header → backoff 2**(2-1)
+    assert slept == [7.0, 30.0, 2.0]
+
+
 def test_single_turn_exhausted_remote_protocol_error_fails_with_trace(monkeypatch):
     import benchlocal_cli.runner as runner_module
 
