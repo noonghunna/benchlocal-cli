@@ -354,6 +354,7 @@ class Runner:
         extra_body: dict | None = None,
         api_key: str | None = None,
         max_total_tokens: int | None = None,
+        request_delay: float = 0.0,
         sandbox_image_tag: str = "latest",
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
@@ -389,6 +390,11 @@ class Runner:
         # Cumulative token spend guard (cloud-cost safety). None = unlimited.
         self.max_total_tokens = max_total_tokens
         self.tokens_used = 0
+        # Proactive pacing (cloud throttle avoidance): min seconds between model
+        # requests. 0 = no pacing (local / generous providers). Complements the
+        # 429 retry — pace to avoid, retry to recover.
+        self.request_delay = float(request_delay or 0.0)
+        self._last_request_monotonic = 0.0
         self.sandbox_image_tag = sandbox_image_tag
         # If set, sandbox container stderr/stdout is captured to
         # `<sandbox_log_dir>/sandbox-<pack_id>.log` before container teardown.
@@ -1052,6 +1058,15 @@ class Runner:
         else:
             max_attempts = max(1, int(max_attempts))
 
+        # Proactive pacing: keep >= request_delay seconds between model requests so we
+        # stay under provider rate limits — avoids the 429 rather than recovering from it
+        # (a min-interval throttle, so it adds nothing when requests are already slower).
+        if self.request_delay > 0:
+            wait = self.request_delay - (time.monotonic() - self._last_request_monotonic)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_request_monotonic = time.monotonic()
+
         for attempt in range(1, max_attempts + 1):
             try:
                 with httpx.Client(timeout=timeout) as client:
@@ -1079,10 +1094,20 @@ class Runner:
             except ValueError:
                 raw_response = {"text": response.text}
 
-            if response.status_code >= 500:
+            # 429 (rate-limited) and 5xx are transient — retry with backoff. 429 is the
+            # common cloud-provider throttle (OpenRouter/DashScope/…), so without this a
+            # rate-limit hit becomes a scored failure and depresses the result. Honor the
+            # server's Retry-After when present. Other 4xx stay hard failures (real client
+            # errors). Exhausted retries fall through and return the status (caller fails it).
+            if response.status_code == 429 or response.status_code >= 500:
                 transient_errors.append(f"attempt {attempt}: HTTP {response.status_code}")
                 if attempt < max_attempts:
-                    self._sleep_before_transient_retry(attempt)
+                    retry_after = (
+                        self._retry_after_seconds(response)
+                        if response.status_code == 429
+                        else None
+                    )
+                    self._sleep_before_transient_retry(attempt, retry_after=retry_after)
                     continue
 
             # Spend guard: accumulate reported usage (cloud-cost safety). Trips on
@@ -1160,10 +1185,31 @@ class Runner:
         return replace(result, verifier_trace=existing)
 
     @staticmethod
-    def _sleep_before_transient_retry(attempt: int) -> None:
-        delay = 2 ** (attempt - 1)
+    def _sleep_before_transient_retry(attempt: int, retry_after: float | None = None) -> None:
+        # Honor a server-provided Retry-After (429/503) when present + sane; else
+        # exponential backoff. Capped so a hostile/large header can't stall the run.
+        if retry_after is not None and retry_after > 0:
+            delay = min(float(retry_after), 30.0)
+        else:
+            delay = 2 ** (attempt - 1)
         if delay > 0:
             time.sleep(delay)
+
+    @staticmethod
+    def _retry_after_seconds(response) -> float | None:
+        """Parse a 429/503 `Retry-After` header (delta-seconds form), else None.
+
+        Defensive: test doubles / responses without `.headers` → None (backoff).
+        HTTP-date form is unsupported and falls back to exponential backoff.
+        """
+        headers = getattr(response, "headers", None) or {}
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _message_from_response(raw_response: dict) -> dict:
@@ -1230,7 +1276,7 @@ class Runner:
                 start_kwargs = {
                     "model_endpoint": hermes_endpoint,
                     "model_name": self.model,
-                    "model_api_key": "dummy",  # vLLM doesn't validate; upstream still requires a value
+                    "model_api_key": self.api_key or "dummy",  # forward the real key for cloud endpoints; "dummy" for local vLLM (doesn't validate)
                     "sampling": dict(sampling),
                 }
             elif pack_id == "aider-polyglot-30":
@@ -1240,7 +1286,7 @@ class Runner:
                 start_kwargs = {
                     "model_endpoint": resolve_endpoint_for_container(self.endpoint),
                     "model_name": self.model,
-                    "model_api_key": "benchlocal-cli-aider-polyglot",  # non-empty placeholder
+                    "model_api_key": self.api_key or "benchlocal-cli-aider-polyglot",  # forward the real key for cloud endpoints; placeholder for local
                     "sampling": dict(sampling),
                 }
             if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:

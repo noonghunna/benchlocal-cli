@@ -231,6 +231,16 @@ def _parser() -> argparse.ArgumentParser:
             "(default: unlimited; env BENCHLOCAL_MAX_TOTAL_TOKENS)"
         ),
     )
+    run.add_argument(
+        "--request-delay",
+        type=float,
+        default=_env_float("BENCHLOCAL_REQUEST_DELAY", 0.0),
+        help=(
+            "min seconds between model requests — proactive rate-limit pacing for cloud "
+            "providers (default 0 = no pacing; env BENCHLOCAL_REQUEST_DELAY). Complements "
+            "429 retry: pace to avoid the throttle, retry to recover when it still hits."
+        ),
+    )
     run.add_argument("--mock-responses-from-json", help="JSON object mapping scenario id to OpenAI response (testing only)")
     # v0.8 — diagnostic tooling
     run.add_argument(
@@ -502,6 +512,16 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -715,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_body=_load_extra_body(args.extra_body),
             api_key=args.api_key,
             max_total_tokens=args.max_total_tokens,
+            request_delay=args.request_delay,
             sandbox_image_tag=args.sandbox_image_tag,
             sandbox_log_dir=_resolve_sandbox_log_dir(
                 requested=args.sandbox_log_dir,
