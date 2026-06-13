@@ -15,6 +15,10 @@ FailureMode = Literal[
     "extra_fields",
     "schema_violation",
     "wrong_structure",
+    # #61: completion hit the token cap (finish_reason == "length") and was
+    # truncated mid-output — distinct from a content verdict so "overthought /
+    # looped" is legible vs "ran to completion but wrong" (verifier_fail).
+    "token_limit",
     "timeout",
     "agent_loop_exhausted",
     "http_error",

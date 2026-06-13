@@ -239,7 +239,22 @@ benchlocal-cli inspect results.json --diff previous.json     # side-by-side vs a
 benchlocal-cli inspect results.json --logs ./sandbox-logs    # pull sandboxed-pack stdout/stderr
 ```
 
-`failure_mode` is one of `verifier_fail`, `timeout`, `agent_runner_timeout`, `agent_runner_crashed`, `server_error`, `http_error`, `model_endpoint_unreachable`, `result_json_malformed`, `wrong_answer`, `verifier_not_implemented`.
+`failure_mode` is one of `verifier_fail`, `token_limit`, `timeout`, `agent_runner_timeout`, `agent_runner_crashed`, `server_error`, `http_error`, `model_endpoint_unreachable`, `result_json_malformed`, `wrong_answer`, `verifier_not_implemented`.
+
+`token_limit` (#61) means the completion hit the token cap (`finish_reason == "length"`) and was truncated mid-output — the model overthought or looped until the budget ran out, *not* a content verdict. It's reclassified from the underlying content-failure (the original verdict is kept in `detail`), so "looped / truncated" reads distinctly from "ran to completion but wrong" (`verifier_fail`). Filter it with `inspect --mode token_limit`.
+
+## Negative control (grader false-positive probe)
+
+We catch verifiers that are too *strict* by hand (the false-negative audit). `--negative-control` (#62) catches the opposite — verifiers too *lenient* to be measuring anything:
+
+```bash
+# feed deterministic junk to every scenario instead of calling a model;
+# any PASS = a verifier that accepted junk it should reject. No endpoint/GPU needed.
+benchlocal-cli run --negative-control --medium
+benchlocal-cli run --negative-control --negative-control-text "" --pack instructfollow-15   # pure-empty control
+```
+
+`--endpoint`/`--model` are not required in this mode. The junk defaults to `(no answer)`; override with `--negative-control-text` (an empty string is the purest control, while a constant non-answer additionally surfaces *format-only* verifiers that pass anything shaped right). Any PASS is printed as a candidate false-positive to review — it bounds, from the lenient side, how much a pack's score can be trusted.
 
 ## Attribution
 

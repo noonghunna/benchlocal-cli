@@ -80,6 +80,23 @@ SANDBOX_MODES = {"full", "reasoning"}
 SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40", "humaneval-plus-30", "lcb-v6-30"]
 DEFAULT_TIMEOUT_PER_CASE = 60.0
 
+# #61: content-verdict failure modes that a token-cap truncation should override.
+# A failure on any of these *while* finish_reason == "length" is confounded by
+# truncation — the model was cut off mid-output — so it's reclassified to
+# `token_limit`. Excludes passes (a verified-correct answer that happened to hit
+# the cap is still correct) and infra/transport modes (timeout / http_error /
+# server_error / verifier_not_implemented), which have no normal finish_reason.
+_CONTENT_FAILURE_MODES = frozenset({
+    "verifier_fail",
+    "wrong_answer",
+    "invalid_json",
+    "no_answer_found",
+    "missing_field",
+    "extra_fields",
+    "schema_violation",
+    "wrong_structure",
+})
+
 
 def pack_default_thinking(meta: dict) -> bool:
     """Return the pack-declared default thinking mode. Missing means off."""
@@ -252,6 +269,19 @@ def build_chat_request(
     return request
 
 
+def _negative_control_response(text: str) -> dict:
+    """#62 tier-1: a synthetic OpenAI completion carrying deliberate junk content,
+    fed to every scenario in negative-control mode. Shaped like a real response
+    (choices[0].message.content + finish_reason) so it flows through the normal
+    scoring path; any verifier that PASSes this is under-checking."""
+    return {
+        "choices": [
+            {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
 def _chat_url(endpoint: str) -> str:
     """Normalize an endpoint URL to the OpenAI chat-completions path.
 
@@ -349,6 +379,7 @@ class Runner:
         timeout_scale_down: bool = False,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
+        negative_control: str | None = None,
         thinking_enabled: bool | None = None,
         thinking_max_tokens: int = 16384,
         extra_body: dict | None = None,
@@ -377,6 +408,9 @@ class Runner:
         self._timeout_scaling_note_emitted = False
         self.enable_sandboxed_packs = enable_sandboxed_packs
         self.mock_responses = mock_responses or {}
+        # #62 tier-1: when set, every scenario is served this junk text instead of
+        # calling the endpoint — a negative control for verifier false-positives.
+        self.negative_control = negative_control
         self.thinking_override = thinking_enabled
         self.thinking_enabled = bool(thinking_enabled)
         self.thinking_mode = thinking_mode_from_override(thinking_enabled)
@@ -719,6 +753,10 @@ class Runner:
         return float(self.thinking_max_tokens) / float(nominal_max)
 
     def _timeout_measured_tps(self) -> float | None:
+        # #62: negative-control never calls the endpoint — skip the decode probe
+        # entirely (no endpoint to probe) and use static pack budgets.
+        if self.negative_control is not None:
+            return None
         if self._measured_decode_tps is not None:
             return self._measured_decode_tps
         try:
@@ -950,6 +988,7 @@ class Runner:
             and getattr(getattr(sandbox_client, "config", None), "multi_turn", False)
             and self._should_use_multiturn(scenario)
             and scenario["id"] not in self.mock_responses
+            and self.negative_control is None
         ):
             return self._run_multiturn_scenario(
                 meta,
@@ -961,7 +1000,10 @@ class Runner:
                 timeout,
             )
 
-        if scenario["id"] in self.mock_responses:
+        if self.negative_control is not None:
+            raw_response = _negative_control_response(self.negative_control)
+            latency = 0.0
+        elif scenario["id"] in self.mock_responses:
             raw_response = self.mock_responses[scenario["id"]]
             latency = 0.0
         else:
@@ -1012,6 +1054,7 @@ class Runner:
         if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
             tokens = usage["completion_tokens"]
         result = replace(result, latency_seconds=latency, tokens_completion=tokens)
+        result = self._reclassify_if_truncated(result, raw_response)  # #61
         result = self._inject_transient_trace(result, transient_trace)
         if sandboxed_path:
             result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
@@ -1024,6 +1067,32 @@ class Runner:
             result,
             repeat_index,
             response_field_used=response_field_used,
+        )
+
+    @staticmethod
+    def _reclassify_if_truncated(result: ScenarioResult, raw_response: dict | None) -> ScenarioResult:
+        """#61: a failed completion that hit the token cap (finish_reason == "length")
+        is a truncation, not a content verdict. Reclassify it to `token_limit` so
+        "overthought / looped until the budget ran out" is legible at a glance vs
+        "ran to completion but produced a wrong answer". Only content-failure modes
+        are overridden; passes and infra failures are left untouched. The original
+        verdict is preserved in `detail` for forensics."""
+        if result.passed or result.failure_mode not in _CONTENT_FAILURE_MODES:
+            return result
+        if not isinstance(raw_response, dict):
+            return result
+        choices = raw_response.get("choices")
+        if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+            return result
+        if choices[0].get("finish_reason") != "length":
+            return result
+        return replace(
+            result,
+            failure_mode="token_limit",
+            detail=(
+                f"output truncated at token limit (finish_reason=length); "
+                f"underlying verdict was {result.failure_mode}: {result.detail}"
+            ),
         )
 
     @staticmethod
