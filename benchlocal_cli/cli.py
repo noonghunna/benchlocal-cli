@@ -86,8 +86,27 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--full", action="store_true", help="8 packs incl. sandboxed, ~25-40 min, requires Docker")
     mode.add_argument("--reasoning", action="store_true", help="reasoning packs: HE+, LCB v6, GPQA metadata, GSM-Symbolic; separate from --full")
     run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
-    run.add_argument("--endpoint", required=True, help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
-    run.add_argument("--model", required=True, help="model id served by the endpoint")
+    # endpoint/model are required for normal runs; relaxed to optional so the
+    # #62 negative-control probe (which never calls a model) can run without them.
+    # Enforced in cmd_run when --negative-control is absent.
+    run.add_argument("--endpoint", help="OpenAI-compatible base URL (e.g. http://localhost:8010)")
+    run.add_argument("--model", help="model id served by the endpoint")
+    # #62 tier-1: grader false-positive probe. Feeds a deterministic junk response
+    # to every scenario instead of calling the endpoint; any PASS flags a verifier
+    # that's under-checking (it accepted junk it should reject). No GPU/endpoint
+    # needed — reuses the mock path. Pairs with the false-negative audit (#35/36/37).
+    run.add_argument(
+        "--negative-control",
+        action="store_true",
+        help="grader false-positive probe: feed junk to every scenario (no endpoint call); "
+             "any PASS = candidate too-lenient verifier (#62). Endpoint/model not required.",
+    )
+    run.add_argument(
+        "--negative-control-text",
+        default="(no answer)",
+        help="junk content fed to every scenario under --negative-control "
+             "(default: '(no answer)'; pass an empty string for the pure-empty control).",
+    )
     run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
     run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
     run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")
@@ -484,6 +503,37 @@ def _load_mock(path: str | None) -> dict[str, dict] | None:
     return data
 
 
+def _print_negative_control_report(result, junk_text: str) -> None:
+    """#62 tier-1: under --negative-control every scenario was fed junk, so the
+    normal scoreboard semantics invert — any PASS means a verifier accepted junk
+    it should have rejected (candidate false-positive). Print those PASSes."""
+    suspicious: list[str] = []
+    total = 0
+    for pack in result.packs:
+        for sc in pack.scenarios:
+            if sc.result.failure_mode == "verifier_not_implemented":
+                continue
+            total += 1
+            if sc.result.passed:
+                suspicious.append(f"{pack.pack_id} {sc.id} ({sc.result.failure_mode})")
+    shown = repr(junk_text) if junk_text else "'' (empty string)"
+    print("", file=sys.stderr)
+    print(f"=== NEGATIVE CONTROL (junk input: {shown}) ===", file=sys.stderr)
+    print(
+        "Any PASS = candidate false-positive verifier (it accepted junk it should reject).",
+        file=sys.stderr,
+    )
+    if suspicious:
+        print(f"⚠ {len(suspicious)}/{total} scenario(s) PASSed the junk control — review:", file=sys.stderr)
+        for s in suspicious:
+            print(f"  - {s}", file=sys.stderr)
+    else:
+        print(
+            f"✓ 0/{total} PASSed — all exercised verifiers correctly rejected the junk.",
+            file=sys.stderr,
+        )
+
+
 def _load_extra_body(value: str | None) -> dict | None:
     if not value:
         return None
@@ -578,6 +628,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "history":
             from benchlocal_cli.history import history_main
             return history_main(args)
+
+        # #62: endpoint/model are optional only under --negative-control (no model call).
+        if args.negative_control:
+            args.endpoint = args.endpoint or "negative-control"
+            args.model = args.model or "negative-control"
+        elif not args.endpoint or not args.model:
+            print(
+                "benchlocal-cli: run requires --endpoint and --model "
+                "(omit them only with --negative-control)",
+                file=sys.stderr,
+            )
+            return 1
 
         mode = _mode_from_args(args)
         if args.sandboxed_only:
@@ -730,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_scale_down=args.timeout_scale_down,
             enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
+            negative_control=args.negative_control_text if args.negative_control else None,
             thinking_enabled=args.thinking_override,
             thinking_max_tokens=effective_thinking_max,
             extra_body=_load_extra_body(args.extra_body),
@@ -798,6 +861,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result_dict, indent=2, sort_keys=True))
         else:
             print(_markdown(result))
+
+        if args.negative_control:
+            _print_negative_control_report(result, args.negative_control_text)
 
         if args.exit_on_regression and result.delta and result.delta.get("total_regressions", 0) > 0:
             return 3  # CI-friendly regression exit code

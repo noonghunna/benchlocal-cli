@@ -433,7 +433,7 @@ def add_inspect_subparser(subparsers) -> None:
     parser.add_argument("--failed", action="store_true", help="show only failed scenarios")
     parser.add_argument(
         "--mode",
-        help="show only scenarios with this failure_mode (e.g. timeout, verifier_fail, agent_runner_timeout)",
+        help="show only scenarios with this failure_mode (e.g. timeout, verifier_fail, token_limit, agent_runner_timeout)",
     )
     parser.add_argument(
         "--full",
