@@ -1,10 +1,47 @@
 from __future__ import annotations
 
+import argparse
 import json
 
-from benchlocal_cli.cli import main
+from benchlocal_cli.cli import _mode_from_args, main
 from benchlocal_cli.runner import PACK_MODES, Runner, load_pack
 from benchlocal_cli.scoring import answer_match
+
+
+def _mode_ns(**kw) -> argparse.Namespace:
+    base = dict(pack=None, quick=False, medium=False, full=False,
+                reasoning=False, reasoning_packs=False)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+# #65 — --reasoning renamed to --reasoning-packs (pack-set selector), with the
+# old flag kept as a hidden, deprecated, back-compat alias.
+def test_reasoning_packs_selects_reasoning_mode():
+    assert _mode_from_args(_mode_ns(reasoning_packs=True)) == "reasoning"
+
+
+def test_deprecated_reasoning_alias_still_selects_reasoning_mode():
+    assert _mode_from_args(_mode_ns(reasoning=True)) == "reasoning"
+
+
+def test_default_mode_is_medium():
+    assert _mode_from_args(_mode_ns()) == "medium"
+
+
+def test_reasoning_packs_visible_in_help(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        main(["run", "--help"])
+    out = capsys.readouterr().out
+    assert "--reasoning-packs" in out  # primary flag is documented
+
+
+def test_reasoning_packs_mutually_exclusive_with_full():
+    import pytest
+    # pack-set selectors are mutually exclusive — argparse exits at parse time.
+    with pytest.raises(SystemExit):
+        main(["run", "--reasoning-packs", "--full", "--endpoint", "x", "--model", "y"])
 
 
 def _response(content: str) -> dict:
