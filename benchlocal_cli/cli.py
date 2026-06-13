@@ -53,14 +53,20 @@ def _parser() -> argparse.ArgumentParser:
             "OpenAI-compatible endpoint."
         ),
         epilog=(
-            "Modes:\n"
-            "  --quick    2 packs, 30 scenarios, no Docker        (~5-10 min)\n"
-            "  --medium   5 packs, 75 scenarios, no Docker        (~15-25 min)\n"
-            "  --full     8 packs, 150 scenarios, requires Docker (~25-40 min)\n"
+            "Pack-set (pick WHAT runs):\n"
+            "  --quick           2 packs, 30 scenarios, no Docker        (~5-10 min)\n"
+            "  --medium          5 packs, 75 scenarios, no Docker        (~15-25 min)\n"
+            "  --full            8 packs, 150 scenarios, requires Docker (~25-40 min)\n"
+            "  --reasoning-packs HE+, LCB v6, GPQA, GSM-Symbolic         (separate suite, ~30-90+ min)\n"
+            "\n"
+            "Thinking mode (orthogonal — pick HOW it runs):\n"
+            "  --enable-thinking / --no-thinking   force thinking on/off for every pack\n"
+            "  (default: each pack's own default_thinking)\n"
             "\n"
             "Examples:\n"
             "  benchlocal-cli run --quick --endpoint http://localhost:8010 --model qwen3.6-27b\n"
-            "  benchlocal-cli run --full  --endpoint http://localhost:8010 --model qwen3.6-27b\n"
+            "  benchlocal-cli run --full --no-thinking     --endpoint … --model …   # 8-pack, reasoning OFF\n"
+            "  benchlocal-cli run --full --enable-thinking --endpoint … --model …   # 8-pack, reasoning ON\n"
             "  benchlocal-cli run --pack toolcall-15 --endpoint http://localhost:8010 --model qwen3.6-27b\n"
             "  benchlocal-cli list         # show all available packs\n"
         ),
@@ -84,7 +90,15 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--quick", action="store_true", help="2 packs, ~5-10 min, no Docker")
     mode.add_argument("--medium", action="store_true", help="5 packs (default), ~15-25 min, no Docker")
     mode.add_argument("--full", action="store_true", help="8 packs incl. sandboxed, ~25-40 min, requires Docker")
-    mode.add_argument("--reasoning", action="store_true", help="reasoning packs: HE+, LCB v6, GPQA metadata, GSM-Symbolic; separate from --full")
+    mode.add_argument(
+        "--reasoning-packs",
+        action="store_true",
+        help="reasoning/code-reasoning pack-set: HE+, LCB v6, GPQA metadata, GSM-Symbolic "
+             "(separate suite; pick the thinking MODE with --enable-thinking/--no-thinking)",
+    )
+    # Deprecated alias for --reasoning-packs (back-compat for scripted callers). Hidden;
+    # it reads like a thinking-mode but is actually a pack-set selector — #65.
+    mode.add_argument("--reasoning", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
     # endpoint/model are required for normal runs; relaxed to optional so the
     # #62 negative-control probe (which never calls a model) can run without them.
@@ -308,7 +322,7 @@ def _mode_from_args(args: argparse.Namespace) -> str:
         return "quick"
     if args.full:
         return "full"
-    if getattr(args, "reasoning", False):
+    if getattr(args, "reasoning_packs", False) or getattr(args, "reasoning", False):
         return "reasoning"
     return "medium"
 
@@ -629,6 +643,14 @@ def main(argv: list[str] | None = None) -> int:
             from benchlocal_cli.history import history_main
             return history_main(args)
 
+        # #65: --reasoning is a deprecated alias for --reasoning-packs.
+        if getattr(args, "reasoning", False):
+            print(
+                "benchlocal-cli: --reasoning is deprecated; use --reasoning-packs "
+                "(it's the pack-set selector, not a thinking mode — pick the mode with "
+                "--enable-thinking/--no-thinking). Treating as --reasoning-packs.",
+                file=sys.stderr,
+            )
         # #62: endpoint/model are optional only under --negative-control (no model call).
         if args.negative_control:
             args.endpoint = args.endpoint or "negative-control"
