@@ -9,6 +9,46 @@ the same content per-version.
 
 ---
 
+## v0.9.7 — 2026-06-15
+
+
+### ✨ Features
+
+- feat(cli): rename --reasoning -> --reasoning-packs; keep --reasoning as deprecated alias (#65) (#67) ([#67](https://github.com/noonghunna/benchlocal-cli/pull/67) by @noonghunna)
+- feat(grader-fidelity): token_limit failure_mode (#61) + --negative-control probe (#62 tier-1) (#66) ([#66](https://github.com/noonghunna/benchlocal-cli/pull/66) by @noonghunna)
+- feat(cloud): full cloud-endpoint support — pacing + 429 retry + sandbox-key forwarding (--full /150) (#64) ([#64](https://github.com/noonghunna/benchlocal-cli/pull/64) by @noonghunna)
+- feat(cloud): Bearer auth (--api-key) + spend guard (--max-total-tokens) for cloud endpoints (#63) ([#63](https://github.com/noonghunna/benchlocal-cli/pull/63) by @noonghunna)
+
+
+### 📝 Documentation
+
+- docs(README): document the inspect subcommand; fix drifted Failure-breakdown sample ([678d6e8](https://github.com/noonghunna/benchlocal-cli/commit/678d6e871061ecd96b55986463689e3ea5b50c2d))
+- docs(README): document per-case timeout sizing (precedence, probe, flags) ([9531dd2](https://github.com/noonghunna/benchlocal-cli/commit/9531dd2b77921c70e05ed24c12d9bd4e897a1405))
+
+
+### 🧹 Other
+
+- Fail fast on timeouts + unreachable-endpoint probe in _post_chat (#58) (#60) ([#60](https://github.com/noonghunna/benchlocal-cli/pull/60) by @noonghunna)
+- Stream Aider per-exercise progress (#57) ([#57](https://github.com/noonghunna/benchlocal-cli/pull/57) by @noonghunna)
+- Fail fast on unreachable sandbox endpoints (#56) ([#56](https://github.com/noonghunna/benchlocal-cli/pull/56) by @noonghunna)
+- Apply thinking-aware timeout budget unconditionally (supersedes #55) (#59) ([#59](https://github.com/noonghunna/benchlocal-cli/pull/59) by @noonghunna)
+- docs/README: document sandboxed-packs networking (closes #52) (#53) ([#53](https://github.com/noonghunna/benchlocal-cli/pull/53) by @noonghunna)
+- Auto-resolve Hermes loopback endpoints (#50) ([#50](https://github.com/noonghunna/benchlocal-cli/pull/50) by @noonghunna)
+- Scale agentic timeouts by measured TPS (#48) ([#48](https://github.com/noonghunna/benchlocal-cli/pull/48) by @noonghunna)
+- Disambiguate CLI agent loop exhaustion (#47) ([#47](https://github.com/noonghunna/benchlocal-cli/pull/47) by @noonghunna)
+- Honor agentic pack timeout defaults (#43) ([#43](https://github.com/noonghunna/benchlocal-cli/pull/43) by @noonghunna)
+- Use deterministic thinking sampler for Hermes agent (#42) ([#42](https://github.com/noonghunna/benchlocal-cli/pull/42) by @noonghunna)
+- Run Aider benchmark from pinned checkout (#44) ([#44](https://github.com/noonghunna/benchlocal-cli/pull/44) by @noonghunna)
+- Fix deterministic sampler and verifier fidelity (#38) ([#38](https://github.com/noonghunna/benchlocal-cli/pull/38) by @noonghunna)
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(release): v0.9.7 ([d515b85](https://github.com/noonghunna/benchlocal-cli/commit/d515b853bac32c0a365ed6adb6c2071c48f1b258))
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.7`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.6...v0.9.7)
 ## v0.9.6 — 2026-05-24
 
 
