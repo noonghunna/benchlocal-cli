@@ -202,6 +202,40 @@ benchlocal-cli run --pack aider-polyglot-30 --enable-sandboxed-packs \
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --output json > results.json
 ```
 
+## Running against a cloud / managed endpoint
+
+The same packs run against any cloud OpenAI-compatible endpoint — a managed API, a router, your own hosted model — for a like-for-like local-vs-cloud comparison (identical prompts, identical verifiers).
+
+```bash
+# the cloud knobs: --api-key (Bearer auth) + the model id your endpoint serves
+benchlocal-cli run --pack toolcall-15 \
+  --endpoint https://your-host/v1 \
+  --model your-model-id \
+  --api-key "$YOUR_KEY" \
+  --save-json cloud-toolcall.json
+```
+
+`--api-key` is sent as `Authorization: Bearer <key>` on every request (defaults to `$BENCHLOCAL_API_KEY`).
+
+**Rate limits.** Two controls, designed to compose — *pace to avoid the throttle, retry to recover when it still hits*:
+
+| Flag | Role |
+|---|---|
+| `--request-delay <sec>` | **proactive** — minimum seconds between requests, to stay under the endpoint's RPM ceiling (env `BENCHLOCAL_REQUEST_DELAY`) |
+| `--max-transient-retries <N>` | **reactive** — auto-retry 429 / transient failures before failing a scenario (default 3) |
+
+Leave `--retry-on-timeout` **off** for cloud — a timeout means the token budget was genuinely exhausted, so retrying just burns another budget.
+
+**Spend guard.** `--max-total-tokens <N>` is a hard cost ceiling for the run. The agentic packs (`cli-40`, `hermesagent-20`, `aider-polyglot-30`) use the most tokens — set it generously so it stops a runaway without truncating a legitimate run. Each saved JSON records per-pack token counts, so **cost-per-run = your price × tokens**.
+
+**Pin a provider / quant** (for routers like OpenRouter) via `--extra-body`:
+
+```bash
+--extra-body '{"provider":{"only":["DeepInfra"],"allow_fallbacks":false}}'
+```
+
+**What to compare.** The **deterministic** packs (`toolcall-15`, `instructfollow-15`, `structoutput-15`, `dataextract-15`, `reasonmath-15`) are the cleanest apples-to-apples — single-shot, verifier-graded, no Docker. The **sandboxed/agentic** packs run a *local* Docker agent loop that calls your endpoint over the network, so they also need the sandbox images built (`bash tools/build-sandboxes.sh` from a checkout) and are less validated over a remote endpoint — land the deterministic set first.
+
 ## Reasoning models
 
 `benchlocal-cli` uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, `hermesagent-20`, and every `--reasoning-packs` pack run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `16384`) and the request uses the recommended thinking sampler (`temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`) instead of the deterministic pack's greedy sampler. Override it with `--thinking-sampler '{"temperature":0.7,"top_p":0.9}'`, override individual sampling keys with `--temperature`/`--top-p`/`--top-k`/`--min-p`, or use `--sampling-from-server` to omit sampler params entirely. HumanEval+ and LiveCodeBench also carry 16K scenario budgets so thinking-on code runs do not measure a 4K truncation failure; hardest LCB items may still exceed 16K, so compare against `--no-thinking` for budget-runaway diagnostics. Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
