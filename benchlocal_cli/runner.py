@@ -617,8 +617,12 @@ class Runner:
             except Exception as exc:
                 msg = (
                     f"skipping {pack_id}: sandbox unavailable ({exc}). "
-                    f"Hint: ensure Docker is running and `bash tools/build-sandboxes.sh` has been run; "
-                    f"or use --medium for the deterministic-only subset (no Docker needed)."
+                    f"Hint: the sandboxed packs need pre-built Docker images (benchlocal-sandbox-*) "
+                    f"that aren't auto-pulled — and the build tooling is NOT in the pip package, it "
+                    f"lives in a benchlocal-cli checkout. Build them once: "
+                    f"`git clone https://github.com/noonghunna/benchlocal-cli && "
+                    f"bash benchlocal-cli/tools/build-sandboxes.sh`. "
+                    f"Or run a deterministic-only subset (no Docker needed)."
                 )
                 warnings.append(msg)
                 print(f"⚠️  {msg}", file=sys.stderr, flush=True)
