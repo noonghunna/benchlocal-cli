@@ -91,6 +91,14 @@ def test_all_packs_carry_timeout_reference_tps():
         assert meta.get("timeout_reference_tps") == 100, pack_id
 
 
+def test_sandbox_safety_policy_intent_is_explicit_in_pack_metadata():
+    for pack_id in ("cli-40", "hermesagent-20"):
+        meta, _ = load_pack(pack_id)
+        policy = meta.get("safety_policy")
+        assert policy["mode"] == "implicit_benchmark_local", pack_id
+        assert "not explicit policy-following tests" in policy["description"]
+
+
 def test_answer_match_numeric_prefers_final_answer_line():
     scenario = {"id": "GSM", "verifier": {"asserts": [{"kind": "exact_numeric", "value": "20"}]}}
     assert answer_match.score_scenario(scenario, _response("Rough work mentions 20, but final says ANSWER: 21")).failure_mode == "wrong_answer"

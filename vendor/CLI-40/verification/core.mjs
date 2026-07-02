@@ -333,11 +333,91 @@ function parseSolutionBlock(text) {
 }
 
 function countCommandLines(body) {
-  return body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .length;
+  const lines = String(body ?? "").split(/\r?\n/);
+  let count = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let continued = false;
+  const heredocTerminators = [];
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+
+    if (heredocTerminators.length > 0) {
+      if (trimmed === heredocTerminators[0]) {
+        heredocTerminators.shift();
+      }
+      continue;
+    }
+
+    const startsInsideCommand = inSingle || inDouble || inBacktick || continued;
+    if (trimmed && !startsInsideCommand) {
+      count += 1;
+      for (const match of rawLine.matchAll(/<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_-]*))/g)) {
+        heredocTerminators.push(match[1] ?? match[2] ?? match[3]);
+      }
+    }
+
+    continued = false;
+    let escaped = false;
+    let trailingTopLevelBackslash = false;
+    for (const ch of rawLine) {
+      if (escaped) {
+        escaped = false;
+        trailingTopLevelBackslash = false;
+        continue;
+      }
+      if (inSingle) {
+        if (ch === "'") {
+          inSingle = false;
+        }
+        continue;
+      }
+      if (inDouble) {
+        if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inDouble = false;
+        }
+        continue;
+      }
+      if (inBacktick) {
+        if (ch === "\\") {
+          escaped = true;
+        } else if (ch === "`") {
+          inBacktick = false;
+        }
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        trailingTopLevelBackslash = true;
+        continue;
+      }
+      if (ch === "'") {
+        inSingle = true;
+        trailingTopLevelBackslash = false;
+        continue;
+      }
+      if (ch === '"') {
+        inDouble = true;
+        trailingTopLevelBackslash = false;
+        continue;
+      }
+      if (ch === "`") {
+        inBacktick = true;
+        trailingTopLevelBackslash = false;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        trailingTopLevelBackslash = false;
+      }
+    }
+    continued = trailingTopLevelBackslash;
+  }
+
+  return count;
 }
 
 function buildModelOutput(finalAnswer, assistantMessages = [], toolCalls = [], toolResults = []) {
@@ -2507,6 +2587,7 @@ function csvEscape(value) {
 }
 
 export {
+  countCommandLines,
   runScenario,
   verifyCanonical,
   verifyMultiRoundReplay,

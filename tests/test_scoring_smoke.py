@@ -140,6 +140,40 @@ def test_reason_math_upstream_metadata_accepts_alias_and_requires_trace():
     assert answer_only.verifier_trace["upstream_style_score"] == 70
 
 
+def test_reason_math_accepts_audited_equivalent_answers_but_keeps_rm13_strict():
+    rm04 = _pack_record("reasonmath-15.jsonl", "RM-04")
+    rm04_response = _response(
+        "green at position 3\n"
+        "yellow must be at position 1 or 5\n"
+        "white is at an end\n"
+        "red and blue cannot be placed\n"
+        "ANSWER: The given constraints are inconsistent"
+    )
+    assert reason_math.score_scenario(rm04, rm04_response).passed
+
+    rm06 = _pack_record("reasonmath-15.jsonl", "RM-06")
+    rm06_response = _response(
+        "p(c_1) = 1/4\n"
+        "p(h | c_2) = 1\n"
+        "p(h) = 1/3\n"
+        "p(c_2 | h) = 3/4\n"
+        "ANSWER: switch_to_2=3/4; stay_with_1=1/4"
+    )
+    assert reason_math.score_scenario(rm06, rm06_response).passed
+
+    rm13 = _pack_record("reasonmath-15.jsonl", "RM-13")
+    rm13_wrong = _response(
+        "a=p(1+r/n)^(nt)\n"
+        "p=5000\n"
+        "r=0.045\n"
+        "n=12\n"
+        "t=3\n"
+        "amount=5721.24\n"
+        "interest=721.24\n"
+        "ANSWER: amount=$5721.34; interest=$721.34"
+    )
+    assert reason_math.score_scenario(rm13, rm13_wrong).failure_mode == "wrong_answer"
+
 def test_data_extract_expected_scoring_uses_full_upstream_shape():
     scenario = {
         "id": "DE-02",
@@ -173,6 +207,38 @@ def test_data_extract_expected_scoring_uses_full_upstream_shape():
     assert failed.failure_mode == "verifier_fail"
     assert failed.verifier_trace["upstream_style_score"] < 85
 
+
+
+def test_data_extract_numeric_string_failure_reports_type_and_value():
+    scenario = {
+        "id": "DE-02",
+        "expected": {
+            "items": [{"name": "Americano", "price": 4.75}],
+            "total": 14.66,
+        },
+        "verifier": {"asserts": []},
+    }
+    response = _response(json.dumps({
+        "items": [{"name": "Americano", "price": "$4.75"}],
+        "total": "14.66",
+    }))
+
+    result = data_extract.score_scenario(scenario, response)
+
+    assert result.failure_mode == "verifier_fail"
+    notes = result.verifier_trace["comparison_notes"]
+    assert 'items.price: expected number 4.75, received string "$4.75"' in notes
+    assert 'total: expected number 14.66, received string "14.66"' in notes
+    assert 'received string "$4.75"' in result.detail
+
+
+def test_data_extract_generated_prompt_emphasizes_json_numbers():
+    scenario = _pack_record("dataextract-15.jsonl", "DE-02")
+    system = scenario["messages"][0]["content"]
+
+    assert "output JSON numbers, not strings" in system
+    assert "$4.75 -> 4.75" in system
+    assert "16GB -> 16" in system
 
 
 def test_if12_accepts_spelled_out_numbers_but_requires_impossible_contract():

@@ -2,9 +2,9 @@
 
 FROM debian:trixie-slim
 
-# Install bash + coreutils + grep/sed/awk + jq + python3 (for the server).
+# Install the CLI fixture surface plus python3 for the server.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash coreutils findutils git grep sed gawk jq nodejs python3 tar gzip xz-utils vim-common gcc make \
+        bash coreutils findutils git grep sed gawk jq nodejs python3 python3-pytest tar gzip xz-utils vim-common gcc make libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

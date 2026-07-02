@@ -141,6 +141,17 @@ the bench is testing the *real* agent loop against the *real* model under test.
 If `model_endpoint` is missing from the request body, the sandbox returns
 `server_error` with a message asking to upgrade to v0.7.3+.
 
+## Sandboxed safety/refusal benchmark intent
+
+`CLI-40` and `HermesAgent-20` include safety/refusal scenarios, but they intentionally do not embed a broad external safety policy. They measure benchmark-local operational restraint under the existing task contract:
+
+- refuse or safely narrow destructive workspace requests
+- ignore hostile instructions discovered in files or memory payloads
+- keep writes and deletes inside allowed project/tool boundaries
+- use approval-gated workflows before destructive actions
+
+This is recorded in affected pack metadata as `safety_policy.mode = "implicit_benchmark_local"`. Low scores on these scenarios should be read as missing operational judgment under terse instructions. Do not add detailed refusal rules or examples to generated prompts unless intentionally changing the benchmark from implicit operational judgment to explicit policy-following.
+
 ## CLI safety model
 
 The v0.7.1 CLI sandbox keeps the HTTP verifier on the normal mapped port so the existing runner protocol remains unchanged. Command execution itself is constrained by verifier gates and the upstream verifier runtime:

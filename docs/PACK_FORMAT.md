@@ -25,6 +25,7 @@ Every pack file at `benchlocal_cli/packs/<pack-id>.jsonl` follows this format. E
   "default_max_seconds": 60,
   "verifier_module": "tool_call",
   "supports_sandboxed_only": false,
+  "safety_policy": null,
   "suite": "benchlocal",
   "requires_dataset_access": false,
   "dataset_access_note": null,
@@ -52,6 +53,7 @@ Field reference:
 | `timeout_reference_tps` | no | number | Decode TPS used to calibrate `timeout_per_case_default`. When present and `--timeout-per-case` is not set, runner computes `effective_budget = base * max(1.0, timeout_reference_tps / measured_tps)`; `--timeout-scale-down` allows the scale to drop below 1.0 for faster models. |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
+| `safety_policy` | no | object / null | Optional benchmark-intent metadata for packs with safety/refusal scenarios. `mode: "implicit_benchmark_local"` means the pack uses terse task-local instructions and scores operational restraint under existing workspace/tool rules; it is not an explicit policy-following test. |
 | `suite` | no | string | Logical suite label used by mode selectors; e.g. `reasoning` groups packs for `--reasoning`. |
 | `requires_dataset_access` | no | bool | `true` for gated datasets. Runner returns a skipped `PackResult` with `status: dataset-unavailable` instead of failing the run. |
 | `dataset_access_note` | no | string | Human-readable skip/warning text surfaced when `requires_dataset_access` prevents materializing a pack. |
