@@ -296,6 +296,33 @@ def _run_upstream_js(js: str, args: list[str], timeout: float = 30) -> dict:
     return json.loads(proc.stdout.splitlines()[-1])
 
 
+def _payload_detail(scenario_id: str, payload: dict) -> str:
+    summary = str(payload.get("summary") or "upstream verifier result")
+    detail_parts: list[str] = []
+    score = payload.get("score")
+    if score is not None:
+        detail_parts.append(f"score={score}")
+
+    verifier = payload.get("verifier") if isinstance(payload.get("verifier"), dict) else {}
+    details = verifier.get("details") if isinstance(verifier.get("details"), dict) else {}
+    for key in ("correctness", "efficiency", "discipline"):
+        value = details.get(key)
+        if value is not None:
+            detail_parts.append(f"{key}={value}/2")
+    for key in ("commandCount", "turnsUsed"):
+        value = details.get(key)
+        if value is not None:
+            detail_parts.append(f"{key}={value}")
+
+    note = str(payload.get("note") or "").strip()
+    if note:
+        detail_parts.append(f"note={note}")
+
+    if not detail_parts:
+        return f"{scenario_id}: {summary}"
+    return f"{scenario_id}: {summary} ({'; '.join(detail_parts)})"
+
+
 def _payload_to_result(scenario_id: str, payload: dict, stderr: str = "") -> dict:
     if payload.get("status") == "error":
         return _fail(scenario_id, "server_error", str(payload.get("summary", "upstream verifier error")), {"upstream": payload, "stderr": stderr[-2000:]})
@@ -303,7 +330,7 @@ def _payload_to_result(scenario_id: str, payload: dict, stderr: str = "") -> dic
     return {
         "passed": passed,
         "failure_mode": "passed" if passed else "verifier_fail",
-        "detail": f"{scenario_id}: {payload.get('summary', 'upstream verifier result')}",
+        "detail": _payload_detail(scenario_id, payload),
         "trace": {"mode": "upstream-runtime", "upstream": payload, "stderr": stderr[-2000:]},
     }
 

@@ -219,10 +219,10 @@ export const SCENARIOS: readonly HermesScenario[] = [
     kind: "retry_after_failure",
     title: "Recover From A Tool Failure And Retry Correctly",
     category: "Delegation, Recovery & Boundaries",
-    description: "Checks whether Hermes reacts to one deterministic tool failure with a real corrective step and retry.",
+    description: "Checks whether Hermes completes deployment through a real corrective step rather than blind retry.",
     promptText: "Deploy the latest version.",
-    successCase: "The final deployment succeeds after a failed attempt and a corrective action.",
-    failureCase: "Hermes loops blindly or never reaches a successful retry."
+    successCase: "The final deployment succeeds after a corrective action, whether discovered after a failed attempt or before the successful deploy.",
+    failureCase: "Hermes loops blindly, skips the corrective step, or never reaches a successful deploy."
   },
   {
     id: "HA-20",

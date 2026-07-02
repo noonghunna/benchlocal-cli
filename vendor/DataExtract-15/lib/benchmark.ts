@@ -9,7 +9,7 @@ Rules:
 - Do NOT infer, guess, or use background knowledge.
 - Output valid JSON with the exact field names specified.
 - Output ONLY the JSON object or JSON array. No explanations, no markdown fences.
-- For numeric fields, output a JSON number only when the number is explicitly stated in the source text and can be copied by deterministic parsing.
+- For numeric fields, output JSON numbers, not strings. Strip currency symbols, commas, units, and percent signs only when the number is explicitly stated and can be copied by deterministic parsing (for example, $4.75 -> 4.75, 16GB -> 16, 10 hours -> 10).
 - For boolean fields, output true or false only when the source text explicitly states the condition.
 - If the prompt explicitly instructs you to resolve conflicts, use the final / most recent stated value. Otherwise do not resolve by inference.
 - Preserve original capitalization, punctuation, wording, and language for string values.`;

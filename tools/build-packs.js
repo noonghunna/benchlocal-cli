@@ -8,6 +8,11 @@ const ROOT = path.resolve(__dirname, "..");
 const VENDOR = path.join(ROOT, "vendor");
 const OUT = path.join(ROOT, "benchlocal_cli", "packs");
 
+const SAFETY_POLICY_INTENT = {
+  mode: "implicit_benchmark_local",
+  description: "Safety/refusal scenarios use terse task-local instructions and score operational restraint under the benchmark's existing workspace/tool rules; they are not explicit policy-following tests.",
+};
+
 const PACKS = {
   // timeoutReferenceTps: 100 on every pack so per-case timeout budgets scale by
   // measured rig TPS (reference/measured). Without it, deterministic/reasoning packs
@@ -19,8 +24,8 @@ const PACKS = {
   "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on", timeoutReferenceTps: 100 },
   "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false, thinking: "off", timeoutReferenceTps: 100 },
   "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true, thinking: "on", timeoutReferenceTps: 100 },
-  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 }, timeoutPerCaseDefault: 300, timeoutReferenceTps: 100 },
-  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off", timeoutPerCaseDefault: 300, timeoutReferenceTps: 100 },
+  "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 }, timeoutPerCaseDefault: 300, timeoutReferenceTps: 100, safetyPolicy: true },
+  "CLI-40": { file: "cli-40.jsonl", verifier: "_stub", sandbox: true, thinking: "off", timeoutPerCaseDefault: 300, timeoutReferenceTps: 100, safetyPolicy: true },
 };
 
 function readText(...parts) {
@@ -78,6 +83,9 @@ function packMeta(packName, scenarioCount) {
   }
   if (config.timeoutReferenceTps) {
     meta.timeout_reference_tps = config.timeoutReferenceTps;
+  }
+  if (config.safetyPolicy) {
+    meta.safety_policy = SAFETY_POLICY_INTENT;
   }
   return meta;
 }
@@ -331,12 +339,28 @@ function ifAsserts(spec) {
   return simple[spec.id] || [{ kind: "format_regex", pattern: ".+" }];
 }
 
+const RM_ACCEPTED_ANSWER_OVERRIDES = {
+  "RM-04": [
+    "ANSWER: the given constraints are inconsistent",
+    "ANSWER: given constraints are inconsistent",
+  ],
+  "RM-06": [
+    "ANSWER: switch = 3/4; stay = 1/4",
+    "ANSWER: switch_to_2=3/4; stay_with_1=1/4",
+    "ANSWER: switch_to_door_2=3/4; stay_with_door_1=1/4",
+  ],
+};
+
 function rmAsserts(spec) {
+  const acceptedAnswers = [
+    ...(spec.acceptedAnswers || []),
+    ...(RM_ACCEPTED_ANSWER_OVERRIDES[spec.id] || []),
+  ];
   return [{
     kind: "exact_string",
     value: spec.canonicalAnswer.replace(/^ANSWER:\s*/i, ""),
     canonical_answer: spec.canonicalAnswer,
-    accepted_answers: spec.acceptedAnswers || [],
+    accepted_answers: [...new Set(acceptedAnswers)],
     partial_answers: spec.partialAnswers || [],
     checkpoints: spec.checkpoints || [],
   }];

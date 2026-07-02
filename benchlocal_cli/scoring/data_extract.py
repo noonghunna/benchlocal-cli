@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -36,19 +37,53 @@ def _top_level_shape(value: Any) -> str:
     return "other"
 
 
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _json_value(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return repr(value)
+
+
+def _typed_mismatch(expected_type: str, expected: Any, actual: Any) -> str:
+    return (
+        f"expected {expected_type} {_json_value(expected)}, "
+        f"received {_json_type(actual)} {_json_value(actual)}"
+    )
+
+
 def _compare_scalar(expected: Any, actual: Any) -> tuple[bool, str | None]:
     if expected is None:
-        return actual is None, None if actual is None else "expected null"
+        return actual is None, None if actual is None else _typed_mismatch("null", expected, actual)
     if isinstance(expected, str):
         if not isinstance(actual, str):
-            return False, "expected string"
-        return actual.strip() == expected.strip(), None
+            return False, _typed_mismatch("string", expected, actual)
+        ok = actual.strip() == expected.strip()
+        return ok, None if ok else _typed_mismatch("string", expected, actual)
     if isinstance(expected, bool):
-        return actual is expected, None if isinstance(actual, bool) else "expected boolean"
+        if not isinstance(actual, bool):
+            return False, _typed_mismatch("boolean", expected, actual)
+        return actual is expected, None if actual is expected else _typed_mismatch("boolean", expected, actual)
     if isinstance(expected, int | float) and not isinstance(expected, bool):
         if not isinstance(actual, int | float) or isinstance(actual, bool):
-            return False, "expected number"
-        return abs(float(actual) - float(expected)) <= 0.01, None
+            return False, _typed_mismatch("number", expected, actual)
+        ok = abs(float(actual) - float(expected)) <= 0.01
+        return ok, None if ok else _typed_mismatch("number", expected, actual)
     return False, "unsupported scalar type"
 
 
