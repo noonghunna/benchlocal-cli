@@ -80,6 +80,9 @@ def _parser() -> argparse.ArgumentParser:
     # v0.8 — `history` subcommand for querying the run-history CSV
     from benchlocal_cli.history import add_history_subparser
     add_history_subparser(sub)
+    # v0.9.x — offline re-grading of saved raw responses after scorer fixes.
+    from benchlocal_cli.rescore import add_rescore_subparser
+    add_rescore_subparser(sub)
 
     run = sub.add_parser(
         "run",
@@ -642,6 +645,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "history":
             from benchlocal_cli.history import history_main
             return history_main(args)
+
+        if args.command == "rescore":
+            from benchlocal_cli.rescore import rescore_result
+            return rescore_result(args.path, args)
 
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):

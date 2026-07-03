@@ -275,7 +275,10 @@ benchlocal-cli inspect results.json --scenario IF-10 --full  # full prompt/respo
 benchlocal-cli inspect results.json --mode timeout           # only this failure_mode
 benchlocal-cli inspect results.json --diff previous.json     # side-by-side vs a prior run (regressions + latency delta)
 benchlocal-cli inspect results.json --logs ./sandbox-logs    # pull sandboxed-pack stdout/stderr
+benchlocal-cli rescore results.json --pack reasonmath-15 --output rescored.json
 ```
+
+Use `rescore` when a deterministic scorer changes and the saved JSON already contains `raw_response`. It re-grades from the stored model responses without calling the endpoint again; sandbox-backed packs are skipped because their verifier state lives in Docker fixtures.
 
 `failure_mode` is one of `verifier_fail`, `token_limit`, `timeout`, `agent_runner_timeout`, `agent_runner_crashed`, `server_error`, `http_error`, `model_endpoint_unreachable`, `result_json_malformed`, `wrong_answer`, `verifier_not_implemented`.
 

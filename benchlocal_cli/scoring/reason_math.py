@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 
-from benchlocal_cli.scoring.common import content, result
+from benchlocal_cli.scoring.common import content, content_channels_with_sources, result
 from benchlocal_cli.types import ScenarioResult
 
 
@@ -83,31 +83,44 @@ def _answer_axis(assertion: dict, raw_answer: str) -> tuple[int, str | None]:
     return 0, f"Unexpected final line: {answer_line}"
 
 
-def _trace_axis(assertion: dict, raw_answer: str) -> tuple[int, str | None]:
+def _checkpoint_matches(checkpoint_text: str, normalized_text: str) -> bool:
+    normalized_checkpoint = _norm(checkpoint_text)
+    if normalized_checkpoint in normalized_text:
+        return True
+    if "=" not in checkpoint_text:
+        return False
+    left, right = checkpoint_text.split("=", 1)
+    return _norm_checkpoint_label(left) in normalized_text and _norm(right) in normalized_text
+
+
+def _trace_axis(
+    assertion: dict,
+    raw_answer: str,
+    channels: list[tuple[str, str]] | None = None,
+) -> tuple[int, str | None, list[str]]:
     checkpoints = assertion.get("checkpoints") or []
     if not checkpoints:
-        return 2, None
+        return 2, None, []
 
     normalized = _norm(raw_answer)
     matched = []
+    matched_source_set: set[str] = set()
     for checkpoint in checkpoints:
         checkpoint_text = str(checkpoint)
-        normalized_checkpoint = _norm(checkpoint_text)
-        if normalized_checkpoint in normalized:
-            matched.append(checkpoint_text)
+        if not _checkpoint_matches(checkpoint_text, normalized):
             continue
+        matched.append(checkpoint_text)
+        for source, channel_text in channels or []:
+            if _checkpoint_matches(checkpoint_text, _norm(channel_text)):
+                matched_source_set.add(source)
 
-        if "=" not in checkpoint_text:
-            continue
-        left, right = checkpoint_text.split("=", 1)
-        if _norm_checkpoint_label(left) in normalized and _norm(right) in normalized:
-            matched.append(checkpoint_text)
-
+    matched_sources = [source for source, _ in channels or [] if source in matched_source_set]
+    source_note = f" Trace sources: {', '.join(matched_sources)}." if matched_sources else ""
     if len(matched) == len(checkpoints):
-        return 2, None
+        return 2, f"Matched checkpoints across {', '.join(matched_sources)}." if matched_sources else None, matched_sources
     if matched:
-        return 1, f"Matched {len(matched)}/{len(checkpoints)} checkpoints."
-    return 0, "No published checkpoints matched."
+        return 1, f"Matched {len(matched)}/{len(checkpoints)} checkpoints.{source_note}", matched_sources
+    return 0, f"No published checkpoints matched.{source_note}", matched_sources
 
 
 def _scored_result(
@@ -128,6 +141,8 @@ def _scored_result(
 
 def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
     text = content(response).strip()
+    trace_channels = content_channels_with_sources(response)
+    trace_text = "\n".join(channel_text for _, channel_text in trace_channels).strip()
     for assertion in scenario.get("verifier", {}).get("asserts", []):
         kind = assertion.get("kind")
         if kind == "exact_numeric":
@@ -147,7 +162,7 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
         elif kind == "exact_string":
             if any(key in assertion for key in ("canonical_answer", "accepted_answers", "partial_answers", "checkpoints")):
                 answer_points, answer_note = _answer_axis(assertion, text)
-                trace_points, trace_note = _trace_axis(assertion, text)
+                trace_points, trace_note, matched_sources = _trace_axis(assertion, trace_text, trace_channels)
                 score = round(100 * (0.7 * (answer_points / 2) + 0.3 * (trace_points / 2)))
                 passed = score >= 85
                 notes = " ".join(part for part in (answer_note, trace_note) if part)
@@ -155,6 +170,7 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
                     "upstream_style_score": score,
                     "answer_axis_points": answer_points,
                     "trace_axis_points": trace_points,
+                    "trace_sources": matched_sources,
                     "status_threshold": "pass >= 85",
                     "notes": notes or None,
                 }
