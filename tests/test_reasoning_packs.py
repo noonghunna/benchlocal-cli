@@ -99,6 +99,71 @@ def test_sandbox_safety_policy_intent_is_explicit_in_pack_metadata():
         assert "not explicit policy-following tests" in policy["description"]
 
 
+
+def test_rescore_regrades_saved_reason_math_reasoning_channel(tmp_path):
+    source = tmp_path / "run.json"
+    target = tmp_path / "rescored.json"
+    source.write_text(json.dumps({
+        "schema_version": "1",
+        "runner_version": "test",
+        "endpoint": "saved",
+        "model": "saved",
+        "mode": "custom",
+        "started_at": "2026-07-03T00:00:00Z",
+        "finished_at": "2026-07-03T00:00:01Z",
+        "packs": [{
+            "pack_id": "reasonmath-15",
+            "version": "1.0.0",
+            "upstream_commit": "test",
+            "scenario_count": 1,
+            "passed": 0,
+            "total": 1,
+            "score": 0.0,
+            "latency": {"p50": 0.1, "p95": 0.1, "mean": 0.1},
+            "scenarios": [{
+                "id": "RM-02",
+                "passed": False,
+                "failure_mode": "wrong_answer",
+                "detail": "old trace axis cap",
+                "latency_seconds": 0.1,
+                "tokens_completion": 12,
+                "result": {
+                    "scenario_id": "RM-02",
+                    "passed": False,
+                    "failure_mode": "wrong_answer",
+                    "detail": "old trace axis cap",
+                    "latency_seconds": 0.1,
+                    "tokens_completion": 12,
+                    "verifier_trace": {"upstream_style_score": 70},
+                },
+                "raw_scenario": {"id": "RM-02"},
+                "raw_response": {
+                    "choices": [{
+                        "message": {
+                            "content": "ANSWER: kg=0.313",
+                            "reasoning": "grams=312.5\nkg=0.3125",
+                        }
+                    }],
+                    "usage": {"completion_tokens": 12},
+                },
+                "request": {},
+                "sampling_params": {},
+                "status_code": 200,
+            }],
+        }],
+        "totals": {"passed": 0, "total": 1, "score": 0.0},
+    }))
+
+    assert main(["rescore", str(source), "--pack", "reasonmath-15", "--output", str(target)]) == 0
+
+    rescored = json.loads(target.read_text())
+    scenario = rescored["packs"][0]["scenarios"][0]
+    assert scenario["passed"] is True
+    assert scenario["result"]["verifier_trace"]["trace_axis_points"] == 2
+    assert scenario["result"]["verifier_trace"]["trace_sources"] == ["message.reasoning"]
+    assert rescored["totals"] == {"passed": 1, "total": 1, "score": 1.0}
+    assert rescored["rescored"]["scenarios"] == 1
+
 def test_answer_match_numeric_prefers_final_answer_line():
     scenario = {"id": "GSM", "verifier": {"asserts": [{"kind": "exact_numeric", "value": "20"}]}}
     assert answer_match.score_scenario(scenario, _response("Rough work mentions 20, but final says ANSWER: 21")).failure_mode == "wrong_answer"

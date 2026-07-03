@@ -100,6 +100,82 @@ def test_reason_math_exact_string_multi_value_key_agnostic():
     assert reason_math.score_scenario(scenario, _response("ANSWER: total=$5721.24")).failure_mode == "wrong_answer"
 
 
+def _reason_math_checkpoint_scenario() -> dict:
+    return {
+        "id": "RM-split",
+        "verifier": {
+            "asserts": [
+                {
+                    "kind": "exact_string",
+                    "value": "fit=no; max_meetings=3",
+                    "canonical_answer": "ANSWER: fit=no; max_meetings=3",
+                    "checkpoints": ["meeting_a=09:00", "meeting_b=11:00"],
+                }
+            ]
+        },
+    }
+
+
+def _split_response(content: str, **extra_message: str) -> dict:
+    message = {"content": content}
+    message.update(extra_message)
+    return {"choices": [{"message": message}], "usage": {"completion_tokens": 3}}
+
+
+def test_reason_math_trace_axis_matches_content_only_checkpoints():
+    scenario = _reason_math_checkpoint_scenario()
+    response = _response("meeting_a=09:00\nmeeting_b=11:00\nANSWER: fit=no; max_meetings=3")
+
+    result = reason_math.score_scenario(scenario, response)
+
+    assert result.passed
+    assert result.verifier_trace["trace_axis_points"] == 2
+    assert result.verifier_trace["trace_sources"] == ["message.content"]
+
+
+def test_reason_math_trace_axis_matches_reasoning_only_checkpoints():
+    scenario = _reason_math_checkpoint_scenario()
+    response = _split_response(
+        "ANSWER: fit=no; max_meetings=3",
+        reasoning="meeting_a=09:00\nmeeting_b=11:00",
+    )
+
+    result = reason_math.score_scenario(scenario, response)
+
+    assert result.passed
+    assert result.verifier_trace["answer_axis_points"] == 2
+    assert result.verifier_trace["trace_axis_points"] == 2
+    assert result.verifier_trace["trace_sources"] == ["message.reasoning"]
+
+
+def test_reason_math_trace_axis_matches_split_content_and_reasoning_checkpoints():
+    scenario = _reason_math_checkpoint_scenario()
+    response = _split_response(
+        "meeting_b=11:00\nANSWER: fit=no; max_meetings=3",
+        reasoning="meeting_a=09:00",
+    )
+
+    result = reason_math.score_scenario(scenario, response)
+
+    assert result.passed
+    assert result.verifier_trace["trace_axis_points"] == 2
+    assert result.verifier_trace["trace_sources"] == ["message.content", "message.reasoning"]
+
+
+def test_reason_math_trace_axis_still_fails_when_no_channel_has_checkpoints():
+    scenario = _reason_math_checkpoint_scenario()
+    response = _split_response(
+        "ANSWER: fit=no; max_meetings=3",
+        reasoning="unrelated planning",
+    )
+
+    result = reason_math.score_scenario(scenario, response)
+
+    assert result.failure_mode == "wrong_answer"
+    assert result.verifier_trace["upstream_style_score"] == 70
+    assert result.verifier_trace["trace_axis_points"] == 0
+
+
 def test_data_extract_pass_and_fail():
     scenario = {"id": "DE", "verifier": {"asserts": [{"kind": "field_exact_value", "field": "email", "value": "a@example.com"}, {"kind": "no_extra_fields", "allowed": ["email"]}]}}
     assert data_extract.score_scenario(scenario, _response('{"email":"a@example.com"}')).passed

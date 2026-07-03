@@ -74,6 +74,25 @@ def content_with_source(response: dict) -> tuple[str, str | None]:
     return "", None
 
 
+def content_channels_with_sources(response: dict) -> list[tuple[str, str]]:
+    channels: list[tuple[str, str]] = []
+    for field in ("content", "reasoning_content", "reasoning"):
+        value = response.get(field)
+        if isinstance(value, str) and value:
+            channels.append((field, sanitize_reasoning_tags(value)))
+    msg = message(response)
+    for field in ("content", "reasoning_content", "reasoning"):
+        value = msg.get(field)
+        if isinstance(value, str) and value:
+            channels.append((f"message.{field}", sanitize_reasoning_tags(value)))
+    return channels
+
+
+def combined_content_with_sources(response: dict) -> tuple[str, list[str]]:
+    channels = content_channels_with_sources(response)
+    return "\n".join(text for _, text in channels), [source for source, _ in channels]
+
+
 def content(response: dict) -> str:
     return content_with_source(response)[0]
 
