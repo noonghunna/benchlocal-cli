@@ -73,6 +73,18 @@ def validate_selection(values: Iterable[str]) -> tuple[list[str], dict[str, list
     return canonical, by_pack
 
 
+def selection_for_packs(pack_ids: Iterable[str]) -> tuple[list[str], dict[str, list[str]]]:
+    allowed = set(pack_ids)
+    pack_order, catalog = scenario_catalog()
+    selected = [
+        f"{pack_id}/{scenario_id}"
+        for pack_id in pack_order
+        if pack_id in allowed
+        for scenario_id in catalog[pack_id]
+    ]
+    return validate_selection(selected)
+
+
 def intersect_selection(
     canonical: list[str],
     by_pack: dict[str, list[str]],

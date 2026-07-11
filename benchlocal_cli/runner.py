@@ -473,8 +473,10 @@ class Runner:
         repeat: int = 1,
         selection: dict[str, list[str]] | None = None,
         selection_ids: list[str] | None = None,
+        completed_repeats: dict[str, dict[str, set[int]]] | None = None,
+        started_at: str | None = None,
     ) -> RunResult:
-        started_at = _utc_now()
+        started_at = started_at or _utc_now()
         warnings: list[str] = []
         old_sigint = signal.getsignal(signal.SIGINT)
         old_sigterm = signal.getsignal(signal.SIGTERM)
@@ -501,6 +503,7 @@ class Runner:
                     repeat=repeat,
                     warnings=warnings,
                     scenario_ids=selection.get(pack_id) if selection is not None else None,
+                    completed_repeats=(completed_repeats or {}).get(pack_id),
                 )
                 pack_results.append(pack_result)
                 if self._on_pack_complete is not None:
@@ -857,6 +860,7 @@ class Runner:
         repeat: int = 1,
         warnings: list[str] | None = None,
         scenario_ids: list[str] | None = None,
+        completed_repeats: dict[str, set[int]] | None = None,
     ) -> PackResult:
         meta, scenarios = load_pack(pack_id)
         catalog_scenario_count = len(scenarios)
@@ -926,10 +930,18 @@ class Runner:
             )
 
         runs: list[ScenarioRun] = []
-        total_scenarios = len(scenarios) * repeat
+        completed_repeats = completed_repeats or {}
+        total_scenarios = sum(
+            1
+            for repeat_index in range(1, repeat + 1)
+            for scenario in scenarios
+            if repeat_index not in completed_repeats.get(scenario["id"], set())
+        )
         scenario_index = 0
         for repeat_index in range(1, repeat + 1):
             for scenario in scenarios:
+                if repeat_index in completed_repeats.get(scenario["id"], set()):
+                    continue
                 scenario_index += 1
                 run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
                 runs.append(run)
