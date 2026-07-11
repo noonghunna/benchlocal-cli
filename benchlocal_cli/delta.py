@@ -137,6 +137,7 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
 
     current_map = _build_scenario_map(current.get("packs") or [])
     previous_map = _build_scenario_map(previous.get("packs") or [])
+    selected_keys = set(current.get("selection") or []) if current.get("selection") is not None else None
 
     # Index per-pack deltas by pack_id for accumulation
     pack_deltas: dict[str, PackDelta] = {}
@@ -168,6 +169,8 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
 
     # Walk previous → find scenarios dropped from current
     for (pack_id, scenario_id), _ in previous_map.items():
+        if selected_keys is not None and f"{pack_id}/{scenario_id}" not in selected_keys:
+            continue
         if (pack_id, scenario_id) not in current_map:
             d = _ensure(pack_id)
             d.dropped += 1

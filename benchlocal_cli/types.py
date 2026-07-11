@@ -103,9 +103,12 @@ class PackResult:
     warnings: list[str] = field(default_factory=list)
     thinking_enabled: bool = False
     variance: dict[str, float | int | None] | None = None
+    # Present only for a selected subset. scenario_count is the selected count;
+    # this records the pack's complete catalog size for honest human rendering.
+    catalog_scenario_count: int | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "pack_id": self.pack_id,
             "version": self.version,
             "upstream_commit": self.upstream_commit,
@@ -121,6 +124,9 @@ class PackResult:
             "variance": self.variance,
             "scenarios": [scenario.to_dict() for scenario in self.scenarios],
         }
+        if self.catalog_scenario_count is not None:
+            out["catalog_scenario_count"] = self.catalog_scenario_count
+        return out
 
 
 @dataclass
@@ -154,6 +160,9 @@ class RunResult:
     # or None if the endpoint didn't expose them (vLLM). Only populated
     # when sampling_source == "server".
     server_defaults: dict | None = None
+    # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
+    # version 1 readers remain compatible with ordinary and historical results.
+    selection: list[str] | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -178,4 +187,6 @@ class RunResult:
             out["sampling_source"] = self.sampling_source
         if self.server_defaults is not None:
             out["server_defaults"] = self.server_defaults
+        if self.selection is not None:
+            out["selection"] = self.selection
         return out

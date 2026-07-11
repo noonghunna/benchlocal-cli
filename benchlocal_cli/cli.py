@@ -103,6 +103,17 @@ def _parser() -> argparse.ArgumentParser:
     # it reads like a thinking-mode but is actually a pack-set selector — #65.
     mode.add_argument("--reasoning", action="store_true", help=argparse.SUPPRESS)
     run.add_argument("--pack", help="run a single named pack (overrides --quick/--medium/--full)")
+    run.add_argument(
+        "--scenario",
+        action="append",
+        default=[],
+        metavar="PACK_ID/SCENARIO_ID",
+        help="run one pack-qualified scenario (repeatable); intersects with pack-set flags",
+    )
+    run.add_argument(
+        "--scenarios-file",
+        help="newline-delimited PACK_ID/SCENARIO_ID selections; blank lines and # comments allowed",
+    )
     # endpoint/model are required for normal runs; relaxed to optional so the
     # #62 negative-control probe (which never calls a model) can run without them.
     # Enforced in cmd_run when --negative-control is absent.
@@ -300,6 +311,11 @@ def _parser() -> argparse.ArgumentParser:
              "score, per-pack pass/total, runner_version). Falls back to "
              "BENCHLOCAL_HISTORY_FILE env. Use `benchlocal-cli history` to query.",
     )
+    run.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="allow a scenario-selection result to be appended to --history-file",
+    )
     return parser
 
 
@@ -338,6 +354,14 @@ def _pack_line(pack: PackResult) -> str:
         status = pack.status
     else:
         status = "ok" if pack.total else pack.status
+    if (
+        pack.catalog_scenario_count is not None
+        and pack.scenario_count < pack.catalog_scenario_count
+    ):
+        status = (
+            f"{status}; partial — {pack.scenario_count} of "
+            f"{pack.catalog_scenario_count} selected"
+        )
     score = f"{pack.score:.0%}" if pack.total else "-"
     p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
     return f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {status}"
@@ -411,8 +435,12 @@ def _markdown(result: RunResult) -> str:
         override_str = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
         canonical_tag = f" ⚠ NON-CANONICAL (sampling: {override_str})"
 
+    selection_tag = (
+        f" [PARTIAL SELECTION: {len(result.selection)} scenarios]"
+        if result.selection is not None else ""
+    )
     lines = [
-        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag} ===",
+        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag} ===",
         "",
     ]
     show_variance = delta_pack_index is None and any(pack.variance for pack in result.packs)
@@ -436,6 +464,14 @@ def _markdown(result: RunResult) -> str:
             status = pack.status
         else:
             status = "ok" if pack.total else pack.status
+        if (
+            pack.catalog_scenario_count is not None
+            and pack.scenario_count < pack.catalog_scenario_count
+        ):
+            status = (
+                f"{status}; partial — {pack.scenario_count} of "
+                f"{pack.catalog_scenario_count} selected"
+            )
         score = f"{pack.score:.0%}" if pack.total else "-"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
@@ -679,6 +715,35 @@ def main(argv: list[str] | None = None) -> int:
             pack_ids = [args.pack]
         else:
             pack_ids = PACK_MODES[mode]
+
+        from benchlocal_cli.selection import (
+            intersect_selection,
+            requested_ids,
+            validate_selection,
+        )
+        raw_selection = requested_ids(args.scenario, args.scenarios_file)
+        selection_ids: list[str] | None = None
+        selection_by_pack: dict[str, list[str]] | None = None
+        selection_requested = bool(args.scenario or args.scenarios_file)
+        if selection_requested:
+            if not raw_selection:
+                raise ValueError("scenario selection is empty")
+            selection_ids, selection_by_pack = validate_selection(raw_selection)
+            explicit_pack_set = bool(
+                args.pack or args.quick or args.medium or args.full
+                or args.reasoning_packs or args.reasoning or args.sandboxed_only
+            )
+            selection_ids, selection_by_pack = intersect_selection(
+                selection_ids,
+                selection_by_pack,
+                pack_ids if explicit_pack_set else None,
+            )
+            if explicit_pack_set:
+                pack_ids = [pack_id for pack_id in pack_ids if pack_id in selection_by_pack]
+            else:
+                pack_ids = list(selection_by_pack)
+                mode = "custom"
+
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
         # --sandboxed-only also implies sandbox is enabled (no point otherwise).
         # Single-pack runs (--pack) auto-enable sandbox if the pack requires it.
@@ -694,6 +759,8 @@ def main(argv: list[str] | None = None) -> int:
                     sandboxed_enabled = True
             except Exception:
                 pass  # let Runner surface the unknown-pack error
+        if selection_by_pack and _pack_ids_include_sandboxed(pack_ids):
+            sandboxed_enabled = True
         if args.no_sandboxed_packs and not args.sandboxed_only:
             sandboxed_enabled = False
         # Build sampling overrides from CLI flags (#19)
@@ -788,6 +855,7 @@ def main(argv: list[str] | None = None) -> int:
                     warnings=[],
                     sampling_overrides=sampling_overrides or None,
                     sampling_source="server" if args.sampling_from_server else None,
+                    selection=selection_ids,
                 )
                 try:
                     with Path(incremental_state["save_path"]).open("w", encoding="utf-8") as handle:
@@ -845,7 +913,13 @@ def main(argv: list[str] | None = None) -> int:
             on_progress_event=on_progress_event,
         )
         try:
-            result = runner.run(pack_ids, mode=mode, repeat=max(1, args.repeat))
+            result = runner.run(
+                pack_ids,
+                mode=mode,
+                repeat=max(1, args.repeat),
+                selection=selection_by_pack,
+                selection_ids=selection_ids,
+            )
         except _SpendGuardExceeded as exc:
             print(f"\n[spend-guard] {exc}", file=sys.stderr)
             print(
@@ -883,7 +957,7 @@ def main(argv: list[str] | None = None) -> int:
         if history_path:
             try:
                 from benchlocal_cli.history import append_run
-                append_run(result_dict, history_path)
+                append_run(result_dict, history_path, allow_partial=args.allow_partial)
             except Exception as exc:
                 print(f"benchlocal-cli: warning — history append failed: {exc}", file=sys.stderr)
         if args.output == "json":
