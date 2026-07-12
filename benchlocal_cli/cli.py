@@ -141,6 +141,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-scale-down", action="store_true", help="allow dynamic timeout scaling to shrink budgets for faster-than-reference models; off by default")
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
+    run.add_argument(
+        "--resume",
+        metavar="RESULTS_JSON_OR_PARTIAL_JSONL",
+        help="resume missing scenarios from a saved result or per-scenario partial journal",
+    )
     run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
     # v0.9.3: incremental progress (#23) — live output during long runs
     run.add_argument(
@@ -152,8 +157,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--incremental",
         action="store_true",
-        help="flush partial JSON to --save-json after each pack completes (not just at end). "
-             "Requires --save-json. A crash mid-run preserves whatever packs finished.",
+        help="append each scored scenario to <save-json>.partial.jsonl and fold it into "
+             "the final JSON on success. Requires --save-json; crashes leave the journal readable.",
     )
     run.add_argument(
         "--enable-sandboxed-packs",
@@ -686,6 +691,70 @@ def main(argv: list[str] | None = None) -> int:
             from benchlocal_cli.rescore import rescore_result
             return rescore_result(args.path, args)
 
+        resume_state = None
+        if args.resume:
+            from benchlocal_cli.persistence import load_resume
+
+            resume_state = load_resume(args.resume)
+            conflicting_selector = bool(
+                args.scenario or args.scenarios_file or args.pack or args.quick
+                or args.medium or args.full or args.reasoning_packs or args.reasoning
+                or args.sandboxed_only
+            )
+            if conflicting_selector:
+                raise ValueError("--resume cannot be combined with scenario or pack-set selectors")
+            if args.repeat != 1:
+                raise ValueError("--resume uses the original run repeat count; do not pass --repeat")
+            if args.thinking_override is not None or args.thinking_max_tokens is not None:
+                raise ValueError("--resume uses the original thinking configuration")
+            if any(
+                value is not None
+                for value in (
+                    args.temperature, args.top_p, args.top_k, args.min_p,
+                    args.repeat_penalty, args.max_tokens, args.extra_body,
+                    args.thinking_sampler,
+                )
+            ) or args.sampling_from_server:
+                raise ValueError("--resume uses the original sampling configuration")
+
+            config = resume_state.config
+            args.endpoint = args.endpoint or config.get("endpoint")
+            args.model = args.model or config.get("model")
+            args.save_json = args.save_json or str(resume_state.final_path)
+            args.repeat = int(config.get("repeat") or 1)
+            args.thinking_override = config.get("thinking_override")
+            args.thinking_max_tokens = config.get("thinking_max_tokens")
+            for key, value in (config.get("sampling_overrides") or {}).items():
+                attr = "repeat_penalty" if key == "repeat_penalty" else key.replace("-", "_")
+                if hasattr(args, attr):
+                    setattr(args, attr, value)
+            args.sampling_from_server = config.get("sampling_source") == "server"
+            if config.get("extra_body") is not None:
+                args.extra_body = json.dumps(config["extra_body"])
+            if config.get("thinking_sampler") is not None:
+                args.thinking_sampler = json.dumps(config["thinking_sampler"])
+            args.measured_tps = args.measured_tps or config.get("measured_tps")
+            args.reference_tps = args.reference_tps or config.get("reference_tps")
+            args.timeout_per_case = args.timeout_per_case or config.get("timeout_per_case")
+            args.timeout_scale_down = bool(config.get("timeout_scale_down"))
+            args.enable_sandboxed_packs = bool(config.get("sandboxed_enabled"))
+            args.request_delay = float(config.get("request_delay") or args.request_delay)
+
+            if resume_state.complete:
+                if str(resume_state.source_path).endswith(".partial.jsonl"):
+                    from benchlocal_cli.persistence import finalize_completed_journal
+
+                    finalize_completed_journal(resume_state)
+                    print(
+                        f"benchlocal-cli: resume complete — no scenarios remain; "
+                        f"finalized {resume_state.final_path}"
+                    )
+                else:
+                    print(
+                        f"benchlocal-cli: resume complete — no scenarios remain in {args.resume}"
+                    )
+                return 0
+
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):
             print(
@@ -706,43 +775,60 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        mode = _mode_from_args(args)
-        if args.sandboxed_only:
-            from benchlocal_cli.runner import SANDBOXED_PACK_IDS
-            pack_ids = list(SANDBOXED_PACK_IDS)
-            mode = "sandboxed-only"
-        elif args.pack:
-            pack_ids = [args.pack]
-        else:
-            pack_ids = PACK_MODES[mode]
-
         from benchlocal_cli.selection import (
             intersect_selection,
             requested_ids,
+            selection_for_packs,
             validate_selection,
         )
-        raw_selection = requested_ids(args.scenario, args.scenarios_file)
-        selection_ids: list[str] | None = None
-        selection_by_pack: dict[str, list[str]] | None = None
-        selection_requested = bool(args.scenario or args.scenarios_file)
-        if selection_requested:
-            if not raw_selection:
-                raise ValueError("scenario selection is empty")
-            selection_ids, selection_by_pack = validate_selection(raw_selection)
-            explicit_pack_set = bool(
-                args.pack or args.quick or args.medium or args.full
-                or args.reasoning_packs or args.reasoning or args.sandboxed_only
-            )
-            selection_ids, selection_by_pack = intersect_selection(
-                selection_ids,
-                selection_by_pack,
-                pack_ids if explicit_pack_set else None,
-            )
-            if explicit_pack_set:
-                pack_ids = [pack_id for pack_id in pack_ids if pack_id in selection_by_pack]
+
+        if resume_state is not None:
+            mode = str(resume_state.config.get("mode") or "custom")
+            pack_ids = [
+                pack_id for pack_id in resume_state.config["pack_ids"]
+                if pack_id in resume_state.missing_by_pack
+            ]
+            selection_ids = resume_state.config.get("result_selection")
+            selection_by_pack = resume_state.missing_by_pack
+            target_selection = list(resume_state.config["target_selection"])
+        else:
+            mode = _mode_from_args(args)
+            if args.sandboxed_only:
+                from benchlocal_cli.runner import SANDBOXED_PACK_IDS
+                pack_ids = list(SANDBOXED_PACK_IDS)
+                mode = "sandboxed-only"
+            elif args.pack:
+                pack_ids = [args.pack]
             else:
-                pack_ids = list(selection_by_pack)
-                mode = "custom"
+                pack_ids = PACK_MODES[mode]
+
+            raw_selection = requested_ids(args.scenario, args.scenarios_file)
+            selection_ids: list[str] | None = None
+            selection_by_pack: dict[str, list[str]] | None = None
+            selection_requested = bool(args.scenario or args.scenarios_file)
+            if selection_requested:
+                if not raw_selection:
+                    raise ValueError("scenario selection is empty")
+                selection_ids, selection_by_pack = validate_selection(raw_selection)
+                explicit_pack_set = bool(
+                    args.pack or args.quick or args.medium or args.full
+                    or args.reasoning_packs or args.reasoning or args.sandboxed_only
+                )
+                selection_ids, selection_by_pack = intersect_selection(
+                    selection_ids,
+                    selection_by_pack,
+                    pack_ids if explicit_pack_set else None,
+                )
+                if explicit_pack_set:
+                    pack_ids = [pack_id for pack_id in pack_ids if pack_id in selection_by_pack]
+                else:
+                    pack_ids = list(selection_by_pack)
+                    mode = "custom"
+            target_selection = (
+                list(selection_ids)
+                if selection_ids is not None
+                else selection_for_packs(pack_ids)[0]
+            )
 
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
         # --sandboxed-only also implies sandbox is enabled (no point otherwise).
@@ -811,60 +897,83 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        # Build progress callbacks (#23)
-        on_pack_complete = None
-        on_scenario_complete = None
-        on_progress_event = None
-
-        if args.progress:
-            on_scenario_complete = _scenario_progress
-            on_progress_event = _sandbox_progress_event
-
-        # For incremental output, we need to track state for partial JSON saves
-        incremental_state = {
-            "packs": [],
-            "started_at": None,
-            "save_path": args.save_json if args.incremental else None,
+        # Per-scenario durability (#82). The journal metadata is repeated on every
+        # line so any intact scored-scenario record is independently recoverable.
+        effective_extra_body = _load_extra_body(args.extra_body)
+        effective_thinking_sampler = _load_thinking_sampler(args.thinking_sampler)
+        run_started_at = (
+            str(resume_state.config.get("started_at"))
+            if resume_state is not None
+            else _utc_now()
+        )
+        run_config = {
+            "schema_version": "1",
+            "runner_version": __version__,
+            "endpoint": args.endpoint,
+            "model": args.model,
+            "mode": mode,
+            "started_at": run_started_at,
+            "pack_ids": (
+                list(resume_state.config["pack_ids"])
+                if resume_state is not None else list(pack_ids)
+            ),
+            "target_selection": target_selection,
+            "result_selection": selection_ids,
+            "repeat": max(1, args.repeat),
+            "thinking_override": args.thinking_override,
+            "thinking_mode": (
+                "force-on" if args.thinking_override is True
+                else "force-off" if args.thinking_override is False
+                else "pack-defaults"
+            ),
+            "thinking_max_tokens": effective_thinking_max,
+            "thinking_sampler": effective_thinking_sampler,
+            "sampling_overrides": sampling_overrides or None,
+            "sampling_source": "server" if args.sampling_from_server else None,
+            "extra_body": effective_extra_body,
+            "timeout_per_case": args.timeout_per_case,
+            "measured_tps": args.measured_tps,
+            "reference_tps": args.reference_tps,
+            "timeout_scale_down": args.timeout_scale_down,
+            "sandboxed_enabled": sandboxed_enabled,
+            "request_delay": args.request_delay,
+            "save_json": args.save_json,
         }
 
+        journal_writer = None
+        journal_path = None
+        incremental_active = bool(args.incremental or resume_state is not None)
+        if incremental_active:
+            from benchlocal_cli.persistence import JournalWriter, sidecar_path
+
+            journal_path = (
+                resume_state.sidecar_path
+                if resume_state is not None
+                else sidecar_path(args.save_json)
+            )
+            append_journal = bool(resume_state is not None and journal_path.is_file())
+            journal_writer = JournalWriter(
+                journal_path,
+                resume_state.config if resume_state is not None else run_config,
+                append=append_journal,
+            )
+
+        def _on_scenario_complete(run: ScenarioRun, index: int, total: int) -> None:
+            if args.progress:
+                _scenario_progress(run, index, total)
+            if journal_writer is not None:
+                journal_writer.append(run, index, total)
+
         def _on_pack_complete_incremental(pack: PackResult) -> None:
-            """Callback for per-pack incremental output (#23)."""
-            # Print the pack line immediately
             print(_pack_line(pack), file=sys.stderr, flush=True)
 
-            # Track for incremental JSON save
-            if incremental_state["save_path"]:
-                incremental_state["packs"].append(pack)
-                # Build a partial RunResult and save it
-                partial_result = RunResult(
-                    schema_version="1",
-                    runner_version=__version__,
-                    endpoint=args.endpoint,
-                    model=args.model,
-                    mode=mode,
-                    started_at=incremental_state["started_at"],
-                    finished_at=_utc_now(),
-                    packs=incremental_state["packs"],
-                    totals=_compute_partial_totals(incremental_state["packs"]),
-                    thinking_enabled=bool(args.thinking_override),
-                    thinking_mode=(
-                        "force-on" if args.thinking_override is True
-                        else "force-off" if args.thinking_override is False
-                        else "pack-defaults"
-                    ),
-                    warnings=[],
-                    sampling_overrides=sampling_overrides or None,
-                    sampling_source="server" if args.sampling_from_server else None,
-                    selection=selection_ids,
-                )
-                try:
-                    with Path(incremental_state["save_path"]).open("w", encoding="utf-8") as handle:
-                        json.dump(partial_result.to_dict(), handle, indent=2, sort_keys=True)
-                except Exception as exc:
-                    print(f"benchlocal-cli: warning — incremental save failed: {exc}", file=sys.stderr)
-
-        if args.progress or args.incremental:
-            on_pack_complete = _on_pack_complete_incremental
+        on_scenario_complete = (
+            _on_scenario_complete if args.progress or journal_writer is not None else None
+        )
+        on_pack_complete = (
+            _on_pack_complete_incremental if args.progress or incremental_active else None
+        )
+        on_progress_event = _sandbox_progress_event if args.progress else None
 
         # Block --exit-on-regression when sampling is non-canonical
         if args.exit_on_regression and (sampling_overrides or args.sampling_from_server):
@@ -875,10 +984,6 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-
-        # Set started_at for incremental saves before runner.run() sets its own
-        if incremental_state["save_path"]:
-            incremental_state["started_at"] = _utc_now()
 
         runner = Runner(
             endpoint=args.endpoint,
@@ -892,7 +997,7 @@ def main(argv: list[str] | None = None) -> int:
             negative_control=args.negative_control_text if args.negative_control else None,
             thinking_enabled=args.thinking_override,
             thinking_max_tokens=effective_thinking_max,
-            extra_body=_load_extra_body(args.extra_body),
+            extra_body=effective_extra_body,
             api_key=args.api_key,
             max_total_tokens=args.max_total_tokens,
             request_delay=args.request_delay,
@@ -907,7 +1012,7 @@ def main(argv: list[str] | None = None) -> int:
             retry_on_timeout=args.retry_on_timeout,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
-            thinking_sampler=_load_thinking_sampler(args.thinking_sampler),
+            thinking_sampler=effective_thinking_sampler,
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,
             on_progress_event=on_progress_event,
@@ -919,12 +1024,20 @@ def main(argv: list[str] | None = None) -> int:
                 repeat=max(1, args.repeat),
                 selection=selection_by_pack,
                 selection_ids=selection_ids,
+                completed_repeats=(
+                    resume_state.completed_repeats if resume_state is not None else None
+                ),
+                started_at=run_started_at,
             )
+            if resume_state is not None:
+                from benchlocal_cli.persistence import merge_resume
+
+                result = merge_resume(resume_state, result)
         except _SpendGuardExceeded as exc:
             print(f"\n[spend-guard] {exc}", file=sys.stderr)
             print(
                 f"[spend-guard] run stopped after {exc.tokens_used} tokens (cap {exc.cap}); "
-                "completed packs preserved only if --incremental + --save-json were set.",
+                "completed scenarios are preserved in the partial journal when incremental mode is active.",
                 file=sys.stderr,
             )
             return 2
@@ -951,6 +1064,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.save_json:
             with Path(args.save_json).open("w", encoding="utf-8") as handle:
                 json.dump(result_dict, handle, indent=2, sort_keys=True)
+            if journal_path is not None and journal_path.is_file():
+                journal_path.unlink()
 
         # v0.8 — opt-in history append (--history-file PATH or BENCHLOCAL_HISTORY_FILE env)
         history_path = args.history_file or os.environ.get("BENCHLOCAL_HISTORY_FILE")

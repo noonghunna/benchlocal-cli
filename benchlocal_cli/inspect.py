@@ -178,9 +178,11 @@ def inspect_result(
     if not path.is_file():
         print(f"benchlocal-cli inspect: file not found: {result_path}", file=sys.stderr)
         return 1
+    from benchlocal_cli.persistence import load_result
+
     try:
-        result = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        result = load_result(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"benchlocal-cli inspect: failed to read {result_path}: {exc}", file=sys.stderr)
         return 1
 
@@ -193,8 +195,8 @@ def inspect_result(
             print(f"benchlocal-cli inspect: --diff file not found: {diff_path}", file=sys.stderr)
             return 1
         try:
-            diff_result = json.loads(diff_p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            diff_result = load_result(diff_p)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"benchlocal-cli inspect: failed to read --diff: {exc}", file=sys.stderr)
             return 1
         diff_index = _build_index(diff_result)
@@ -412,9 +414,9 @@ def add_inspect_subparser(subparsers) -> None:
     """Wire inspect into the main CLI parser. Imported by cli.py."""
     parser = subparsers.add_parser(
         "inspect",
-        help="surface forensics from a saved RunResult JSON",
+        help="surface forensics from a saved result JSON or partial JSONL journal",
         description=(
-            "Read a saved --save-json output and surface per-scenario "
+            "Read a saved --save-json output or .partial.jsonl journal and surface "
             "details (final response, verifier trace, conversation) "
             "without manual JSON grepping."
         ),
@@ -427,7 +429,7 @@ def add_inspect_subparser(subparsers) -> None:
             "  benchlocal-cli inspect results/run.json --full --format json | jq\n"
         ),
     )
-    parser.add_argument("path", help="path to saved RunResult JSON (--save-json output)")
+    parser.add_argument("path", help="saved RunResult JSON or .partial.jsonl journal")
     parser.add_argument("--scenario", help="show only this scenario id (e.g. HA-01)")
     parser.add_argument("--pack", help="show only scenarios in this pack (e.g. hermesagent-20)")
     parser.add_argument("--failed", action="store_true", help="show only failed scenarios")

@@ -220,6 +220,19 @@ Selection alone defines the run set. With `--pack`, `--quick`, `--medium`, `--fu
 
 Selected results are intentionally explicit: JSON includes top-level `selection`, each pack's `scenario_count` is the selected subset, and `catalog_scenario_count` records the complete pack size. Human output labels subset scores `partial`. These are optional additive fields, so `schema_version` remains `1` and older result JSON stays readable. Partial results are refused by history ingestion and `rescore` unless `--allow-partial` is supplied. `--exit-on-regression` is allowed: with `--previous-result` it gates only selected scenario keys, while non-canonical sampling overrides remain blocked as before.
 
+## Incremental persistence and resume
+
+`--incremental` writes one scored scenario per line to a crash-safe sidecar named `<save-json>.partial.jsonl`. On normal completion the journal is folded into the ordinary result JSON and deleted; the final artifact shape and `schema_version` are unchanged. If the process is interrupted, inspect or resume the surviving journal directly:
+
+```bash
+benchlocal-cli run --full --incremental --save-json r.json \
+  --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
+benchlocal-cli inspect r.json.partial.jsonl --failed
+benchlocal-cli run --resume r.json.partial.jsonl
+```
+
+`--resume` also accepts an incomplete or completed result JSON. It reconstructs the original target set, repeat count, thinking mode, sampling, and timeout configuration; internally it runs #83's selection complement for only missing `(pack, scenario, repeat_index)` arms, then merges them in canonical order. Endpoint and model are restored from the journal, while credentials still come from the current CLI/environment. A completed result is a successful no-op with a clear message.
+
 ## Running against a cloud / managed endpoint
 
 The same packs run against any cloud OpenAI-compatible endpoint — a managed API, a router, your own hosted model — for a like-for-like local-vs-cloud comparison (identical prompts, identical verifiers).
