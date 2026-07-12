@@ -18,6 +18,11 @@ def add_rescore_subparser(sub) -> None:
     parser.add_argument("--output", help="write rescored JSON to this path (default: stdout)")
     parser.add_argument("--in-place", action="store_true", help="overwrite the input JSON with rescored results")
     parser.add_argument("--pack", help="only rescore one pack id, e.g. reasonmath-15")
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="allow rescoring a scenario-selection result (not a canonical pack total)",
+    )
 
 
 def _score_saved_scenario(pack_meta: dict, scenario_index: dict[str, dict], run: dict) -> tuple[bool, str | None]:
@@ -75,6 +80,8 @@ def rescore_result(path: str, args: Any) -> int:
     data = json.loads(source.read_text())
     if not isinstance(data, dict):
         raise ValueError("result JSON must be an object")
+    if data.get("selection") is not None and not args.allow_partial:
+        raise ValueError("partial selection results require --allow-partial to rescore")
 
     rescored = 0
     skipped: dict[str, int] = {}

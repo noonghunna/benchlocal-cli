@@ -465,7 +465,15 @@ class Runner:
             return 5.0
         return max(0.25, value)
 
-    def run(self, pack_ids: list[str], *, mode: str = "custom", repeat: int = 1) -> RunResult:
+    def run(
+        self,
+        pack_ids: list[str],
+        *,
+        mode: str = "custom",
+        repeat: int = 1,
+        selection: dict[str, list[str]] | None = None,
+        selection_ids: list[str] | None = None,
+    ) -> RunResult:
         started_at = _utc_now()
         warnings: list[str] = []
         old_sigint = signal.getsignal(signal.SIGINT)
@@ -488,7 +496,12 @@ class Runner:
             self._start_sandboxes(pack_ids, warnings)
             pack_results: list[PackResult] = []
             for pack_id in pack_ids:
-                pack_result = self.run_pack(pack_id, repeat=repeat, warnings=warnings)
+                pack_result = self.run_pack(
+                    pack_id,
+                    repeat=repeat,
+                    warnings=warnings,
+                    scenario_ids=selection.get(pack_id) if selection is not None else None,
+                )
                 pack_results.append(pack_result)
                 if self._on_pack_complete is not None:
                     self._on_pack_complete(pack_result)
@@ -532,6 +545,7 @@ class Runner:
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
+                selection=selection_ids,
             )
         finally:
             self._stop_sandboxes()
@@ -836,8 +850,20 @@ class Runner:
             return None
         return statistics.mean(samples)
 
-    def run_pack(self, pack_id: str, *, repeat: int = 1, warnings: list[str] | None = None) -> PackResult:
+    def run_pack(
+        self,
+        pack_id: str,
+        *,
+        repeat: int = 1,
+        warnings: list[str] | None = None,
+        scenario_ids: list[str] | None = None,
+    ) -> PackResult:
         meta, scenarios = load_pack(pack_id)
+        catalog_scenario_count = len(scenarios)
+        if scenario_ids is not None:
+            wanted = set(scenario_ids)
+            scenarios = [scenario for scenario in scenarios if scenario["id"] in wanted]
+        selected_catalog_count = catalog_scenario_count if scenario_ids is not None else None
         if meta.get("requires_dataset_access"):
             warning = meta.get("dataset_access_note") or f"skipping {pack_id}: dataset access required"
             if warnings is not None:
@@ -856,6 +882,7 @@ class Runner:
                 status="dataset-unavailable",
                 warnings=[warning],
                 thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                catalog_scenario_count=selected_catalog_count,
             )
         if meta.get("supports_sandboxed_only") and not self.enable_sandboxed_packs:
             warning = f"skipping {pack_id}: sandboxed verifier not enabled"
@@ -875,6 +902,7 @@ class Runner:
                 status="stubbed",
                 warnings=[warning],
                 thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                catalog_scenario_count=selected_catalog_count,
             )
         if meta.get("supports_sandboxed_only") and pack_id not in self._sandbox_clients:
             warning = f"skipping {pack_id}: sandbox unavailable"
@@ -894,6 +922,7 @@ class Runner:
                 status="sandbox-unavailable",
                 warnings=[warning],
                 thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                catalog_scenario_count=selected_catalog_count,
             )
 
         runs: list[ScenarioRun] = []
@@ -947,6 +976,7 @@ class Runner:
                     scenarios=runs,
                     status=sb_status,
                     thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                    catalog_scenario_count=selected_catalog_count,
                     variance=_repeat_variance(runs, repeat),
                 )
 
@@ -964,6 +994,7 @@ class Runner:
             scenarios=runs,
             status="ok" if total else "stubbed",
             thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+            catalog_scenario_count=selected_catalog_count,
             variance=_repeat_variance(runs, repeat),
         )
 

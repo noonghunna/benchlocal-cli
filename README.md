@@ -202,6 +202,24 @@ benchlocal-cli run --pack aider-polyglot-30 --enable-sandboxed-packs \
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --output json > results.json
 ```
 
+## Scenario selection
+
+Run exact scenarios with repeatable pack-qualified IDs, or keep a reusable newline-delimited selection file:
+
+```bash
+benchlocal-cli run \
+  --scenario cli-40/CLI-34 \
+  --scenario reasonmath-15/RM-04 \
+  --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
+
+benchlocal-cli run --scenarios-file targeted.txt \
+  --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
+```
+
+Selection alone defines the run set. With `--pack`, `--quick`, `--medium`, `--full`, `--reasoning-packs`, or `--sandboxed-only`, it intersects with that pack set. Selection files accept one `PACK_ID/SCENARIO_ID` per line, blank lines, and `#` comments. Unknown IDs fail before any model call and include near matches. Thinking and sampling follow the same pack defaults and overrides as ordinary runs.
+
+Selected results are intentionally explicit: JSON includes top-level `selection`, each pack's `scenario_count` is the selected subset, and `catalog_scenario_count` records the complete pack size. Human output labels subset scores `partial`. These are optional additive fields, so `schema_version` remains `1` and older result JSON stays readable. Partial results are refused by history ingestion and `rescore` unless `--allow-partial` is supplied. `--exit-on-regression` is allowed: with `--previous-result` it gates only selected scenario keys, while non-canonical sampling overrides remain blocked as before.
+
 ## Running against a cloud / managed endpoint
 
 The same packs run against any cloud OpenAI-compatible endpoint — a managed API, a router, your own hosted model — for a like-for-like local-vs-cloud comparison (identical prompts, identical verifiers).

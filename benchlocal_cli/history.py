@@ -86,10 +86,12 @@ def _row_from_run(run_dict: dict) -> dict[str, str]:
     return row
 
 
-def append_run(run_dict: dict, history_path: str | Path) -> None:
+def append_run(run_dict: dict, history_path: str | Path, *, allow_partial: bool = False) -> None:
     """Append a row to the history CSV. Creates the file with a header on
     first write. Acquires a POSIX flock to prevent concurrent-append corruption
     (Codex review #5)."""
+    if run_dict.get("selection") is not None and not allow_partial:
+        raise ValueError("partial selection results require --allow-partial for history ingestion")
     history_path = Path(history_path)
     history_path.parent.mkdir(parents=True, exist_ok=True)
     row = _row_from_run(run_dict)
