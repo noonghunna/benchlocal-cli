@@ -142,7 +142,23 @@ function buildHermesProviderEnv(model) {
   return env;
 }
 
-async function writeHermesConfig(hermesHomeDir, workspaceDir, model, maxTurns, options = {}) {
+function appendExtraBody(lines, indent, extraBody) {
+  if (!extraBody || typeof extraBody !== "object" || Array.isArray(extraBody)) {
+    return;
+  }
+
+  const entries = Object.entries(extraBody).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) {
+    return;
+  }
+
+  lines.push(`${indent}extra_body:`);
+  for (const [key, value] of entries) {
+    lines.push(`${indent}  ${key}: ${yamlScalar(value)}`);
+  }
+}
+
+export async function writeHermesConfig(hermesHomeDir, workspaceDir, model, maxTurns, options = {}) {
   await mkdir(hermesHomeDir, { recursive: true });
   const configPath = path.join(hermesHomeDir, "config.yaml");
   // benchlocal-cli v0.7.4 patch: hermes-agent v0.13+ enforces a 64K minimum
@@ -161,6 +177,7 @@ async function writeHermesConfig(hermesHomeDir, workspaceDir, model, maxTurns, o
     `  base_url: ${yamlScalar(model.inferenceBaseUrl)}`
   ];
   if (ctxLine) lines.push(ctxLine);
+  appendExtraBody(lines, "  ", model.extraBody);
 
   if (model.authMode === "bearer" && model.apiKey) {
     lines.push(`  api_key: ${yamlScalar(model.apiKey)}`);
@@ -217,6 +234,7 @@ async function writeHermesConfig(hermesHomeDir, workspaceDir, model, maxTurns, o
       if (model.authMode === "bearer" && model.apiKey) {
         lines.push(`    api_key: ${yamlScalar(model.apiKey)}`);
       }
+      appendExtraBody(lines, "    ", model.extraBody);
     }
   }
 
