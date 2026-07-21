@@ -337,7 +337,7 @@ def test_thinking_multiplier_applies_without_timeout_reference():
     # 60 * (16384 / 1024) = 960, the floor before any rig-speed scaling.
     assert budget == 60 * (16384 / 1024)
     assert budget >= 960
-    assert "thinking-budget-multiplier" in runner._timeout_scaling_note
+    assert "token-budget-multiplier" in runner._timeout_scaling_note
 
 
 def test_thinking_multiplier_composes_with_reference_speed_scale():
@@ -361,7 +361,7 @@ def test_thinking_multiplier_composes_with_reference_speed_scale():
 
     assert budget == 60 * (100 / 24) * (16384 / 1024)
     assert "measured_decode_tps=24.0" in runner._timeout_scaling_note
-    assert "thinking-budget-multiplier" in runner._timeout_scaling_note
+    assert "token-budget-multiplier" in runner._timeout_scaling_note
     assert runner._timeout_scaling_note_emitted is True
 
 
@@ -393,7 +393,7 @@ def test_no_multiplier_when_thinking_off():
     }
 
     assert runner._timeout_budget_for_meta(meta) == 60 * (100 / 24)
-    assert "thinking-budget-multiplier" not in runner._timeout_scaling_note
+    assert "token-budget-multiplier" not in runner._timeout_scaling_note
 
 
 def test_no_multiplier_when_thinking_max_below_nominal():
@@ -412,7 +412,72 @@ def test_no_multiplier_when_thinking_max_below_nominal():
     }
 
     assert runner._timeout_budget_for_meta(meta) == 60 * (100 / 24)
-    assert "thinking-budget-multiplier" not in runner._timeout_scaling_note
+    assert "token-budget-multiplier" not in runner._timeout_scaling_note
+
+
+def test_token_budget_multiplier_applies_on_non_thinking_arm():
+    # #103: the multiplier used to be gated on thinking being enabled, so a
+    # non-thinking arm raised via --max-tokens kept the flat clock and merely
+    # traded token_limit failures for timeouts. Decode time doesn't care which
+    # arm emitted the tokens.
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        thinking_enabled=False,
+        sampling_overrides={"max_tokens": 4096},
+    )
+    meta = {
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 1024},
+        "default_thinking": "off",
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 60 * (4096 / 1024)
+    assert "token-budget-multiplier=4096/1024" in runner._timeout_scaling_note
+
+
+def test_timeout_baseline_pins_clock_when_pack_budget_raised():
+    # #103: reasonmath-15 raised its emission ceiling to 16384 while keeping a
+    # 60s clock written for 1024. Without the pinned baseline the ratio
+    # self-cancels (effective == baseline -> 1.0) and the budget silently
+    # shrinks 16x for the arm that just got more room to emit.
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        thinking_enabled=False,
+    )
+    meta = {
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 16384},
+        "timeout_baseline_tokens": 1024,
+        "default_thinking": "off",
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 60 * (16384 / 1024)
+    assert "token-budget-multiplier=16384/1024" in runner._timeout_scaling_note
+
+
+def test_large_budget_pack_without_baseline_override_is_not_inflated():
+    # humaneval-plus-30 / lcb-v6-30 ship max_tokens=16384 against a 300s clock
+    # that was already written for it. The baseline defaults to the pack's own
+    # max_tokens so making the multiplier arm-agnostic doesn't retroactively
+    # hand them a 16x budget (300s -> 4800s per scenario).
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        thinking_enabled=False,
+    )
+    meta = {
+        "default_max_seconds": 300,
+        "sampling_defaults": {"max_tokens": 16384},
+        "default_thinking": "off",
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 300
+    # No reference_tps and no multiplier -> no note at all.
+    assert "token-budget-multiplier" not in (runner._timeout_scaling_note or "")
+
+
 class FakeAiderProgressSandbox:
     def __init__(self) -> None:
         self.progress_calls = 0
@@ -908,6 +973,35 @@ def test_detect_hermes_agent_host_path_force_baked_returns_none(monkeypatch):
     assert sandbox_module.detect_hermes_agent_host_path() is None
 
 
+def test_detect_hermes_agent_host_path_defaults_to_baked(monkeypatch, tmp_path):
+    """#104: a valid host install must be IGNORED unless opted into.
+
+    hermes-agent is versioned separately from the pinned Hermes CLI, and
+    ~/.hermes/hermes-agent is rewritten in place by the official installer — so
+    auto-detection silently changed what the pack measured between runs (three
+    runs of one model executed three different agent builds, 4-point spread).
+    """
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
+    monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    monkeypatch.delenv("HERMES_AGENT_ALLOW_HOST", raising=False)
+
+    fake_home = tmp_path / "home"
+    install = fake_home / ".hermes" / "hermes-agent"
+    install.mkdir(parents=True)
+    (install / "run_agent.py").write_text("# stub")
+    (install / "hermes_state.py").write_text("# stub")
+    monkeypatch.setattr("benchlocal_cli.sandbox.Path.home", lambda: fake_home)
+
+    # Detectable, but not opted into -> baked.
+    assert sandbox_module.detect_hermes_agent_host_path() is None
+
+    # Same install, opted in -> used.
+    monkeypatch.setenv("HERMES_AGENT_ALLOW_HOST", "1")
+    assert sandbox_module.detect_hermes_agent_host_path() == str(install.resolve())
+
+
 def test_detect_hermes_agent_host_path_explicit_must_be_valid(monkeypatch, tmp_path):
     from benchlocal_cli import sandbox as sandbox_module
     import pytest
@@ -934,6 +1028,7 @@ def test_detect_hermes_agent_host_path_missing_returns_none(monkeypatch, tmp_pat
 
     monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
     monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    monkeypatch.setenv("HERMES_AGENT_ALLOW_HOST", "1")
     # Point Path.home() at an empty dir so auto-detect finds nothing.
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -958,6 +1053,7 @@ def test_detect_hermes_agent_host_path_falls_back_to_which_hermes(monkeypatch, t
 
     monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
     monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    monkeypatch.setenv("HERMES_AGENT_ALLOW_HOST", "1")
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr("benchlocal_cli.sandbox.Path.home", lambda: fake_home)
@@ -994,6 +1090,7 @@ def test_detect_hermes_agent_host_path_picks_up_dot_hermes_layout(monkeypatch, t
 
     monkeypatch.delenv("HERMES_AGENT_FORCE_BAKED", raising=False)
     monkeypatch.delenv("HERMES_AGENT_HOST_PATH", raising=False)
+    monkeypatch.setenv("HERMES_AGENT_ALLOW_HOST", "1")
     fake_home = tmp_path / "home"
     install = fake_home / ".hermes" / "hermes-agent"
     install.mkdir(parents=True)

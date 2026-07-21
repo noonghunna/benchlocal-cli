@@ -111,11 +111,14 @@ def _hermes_agent_source() -> str:
     """host-mount | baked | missing | unknown — surfaced in /health + verifier_trace."""
     if not HERMES_AGENT_PATH.is_dir() or not (HERMES_AGENT_PATH / "run_agent.py").is_file():
         return "missing"
+    # The host-mount path is the only one that sets BENCHLOCAL_HERMES_AGENT_COMMIT
+    # (sandbox.py sets it alongside HERMES_AGENT_PATH). A valid install without
+    # it is the image-baked one by definition. The previous "baked" test read
+    # HERMES_PINNED_COMMIT, which is a Dockerfile ARG and is absent at runtime,
+    # so every baked run mis-reported itself as "unknown" (#104).
     if os.environ.get("BENCHLOCAL_HERMES_AGENT_COMMIT"):
         return "host-mount"
-    if os.environ.get("HERMES_PINNED_COMMIT"):
-        return "baked"
-    return "unknown"
+    return "baked"
 
 
 

@@ -214,20 +214,34 @@ def _resolve_via_which_hermes() -> str | None:
 def detect_hermes_agent_host_path() -> str | None:
     """Resolve a host-installed hermes-agent path for bind-mounting.
 
+    Returns None for the default (image-baked) case.
+
+    **The image-baked install is the default (#104).** hermes-agent is a
+    second, separately-versioned component from the Hermes CLI: the CLI is
+    pinned and asserted against HERMES_PINNED_COMMIT, but the agent used to be
+    auto-detected from the host, so a routine `hermes` upgrade (which rewrites
+    ~/.hermes/hermes-agent in place) silently changed what the pack measured.
+    Three runs of one model on one rig executed three different agent builds
+    with a 4-point spread and no warning. Using a host checkout is now an
+    explicit opt-in so a score is attributable to the model, not to whatever
+    the operator happened to have installed that day.
+
     Order:
-        1. HERMES_AGENT_FORCE_BAKED=1 → return None (skip host detection;
-           container falls back to image-baked install)
+        1. HERMES_AGENT_FORCE_BAKED=1 → return None. Retained for back-compat;
+           redundant now that baked is the default.
         2. HERMES_AGENT_HOST_PATH=<dir> → use this path; raise if missing or
            doesn't look like a hermes-agent install (must contain run_agent.py
-           and hermes_state.py)
-        3. Auto-detect: check /opt/hermes-agent, ~/hermes-agent,
+           and hermes_state.py). Explicit opt-in.
+        3. HERMES_AGENT_ALLOW_HOST=1 → opt in to auto-detection (steps 4-5).
+           Without it, detection is skipped and the baked install is used.
+        4. Auto-detect: check /opt/hermes-agent, ~/hermes-agent,
            ~/.local/hermes-agent, ~/.hermes/hermes-agent. If exactly one valid
            install is found, use it; if multiple, raise with set-HOST_PATH
            guidance.
-        4. `which hermes` → follow the symlink → walk up to install root.
+        5. `which hermes` → follow the symlink → walk up to install root.
            Catches non-standard install layouts (custom prefixes, pipx-style
            locations).
-        5. Otherwise None (caller falls through to image-baked or fail-loud).
+        6. Otherwise None (caller falls through to image-baked or fail-loud).
     """
     if os.environ.get("HERMES_AGENT_FORCE_BAKED") == "1":
         return None
@@ -245,6 +259,10 @@ def detect_hermes_agent_host_path() -> str | None:
                 f"{', '.join(_HERMES_AGENT_REQUIRED_FILES)})"
             )
         return str(path)
+    # Auto-detection is opt-in (#104) — an unpinned host checkout makes scores
+    # incomparable across runs, so the operator has to ask for it.
+    if os.environ.get("HERMES_AGENT_ALLOW_HOST") != "1":
+        return None
     candidates = [
         Path("/opt/hermes-agent"),
         Path.home() / "hermes-agent",
