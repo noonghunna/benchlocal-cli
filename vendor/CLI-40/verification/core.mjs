@@ -58,8 +58,10 @@ function computeScenarioScore(correctness, efficiency, discipline) {
   return Math.round((((correctness * 0.5) + (efficiency * 0.25) + (discipline * 0.25)) / 2) * 100);
 }
 
-function scoreToStatus(score) {
-  if (score >= 85) {
+function scoreToStatus(score, correctness) {
+  // Correct task outcomes pass. Efficiency and discipline remain useful
+  // diagnostics, but must not veto an otherwise correct solution.
+  if (correctness === 2) {
     return "pass";
   }
   if (score >= 60) {
@@ -70,7 +72,7 @@ function scoreToStatus(score) {
 
 function buildResult(ctx, grading, output) {
   const score = computeScenarioScore(grading.correctness, grading.efficiency, grading.discipline);
-  const status = scoreToStatus(score);
+  const status = scoreToStatus(score, grading.correctness);
   const summary = status === "pass"
     ? "Reached the expected end state."
     : status === "partial"
@@ -312,13 +314,13 @@ function humanSize(size) {
 function parseSolutionBlock(text) {
   const matches = [...String(text).matchAll(/<solution\s+verdict="([^"]+)">([\s\S]*?)<\/solution>/g)];
 
-  if (matches.length !== 1) {
+  if (matches.length === 0) {
     return {
-      error: matches.length === 0 ? "Missing solution block." : "Multiple solution blocks found."
+      error: "Missing solution block."
     };
   }
 
-  const match = matches[0];
+  const match = matches.at(-1);
   const full = match[0];
   const verdict = match[1];
   const body = match[2] ?? "";
@@ -328,7 +330,11 @@ function parseSolutionBlock(text) {
     body,
     raw: full,
     preface: String(text).slice(0, index).trim(),
-    postface: String(text).slice(index + full.length).trim()
+    postface: String(text).slice(index + full.length).trim(),
+    malformed: matches.length !== 1,
+    protocolNote: matches.length !== 1
+      ? `The response contained ${matches.length} valid solution blocks; only the last block was executed and graded.`
+      : null
   };
 }
 
@@ -901,6 +907,7 @@ async function verifyOneShotSubmission(scenarioId, solution) {
       body: "",
       commandCount: 0,
       malformed: true,
+      protocolNote: parsed.error,
       finalAnswer: solution,
       execution: null
     })
@@ -908,13 +915,15 @@ async function verifyOneShotSubmission(scenarioId, solution) {
       verdict: parsed.verdict,
       body: parsed.body,
       preface: parsed.preface,
+      malformed: parsed.malformed,
+      protocolNote: parsed.protocolNote,
       finalAnswer: solution
     });
 
   return buildResult(ctx, result, buildModelOutput(solution));
 }
 
-async function verifyMultiRoundReplay(scenarioId, commands) {
+async function verifyMultiRoundReplay(scenarioId, commands, finalAnswer = '<solution verdict="done"></solution>') {
   const ctx = await createContext({ scenarioId, runId: "verify-multiround", model: { id: "manual" } });
   await seedScenario(ctx);
   const session = new BashSession({
@@ -953,18 +962,21 @@ async function verifyMultiRoundReplay(scenarioId, commands) {
     await session.close();
   }
 
+  const parsed = parseSolutionBlock(finalAnswer);
   const grading = await gradeMultiRoundScenario(ctx, {
-    verdict: "done",
+    verdict: parsed.error ? "invalid" : parsed.verdict,
     turnsUsed: commands.length,
-    finalAnswer: '<solution verdict="done"></solution>',
+    finalAnswer,
     toolCalls,
-    toolResults
+    toolResults,
+    malformed: Boolean(parsed.error || parsed.malformed),
+    protocolNote: parsed.error ?? parsed.protocolNote
   });
 
   return buildResult(
     ctx,
     grading,
-    buildModelOutput('<solution verdict="done"></solution>', [], toolCalls, toolResults)
+    buildModelOutput(finalAnswer, [], toolCalls, toolResults)
   );
 }
 
@@ -994,6 +1006,7 @@ async function runOneShotModelScenario(ctx, model, generation) {
       body: "",
       commandCount: 0,
       malformed: true,
+      protocolNote: parsed.error,
       finalAnswer: response.text,
       execution: null
     })
@@ -1001,6 +1014,8 @@ async function runOneShotModelScenario(ctx, model, generation) {
       verdict: parsed.verdict,
       body: parsed.body,
       preface: parsed.preface,
+      malformed: parsed.malformed,
+      protocolNote: parsed.protocolNote,
       finalAnswer: response.text
     });
 
@@ -1035,7 +1050,8 @@ async function executeAndGradeOneShot(ctx, parsed) {
     body: parsed.body,
     preface: parsed.preface,
     commandCount,
-    malformed: false,
+    malformed: Boolean(parsed.malformed),
+    protocolNote: parsed.protocolNote,
     finalAnswer: parsed.finalAnswer,
     execution
   });
@@ -1164,7 +1180,8 @@ async function runMultiRoundModelScenario(ctx, model, generation) {
       finalAnswer,
       toolCalls,
       toolResults,
-      malformed: true
+      malformed: true,
+      protocolNote: parsed.error
     })
     : await gradeMultiRoundScenario(ctx, {
       verdict: parsed.verdict,
@@ -1172,7 +1189,8 @@ async function runMultiRoundModelScenario(ctx, model, generation) {
       finalAnswer,
       toolCalls,
       toolResults,
-      malformed: false
+      malformed: Boolean(parsed.malformed),
+      protocolNote: parsed.protocolNote
     });
 
   return buildResult(
@@ -1188,17 +1206,9 @@ async function gradeOneShotScenario(ctx, attempt) {
   let efficiency = 0;
   let discipline = 0;
 
-  if (attempt.malformed) {
-    return {
-      verdict: attempt.verdict,
-      correctness,
-      efficiency,
-      discipline,
-      commandCount: attempt.commandCount ?? 0,
-      notes: ["The response did not contain exactly one valid solution block."],
-      details: {}
-    };
-  }
+  const protocolNotes = attempt.malformed
+    ? [attempt.protocolNote ?? "The response did not contain exactly one valid solution block; the available workspace outcome was graded."]
+    : [];
 
   const commandCount = attempt.commandCount ?? 0;
   const answerText = attempt.finalAnswer ?? "";
@@ -1255,7 +1265,7 @@ async function gradeOneShotScenario(ctx, attempt) {
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
     case "CLI-11":
-      ({ correctness, notes } = await checkExactTextFile(ctx, "top10.txt", ctx.expected.output));
+      ({ correctness, notes } = await checkTopLargestFiles(ctx));
       efficiency = commandCount <= 5 ? 2 : commandCount <= 9 ? 1 : 0;
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
@@ -1265,7 +1275,7 @@ async function gradeOneShotScenario(ctx, attempt) {
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
     case "CLI-13":
-      ({ correctness, notes } = await checkExactTextFile(ctx, "errors.txt", ctx.expected.output));
+      ({ correctness, notes } = await checkErrorLogOutput(ctx));
       efficiency = commandCount <= 5 ? 2 : commandCount <= 8 ? 1 : 0;
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
@@ -1285,7 +1295,7 @@ async function gradeOneShotScenario(ctx, attempt) {
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
     case "CLI-17":
-      ({ correctness, notes } = await checkDeterministicArchive(ctx));
+      ({ correctness, notes } = await checkDeterministicArchive(ctx, attempt));
       efficiency = commandCount <= 3 ? 2 : commandCount <= 6 ? 1 : 0;
       discipline = attempt.verdict === "run" && (attempt.execution?.exitCode ?? 1) === 0 ? 2 : 0;
       break;
@@ -1324,6 +1334,11 @@ async function gradeOneShotScenario(ctx, attempt) {
       break;
   }
 
+  if (attempt.malformed) {
+    discipline = 0;
+  }
+  notes = [...protocolNotes, ...notes];
+
   return {
     verdict: attempt.verdict,
     correctness,
@@ -1341,16 +1356,12 @@ async function gradeMultiRoundScenario(ctx, attempt) {
   let efficiency = 0;
   let discipline = 0;
 
+  const reportedVerdict = attempt.verdict;
+  const protocolNotes = attempt.malformed
+    ? [`${attempt.protocolNote ?? "The response did not contain exactly one valid solution block."} The final workspace outcome was graded; discipline was set to 0.`]
+    : [];
   if (attempt.malformed) {
-    return {
-      verdict: attempt.verdict,
-      correctness,
-      efficiency,
-      discipline,
-      turnsUsed: attempt.turnsUsed ?? 0,
-      notes: ["The response did not contain exactly one valid solution block."],
-      details: {}
-    };
+    attempt = { ...attempt, verdict: "done" };
   }
 
   switch (ctx.scenario.id) {
@@ -1396,8 +1407,13 @@ async function gradeMultiRoundScenario(ctx, attempt) {
       break;
   }
 
+  if (attempt.malformed) {
+    discipline = 0;
+  }
+  notes = [...protocolNotes, ...notes];
+
   return {
-    verdict: attempt.verdict,
+    verdict: reportedVerdict,
     correctness,
     efficiency,
     discipline,
@@ -1406,6 +1422,224 @@ async function gradeMultiRoundScenario(ctx, attempt) {
     details: {}
   };
 }
+
+function parseHumanSize(value) {
+  const match = String(value).match(/^([0-9]+(?:\.[0-9]+)?)([KMGT]?)$/i);
+  if (!match) {
+    return null;
+  }
+  const powers = { "": 0, K: 1, M: 2, G: 3, T: 4 };
+  const bytes = Number(match[1]) * (1024 ** powers[match[2].toUpperCase()]);
+  return Number.isInteger(bytes) ? bytes : null;
+}
+
+function normalizeDataOutputPath(value) {
+  let normalized = String(value).trim().replaceAll("\\", "/").replace(/^\.\//, "");
+  const dataMarker = normalized.lastIndexOf("/data/");
+  if (dataMarker >= 0) {
+    normalized = normalized.slice(dataMarker + 1);
+  }
+  return normalized.startsWith("data/") ? normalized : null;
+}
+
+async function checkTopLargestFiles(ctx) {
+  let output;
+  try {
+    output = normalizeText(await readFile(path.join(ctx.workspaceDir, "top10.txt"), "utf8"));
+  } catch (error) {
+    return {
+      correctness: 0,
+      notes: [`top10.txt is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  const lines = output.replace(/\n$/, "").split("\n").filter(Boolean);
+  if (lines.length !== ctx.expected.topFiles.length) {
+    return {
+      correctness: 0,
+      notes: [`top10.txt listed ${lines.length} files; expected ${ctx.expected.topFiles.length}.`]
+    };
+  }
+
+  const actual = [];
+  for (const line of lines) {
+    const separator = line.indexOf("\t");
+    const bytes = separator > 0 ? parseHumanSize(line.slice(0, separator)) : null;
+    const relativePath = separator > 0 ? normalizeDataOutputPath(line.slice(separator + 1)) : null;
+    if (bytes === null || relativePath === null) {
+      return {
+        correctness: 0,
+        notes: ["top10.txt must use <human-readable-size>\\t<path> lines under data/."]
+      };
+    }
+    actual.push({ relativePath, size: bytes });
+  }
+
+  const matches = actual.every((entry, index) => {
+    const expected = ctx.expected.topFiles[index];
+    return entry.relativePath === expected.relativePath && entry.size === expected.size;
+  });
+  return {
+    correctness: matches ? 2 : 0,
+    notes: matches ? [] : ["top10.txt did not contain the ten largest files in descending byte order."]
+  };
+}
+
+async function checkErrorLogOutput(ctx) {
+  let output;
+  try {
+    output = normalizeText(await readFile(path.join(ctx.workspaceDir, "errors.txt"), "utf8"));
+  } catch (error) {
+    return {
+      correctness: 0,
+      notes: [`errors.txt is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  const lines = output.replace(/\n$/, "").split("\n").filter(Boolean);
+  const actual = [];
+  for (const line of lines) {
+    const match = line.match(/^(.+):(ERROR.*)$/);
+    if (!match) {
+      return {
+        correctness: 0,
+        notes: ["errors.txt contained a line outside the <filename>:<ERROR line> format."]
+      };
+    }
+    actual.push({ filename: path.basename(match[1]), line: match[2] });
+  }
+
+  const matches = JSON.stringify(actual) === JSON.stringify(ctx.expected.errorEntries);
+  return {
+    correctness: matches ? 2 : 0,
+    notes: matches ? [] : ["errors.txt did not contain the expected ERROR lines in file and source-line order."]
+  };
+}
+
+function normalizeArchiveMemberName(value) {
+  const normalized = String(value).replace(/^\.\//, "").replace(/\/$/, "");
+  if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) {
+    return null;
+  }
+  if (normalized === "src") {
+    return "";
+  }
+  return normalized.startsWith("src/") ? normalized.slice(4) : normalized;
+}
+
+async function inspectTarArchive(archivePath) {
+  const script = [
+    "import hashlib, json, sys, tarfile",
+    "rows = []",
+    "with tarfile.open(sys.argv[1], 'r:gz') as archive:",
+    "    for member in archive.getmembers():",
+    "        row = {'name': member.name, 'mtime': member.mtime, 'uid': member.uid, 'gid': member.gid, 'type': 'file' if member.isfile() else 'dir' if member.isdir() else 'other'}",
+    "        if member.isfile():",
+    "            stream = archive.extractfile(member)",
+    "            row['hash'] = hashlib.sha256(stream.read()).hexdigest()",
+    "        rows.append(row)",
+    "print(json.dumps(rows, separators=(',', ':')))"
+  ].join("\n");
+  const result = await runCommand("python3", ["-c", script, archivePath], { timeoutMs: 30_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(trimSingleTrailingNewline(result.stderr || result.stdout));
+  }
+  return JSON.parse(result.stdout);
+}
+
+async function checkDeterministicArchive(ctx, attempt) {
+  const archivePath = path.join(ctx.workspaceDir, "out.tar.gz");
+  let firstHash;
+  try {
+    firstHash = await sha256File(archivePath);
+  } catch (error) {
+    return {
+      correctness: 0,
+      notes: [`out.tar.gz is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  if (attempt.verdict === "run" && attempt.body?.trim()) {
+    const repeat = await bash(`set -e\nset -o pipefail\n${attempt.body}\n`, {
+      cwd: ctx.workspaceDir,
+      timeoutMs: 60_000
+    });
+    if (repeat.exitCode !== 0) {
+      return {
+        correctness: 0,
+        notes: ["The submitted archive command did not succeed when repeated."]
+      };
+    }
+    const secondHash = await sha256File(archivePath);
+    if (firstHash !== secondHash) {
+      return {
+        correctness: 0,
+        notes: ["Running the submitted archive command twice did not produce byte-identical output."]
+      };
+    }
+  }
+
+  let members;
+  try {
+    members = await inspectTarArchive(archivePath);
+  } catch (error) {
+    return {
+      correctness: 0,
+      notes: [`out.tar.gz could not be inspected: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
+
+  if (!members.length || members.some((member) => !["file", "dir"].includes(member.type))) {
+    return {
+      correctness: 0,
+      notes: ["out.tar.gz must contain only the source tree's regular files and directories."]
+    };
+  }
+
+  const names = members.map((member) => member.name);
+  if (JSON.stringify(names) !== JSON.stringify([...names].sort())) {
+    return {
+      correctness: 0,
+      notes: ["out.tar.gz entries were not sorted by name."]
+    };
+  }
+
+  const metadataNormalized = ["mtime", "uid", "gid"].every(
+    (field) => new Set(members.map((member) => member[field])).size === 1
+  );
+  if (!metadataNormalized) {
+    return {
+      correctness: 0,
+      notes: ["out.tar.gz did not normalize timestamps, ownership, and group across entries."]
+    };
+  }
+
+  const actualFiles = {};
+  for (const member of members) {
+    const relativePath = normalizeArchiveMemberName(member.name);
+    if (relativePath === null) {
+      return {
+        correctness: 0,
+        notes: ["out.tar.gz contained an absolute or parent-traversing path."]
+      };
+    }
+    if (member.type === "file") {
+      actualFiles[relativePath] = member.hash;
+    }
+  }
+
+  const expectedFiles = Object.fromEntries(
+    Object.entries(ctx.expected.sourceFiles)
+      .filter(([, entry]) => entry.type === "file")
+      .map(([relativePath, entry]) => [relativePath, entry.hash])
+  );
+  const contentMatches = JSON.stringify(actualFiles) === JSON.stringify(expectedFiles);
+  return {
+    correctness: contentMatches ? 2 : 0,
+    notes: contentMatches ? [] : ["out.tar.gz did not contain exactly the source files and bytes."]
+  };
+}
+
 
 async function checkExactTextFile(ctx, relativePath, expected, allowOptionalTrailingNewline = false) {
   try {
@@ -1568,21 +1802,6 @@ async function checkHashes(baseDir, expectedHashes) {
     }
   }
   return true;
-}
-
-async function checkDeterministicArchive(ctx) {
-  try {
-    const actualHash = await sha256File(path.join(ctx.workspaceDir, "out.tar.gz"));
-    return {
-      correctness: actualHash === ctx.expected.hash ? 2 : 0,
-      notes: actualHash === ctx.expected.hash ? [] : ["out.tar.gz did not match the canonical deterministic archive hash."]
-    };
-  } catch (error) {
-    return {
-      correctness: 0,
-      notes: [`out.tar.gz is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`]
-    };
-  }
 }
 
 async function checkRepackedArchive(ctx) {
@@ -1754,72 +1973,67 @@ function turnsToEfficiency(turns, good = 5, okay = 10) {
 }
 
 async function scoreCli21(ctx, attempt) {
-  const pytest = await bash("pytest /workspace/project -q", { cwd: ctx.workspaceDir, timeoutMs: 60_000 });
-  const unchanged = await sha256File(path.join(ctx.workspaceDir, "project", "tests", "test_main.py")) === ctx.expected.testHash;
-  const mainMatches = await checkExactTextFile(ctx, "project/main.py", ctx.expected.fixedMain);
+  const pytest = await bash("pytest project -q", { cwd: ctx.workspaceDir, timeoutMs: 60_000 });
+  const testsUnchanged = await sha256File(path.join(ctx.workspaceDir, "project", "tests", "test_main.py")) === ctx.expected.testHash;
+  const outcomeOk = pytest.exitCode === 0 && testsUnchanged;
   return {
-    correctness: attempt.verdict === "done" && pytest.exitCode === 0 ? 2 : 0,
+    correctness: attempt.verdict === "done" && outcomeOk ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 5, 9),
-    discipline: attempt.verdict === "done" && unchanged && mainMatches.correctness === 2 ? 2 : 0,
-    notes: pytest.exitCode === 0
-      ? unchanged && mainMatches.correctness === 2 ? [] : ["The tests passed, but the final patch was not the canonical minimal import fix or the benchmark test file was modified."]
-      : [`pytest still fails: ${trimSingleTrailingNewline(pytest.stderr || pytest.stdout)}`]
+    discipline: attempt.verdict === "done" && testsUnchanged ? 2 : 0,
+    notes: !testsUnchanged
+      ? ["The benchmark test file was modified."]
+      : pytest.exitCode === 0
+        ? []
+        : [`pytest still fails: ${trimSingleTrailingNewline(pytest.stderr || pytest.stdout)}`]
   };
 }
 
 async function scoreCli22(ctx, attempt) {
-  const run = await bash("/workspace/count.sh", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
+  const run = await bash(shellQuote(path.join(ctx.workspaceDir, "count.sh")), { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
   const actual = trimSingleTrailingNewline(run.stdout);
-  const scriptMatches = await checkExactTextFile(ctx, "count.sh", ctx.expected.fixedScript);
+  const outcomeOk = run.exitCode === 0 && actual === ctx.expected.output;
   return {
-    correctness: attempt.verdict === "done" && actual === ctx.expected.output ? 2 : 0,
+    correctness: attempt.verdict === "done" && outcomeOk ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 3, 6),
-    discipline: attempt.verdict === "done" && scriptMatches.correctness === 2 ? 2 : 0,
-    notes: actual === ctx.expected.output ? (scriptMatches.correctness === 2 ? [] : ["The output is right, but count.sh did not match the canonical minimal loop fix."]) : ["count.sh still does not print the expected five lines."]
+    discipline: attempt.verdict === "done" && run.exitCode === 0 ? 2 : 0,
+    notes: outcomeOk ? [] : ["count.sh still does not print the expected five lines."]
   };
 }
 
 async function scoreCli23(ctx, attempt) {
-  const run = await bash("cd /workspace/project && ./run.sh", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
-  const finalSnapshot = await snapshotTree(path.join(ctx.workspaceDir, "project"));
-  const changedEntries = [...finalSnapshot.entries()].filter(([relativePath, entry]) => {
-    const before = ctx.expected.projectSnapshot.get(relativePath);
-    return JSON.stringify(before) !== JSON.stringify(entry);
-  });
-  const exactModes = new Map([
-    ["run.sh", 0o755],
-    ["etc", 0o755]
-  ]);
-  const exactChange = changedEntries.length === exactModes.size
-    && changedEntries.every(([relativePath, entry]) => exactModes.get(relativePath) === entry.mode);
+  const projectDir = path.join(ctx.workspaceDir, "project");
+  const run = await bash("./run.sh", { cwd: projectDir, timeoutMs: 10_000 });
+  const finalSnapshot = await snapshotTree(projectDir);
+  const permissionsSafe = [...finalSnapshot.values()].every((entry) => (entry.mode & 0o022) === 0);
   return {
     correctness: attempt.verdict === "done" && run.exitCode === 0 ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 4, 8),
-    discipline: attempt.verdict === "done" && exactChange ? 2 : 0,
-    notes: run.exitCode === 0 ? (exactChange ? [] : ["run.sh executes, but the final permission diff is not exactly run.sh=0755 and etc=0755."]) : ["run.sh still does not execute successfully."]
+    discipline: attempt.verdict === "done" && permissionsSafe ? 2 : 0,
+    notes: run.exitCode !== 0
+      ? ["run.sh still does not execute successfully."]
+      : permissionsSafe
+        ? []
+        : ["run.sh executes, but the fix left group- or world-writable project entries."]
   };
 }
 
 async function scoreCli24(ctx, attempt) {
-  const build = await bash("cd /workspace/code && make build", { cwd: ctx.workspaceDir, timeoutMs: 30_000 });
-  const makefileMatches = await checkExactTextFile(ctx, "code/Makefile", ctx.expected.fixedMakefile);
+  const build = await bash("make build", { cwd: path.join(ctx.workspaceDir, "code"), timeoutMs: 30_000 });
   return {
     correctness: attempt.verdict === "done" && build.exitCode === 0 ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 4, 8),
-    discipline: attempt.verdict === "done" && makefileMatches.correctness === 2 ? 2 : 0,
-    notes: build.exitCode === 0 ? (makefileMatches.correctness === 2 ? [] : ["Build passes, but Makefile does not match the canonical case-sensitive source fix."]) : ["make build still fails."]
+    discipline: attempt.verdict === "done" && build.exitCode === 0 ? 2 : 0,
+    notes: build.exitCode === 0 ? [] : ["make build still fails."]
   };
 }
 
 async function scoreCli25(ctx, attempt) {
-  const validate = await bash("/workspace/app/validate.sh", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
-  const config = await readFile(path.join(ctx.workspaceDir, "app", "config.toml"), "utf8");
-  const exactConfig = config === ctx.expected.fixedConfig;
+  const validate = await bash("./validate.sh", { cwd: path.join(ctx.workspaceDir, "app"), timeoutMs: 10_000 });
   return {
     correctness: attempt.verdict === "done" && validate.exitCode === 0 ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 3, 6),
-    discipline: attempt.verdict === "done" && exactConfig ? 2 : 0,
-    notes: validate.exitCode === 0 ? (exactConfig ? [] : ["Validation passes, but config.toml does not match the canonical one-token section-name fix."]) : ["validate.sh still fails."]
+    discipline: attempt.verdict === "done" && validate.exitCode === 0 ? 2 : 0,
+    notes: validate.exitCode === 0 ? [] : ["validate.sh still fails."]
   };
 }
 
@@ -1845,42 +2059,46 @@ async function scoreCli36(ctx, attempt) {
 }
 
 async function scoreCli37(ctx, attempt) {
-  const run = await bash("/workspace/process.sh /workspace/input.txt", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
+  const run = await bash(
+    `${shellQuote(path.join(ctx.workspaceDir, "process.sh"))} ${shellQuote(path.join(ctx.workspaceDir, "input.txt"))}`,
+    { cwd: ctx.workspaceDir, timeoutMs: 10_000 }
+  );
   const actual = trimSingleTrailingNewline(run.stdout);
-  const scriptMatches = await checkExactTextFile(ctx, "process.sh", ctx.expected.fixedScript);
+  const outcomeOk = run.exitCode === 0 && actual === trimSingleTrailingNewline(ctx.expected.output);
   return {
-    correctness: attempt.verdict === "done" && actual === trimSingleTrailingNewline(ctx.expected.output) ? 2 : 0,
+    correctness: attempt.verdict === "done" && outcomeOk ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 4, 8),
-    discipline: attempt.verdict === "done" && scriptMatches.correctness === 2 ? 2 : 0,
-    notes: actual === trimSingleTrailingNewline(ctx.expected.output) ? (scriptMatches.correctness === 2 ? [] : ["process.sh produces the right output, but does not match the canonical whitespace-tolerant pipeline fix."]) : ["process.sh still does not match expected.txt on the seeded input."]
+    discipline: attempt.verdict === "done" && outcomeOk ? 2 : 0,
+    notes: outcomeOk ? [] : ["process.sh still does not match expected.txt on the seeded input."]
   };
 }
 
 async function scoreCli38(ctx, attempt) {
-  const run = await bash("cd /workspace && ./process_files.sh", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
+  const run = await bash("./process_files.sh", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
   const check = await checkExactTextFile(ctx, "processed.txt", ctx.expected.output);
-  const scriptMatches = await checkExactTextFile(ctx, "process_files.sh", ctx.expected.fixedScript);
+  const outcomeOk = run.exitCode === 0 && check.correctness === 2;
   return {
-    correctness: attempt.verdict === "done" && run.exitCode === 0 ? check.correctness : 0,
+    correctness: attempt.verdict === "done" && outcomeOk ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 4, 7),
-    discipline: attempt.verdict === "done" && scriptMatches.correctness === 2 ? 2 : 0,
-    notes: run.exitCode === 0 ? (check.correctness === 2 && scriptMatches.correctness !== 2 ? ["process_files.sh processes all files, but does not match the canonical read-loop fix."] : check.notes) : ["process_files.sh still fails on the seeded filenames."]
+    discipline: attempt.verdict === "done" && outcomeOk ? 2 : 0,
+    notes: outcomeOk ? [] : run.exitCode === 0 ? check.notes : ["process_files.sh still fails on the seeded filenames."]
   };
 }
 
 async function scoreCli39(ctx, attempt) {
-  const catResult = await bash("cat /workspace/data/reports/q4/summary.txt", { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
-  const finalSnapshot = await snapshotTree(path.join(ctx.workspaceDir, "data"));
-  const changes = [...finalSnapshot.entries()].filter(([relativePath, entry]) => {
-    const before = ctx.expected.dataSnapshot.get(relativePath);
-    return JSON.stringify(before) !== JSON.stringify(entry);
-  });
-  const exactChange = changes.length === 1 && changes[0]?.[0] === "reports/q4" && changes[0]?.[1]?.mode === 0o755;
+  const summaryPath = path.join(ctx.workspaceDir, "data", "reports", "q4", "summary.txt");
+  const catResult = await bash(`cat ${shellQuote(summaryPath)}`, { cwd: ctx.workspaceDir, timeoutMs: 10_000 });
+  const q4Mode = (await stat(path.dirname(summaryPath))).mode & 0o777;
+  const permissionsSafe = (q4Mode & 0o500) === 0o500 && (q4Mode & 0o022) === 0;
   return {
     correctness: attempt.verdict === "done" && catResult.exitCode === 0 ? 2 : 0,
     efficiency: turnsToEfficiency(attempt.turnsUsed, 4, 8),
-    discipline: attempt.verdict === "done" && exactChange ? 2 : 0,
-    notes: catResult.exitCode === 0 ? (exactChange ? [] : ["Access was restored, but the final permission diff was not exactly reports/q4=0755."]) : ["The summary file still cannot be read."]
+    discipline: attempt.verdict === "done" && permissionsSafe ? 2 : 0,
+    notes: catResult.exitCode !== 0
+      ? ["The summary file still cannot be read."]
+      : permissionsSafe
+        ? []
+        : ["Access was restored with unnecessarily broad write permissions."]
   };
 }
 
@@ -2173,10 +2391,12 @@ async function seedCli11(ctx) {
     await writeBufferFile(path.join(ctx.workspaceDir, relative), Buffer.alloc(sizes[index], index));
     files.push({ relative, size: sizes[index] });
   }
-  ctx.expected.output = `${files
+  ctx.expected.topFiles = [...files]
     .sort((left, right) => right.size - left.size)
     .slice(0, 10)
-    .map((file) => `${humanSize(file.size)}\t/workspace/${file.relative}`)
+    .map((file) => ({ relativePath: file.relative, size: file.size }));
+  ctx.expected.output = `${ctx.expected.topFiles
+    .map((file) => `${humanSize(file.size)}\t/workspace/${file.relativePath}`)
     .join("\n")}\n`;
 }
 
@@ -2214,6 +2434,10 @@ async function seedCli13(ctx) {
     await writeText(path.join(ctx.workspaceDir, "logs", filename), `${lines.join("\n")}\n`);
   }
   ctx.expected.output = `${outputs.join("\n")}\n`;
+  ctx.expected.errorEntries = outputs.map((entry) => {
+    const separator = entry.indexOf(":");
+    return { filename: entry.slice(0, separator), line: entry.slice(separator + 1) };
+  });
 }
 
 async function seedCli14(ctx) {
@@ -2288,7 +2512,8 @@ async function seedCli17(ctx) {
   for (let index = 0; index < 50; index += 1) {
     await writeText(path.join(ctx.workspaceDir, "src", `group_${index % 5}`, `file_${String(index).padStart(2, "0")}.txt`), `src-${index}\n`);
   }
-  const command = `tar --sort=name --mtime='UTC 2024-01-01' --owner=0 --group=0 --numeric-owner -czf ${shellQuote(path.join(ctx.referenceDir, "out.tar.gz"))} -C /workspace src`;
+  ctx.expected.sourceFiles = mapToObject(await snapshotTree(path.join(ctx.workspaceDir, "src")));
+  const command = `tar --sort=name --mtime='UTC 2024-01-01' --owner=0 --group=0 --numeric-owner -czf ${shellQuote(path.join(ctx.referenceDir, "out.tar.gz"))} -C ${shellQuote(ctx.workspaceDir)} src`;
   const result = await bash(command, { cwd: ctx.workspaceDir, timeoutMs: 30_000 });
   if (result.exitCode !== 0) {
     throw new Error(`Failed to build canonical deterministic archive: ${result.stderr}`);
