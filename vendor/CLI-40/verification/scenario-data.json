@@ -140,7 +140,7 @@
     "description": "Extracts `ERROR` lines from a log tree while preserving filename order and within-file order.",
     "promptText": "Extract every line that starts with `ERROR` across all `.log` files under `/workspace/logs/`. Write to `/workspace/errors.txt` in the format `<filename>:<original line>`. Sort by filename then by original line order within the file.",
     "successCase": "The output contains only real `ERROR` prefixes, grouped by filename with stable within-file ordering.",
-    "failureCase": "The model matches substrings, writes full paths, or loses the original line order."
+    "failureCase": "The model matches substrings, mislabels source files, or loses the original line order."
   },
   {
     "id": "CLI-14",
@@ -183,7 +183,7 @@
     "title": "Deterministic Archive",
     "description": "Builds a byte-stable tar.gz archive by normalizing order, timestamps, and ownership.",
     "promptText": "Create `/workspace/out.tar.gz` from `/workspace/src/` such that running the same command twice produces a byte-identical archive. Entries must be sorted. Timestamps, ownership, and group must all be normalized.",
-    "successCase": "The produced archive matches the canonical hash and is reproducible across reruns.",
+    "successCase": "The produced archive contains the source bytes, has normalized metadata, and is reproducible across reruns.",
     "failureCase": "The model uses default tar behavior and leaks timestamps or ownership metadata."
   },
   {

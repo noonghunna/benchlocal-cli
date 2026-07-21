@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -175,6 +176,96 @@ console.log(JSON.stringify(cases.map((body) => countCommandLines(body))));
     )
 
     assert json.loads(proc.stdout) == [1, 1, 2, 1]
+
+
+def _run_cli_verifier(script: str, tmp_path: Path) -> dict:
+    env = {
+        **os.environ,
+        "CLI40_WORKSPACE_DIR": str(tmp_path / "workspace"),
+        "CLI40_RUN_ROOT": str(tmp_path / "runs"),
+    }
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(proc.stdout)
+
+
+def test_cli_outcome_validity_and_malformed_recovery(tmp_path):
+    workspace = json.dumps(str(tmp_path / "workspace"))
+    script = rf"""
+import {{
+  verifyMultiRoundReplay,
+  verifyOneShotSubmission
+}} from "./vendor/CLI-40/verification/core.mjs";
+
+const workspace = {workspace};
+const decode = `base64 -d "${{workspace}}/payload.txt" | gzip -d > "${{workspace}}/original.txt"`;
+const repeatedBlocks = await verifyOneShotSubmission(
+  "CLI-18",
+  `<solution verdict="run">false</solution>\n<solution verdict="run">${{decode}}</solution>`
+);
+const overBudget = await verifyOneShotSubmission(
+  "CLI-18",
+  `<solution verdict="run">${{[...Array(7).fill(":"), decode].join("\n")}}</solution>`
+);
+const top10 = await verifyOneShotSubmission(
+  "CLI-11",
+  `<solution verdict="run">find "${{workspace}}/data" -type f -exec du -h {{}} + | sort -rh | head -10 > "${{workspace}}/top10.txt"</solution>`
+);
+const errors = await verifyOneShotSubmission(
+  "CLI-13",
+  `<solution verdict="run">find "${{workspace}}/logs" -name "*.log" -print0 | sort -z | xargs -0 grep -H "^ERROR" > "${{workspace}}/errors.txt"</solution>`
+);
+const archive = await verifyOneShotSubmission(
+  "CLI-17",
+  `<solution verdict="run">tar --sort=name --mtime="UTC 2000-01-01" --owner=123 --group=456 --numeric-owner -czf "${{workspace}}/out.tar.gz" -C "${{workspace}}" src</solution>`
+);
+const alternativeFix = [
+  `cat > "${{workspace}}/process.sh" <<'SH'`,
+  "#!/usr/bin/env bash",
+  "set -e",
+  "grep '^[[:space:]]*user=' \"$1\" | cut -d= -f2 | sort -u",
+  "SH"
+].join("\n");
+const malformedFinal = await verifyMultiRoundReplay(
+  "CLI-37",
+  [alternativeFix],
+  "Done, but without the required solution block."
+);
+console.log(JSON.stringify({{
+  repeatedBlocks,
+  overBudget,
+  top10,
+  errors,
+  archive,
+  malformedFinal
+}}));
+"""
+    results = _run_cli_verifier(script, tmp_path)
+
+    assert results["repeatedBlocks"]["status"] == "pass"
+    assert results["repeatedBlocks"]["verifier"]["details"]["correctness"] == 2
+    assert results["repeatedBlocks"]["verifier"]["details"]["discipline"] == 0
+    assert "only the last block was executed" in results["repeatedBlocks"]["note"]
+
+    assert results["overBudget"]["status"] == "pass"
+    assert results["overBudget"]["verifier"]["details"]["correctness"] == 2
+    assert results["overBudget"]["verifier"]["details"]["efficiency"] == 0
+
+    for scenario in ("top10", "errors", "archive"):
+        assert results[scenario]["status"] == "pass"
+        assert results[scenario]["verifier"]["details"]["correctness"] == 2
+
+    assert results["malformedFinal"]["status"] == "pass"
+    assert results["malformedFinal"]["verifier"]["details"]["correctness"] == 2
+    assert results["malformedFinal"]["verifier"]["details"]["discipline"] == 0
+    assert "final workspace outcome was graded" in results["malformedFinal"]["note"]
+
 
 
 def test_cli_health_reports_static_ok():
