@@ -438,6 +438,8 @@ class SandboxClient:
         model_name: str | None = None,
         model_api_key: str | None = None,
         sampling: dict | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
     ) -> dict:
         """Initialize a sandbox-owned multi-turn scenario state.
 
@@ -458,6 +460,10 @@ class SandboxClient:
             payload["model_api_key"] = model_api_key
         if sampling is not None:
             payload["sampling"] = sampling
+        if enable_thinking is not None:
+            payload["enable_thinking"] = enable_thinking
+        if thinking_budget is not None:
+            payload["thinking_budget"] = thinking_budget
         return self._post("/verify-start", payload)
 
     def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:

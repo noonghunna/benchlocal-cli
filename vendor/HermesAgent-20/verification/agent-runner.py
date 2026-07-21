@@ -55,7 +55,9 @@ def _guess_provider(base_url: str, requested_provider: str) -> str:
     return "custom"
 
 
-def _request_overrides(generation: Dict[str, Any]) -> Dict[str, Any]:
+def _request_overrides(
+    generation: Dict[str, Any], extra_body: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
 
     # The pinned Hermes runtime forwards request_overrides directly into its
@@ -74,6 +76,9 @@ def _request_overrides(generation: Dict[str, Any]) -> Dict[str, Any]:
         value = generation.get(key)
         if value is not None:
             overrides[key] = value
+
+    if extra_body:
+        overrides["extra_body"] = dict(extra_body)
 
     return overrides
 
@@ -243,7 +248,9 @@ def main() -> int:
             skip_context_files=True,
             session_id=session_id,
             session_db=session_db,
-            request_overrides=_request_overrides(request.get("generation") or {}),
+            request_overrides=_request_overrides(
+                request.get("generation") or {}, model.get("extraBody")
+            ),
             tool_start_callback=_tool_started,
             tool_complete_callback=_tool_completed,
             clarify_callback=clarify_callback,

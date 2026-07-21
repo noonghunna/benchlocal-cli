@@ -133,10 +133,22 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 ## Hermes-specific: v0.7.3 model-endpoint passthrough
 
 Hermes `/verify-start` requires the runner to pass `model_endpoint`,
-`model_name`, optional `model_api_key` (default `"dummy"` for vLLM), and
-`sampling` (the same dict the runner uses for direct chat-completions calls).
-Upstream `agent-runner.py` makes its own LLM calls against this endpoint, so
-the bench is testing the *real* agent loop against the *real* model under test.
+`model_name`, optional `model_api_key` (default `"dummy"` for vLLM), `sampling`
+(the same dict the runner uses for direct chat-completions calls), and the
+resolved `enable_thinking` and `thinking_budget` values. Upstream
+`agent-runner.py` makes its own LLM calls against this endpoint, so the bench is
+testing the *real* agent loop against the *real* model under test.
+
+The Hermes adapter writes the resolved thinking controls to `extra_body` for
+the primary model and every auxiliary model (`session_search`, `web_extract`,
+and `approval`). It also passes the primary model's `extra_body` directly to
+the programmatic `AIAgent` request path. Thinking-only endpoints cannot accept
+`enable_thinking: false`, so BenchLocal represents the off arm as
+`enable_thinking: true` with `thinking_budget: 1`; the on arm uses the requested
+budget.
+The decode-TPS probe uses the same one-token mapping so timeout calibration
+does not send a forbidden false value before a thinking-only run.
+
 
 If `model_endpoint` is missing from the request body, the sandbox returns
 `server_error` with a message asking to upgrade to v0.7.3+.

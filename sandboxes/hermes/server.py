@@ -82,6 +82,11 @@ UPSTREAM_RAW_MAX_BYTES = 16384
 # upstream_status/upstream_score/etc. instead of grading.tool_event_count.
 SCHEMA_VERSION = "2"
 
+# Thinking-only endpoints reject enable_thinking=false. Hermes therefore
+# emulates its off arm with one reasoning token instead of sending false.
+THINKING_BUDGET_FLOOR = 1
+DEFAULT_THINKING_BUDGET = 16384
+
 
 def _commit_from_path(path: Path) -> str:
     if not path.is_dir():
@@ -142,7 +147,7 @@ def _endpoint_failure_reason(endpoint: str, exc: Exception) -> str:
     return f"could not reach {endpoint}: {text}"
 
 
-def _detect_model_endpoint_reachable(endpoint: str) -> dict:
+def _detect_model_endpoint_reachable(endpoint: str, api_key: str | None = None) -> dict:
     """Cached sanity check that the sandbox can reach the model endpoint."""
     global _MODEL_ENDPOINT_REACHABLE_CACHE
     if _MODEL_ENDPOINT_REACHABLE_CACHE is not None:
@@ -151,9 +156,12 @@ def _detect_model_endpoint_reachable(endpoint: str) -> dict:
         _MODEL_ENDPOINT_REACHABLE_CACHE = {"ok": False, "reason": "no model endpoint provided to sandbox"}
         return _MODEL_ENDPOINT_REACHABLE_CACHE
     probe_url = _model_models_url(endpoint)
+    headers = {}
+    if api_key and api_key != "dummy":
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         with httpx.Client(timeout=5.0, follow_redirects=True, max_redirects=1) as client:
-            resp = client.get(probe_url)
+            resp = client.get(probe_url, headers=headers)
         if resp.status_code != 200:
             _MODEL_ENDPOINT_REACHABLE_CACHE = {
                 "ok": False,
@@ -283,11 +291,41 @@ def _filter_generation(sampling: dict | None) -> dict:
     return out
 
 
+def _thinking_extra_body(req: dict) -> dict:
+    """Build HermesAgent's provider-specific request body.
+
+    Thinking controls deliberately bypass _filter_generation: the pinned
+    framework consumes them as extra_body, not generation overrides.
+    """
+    enabled = req.get("enable_thinking")
+    sampling = req.get("sampling") or {}
+    if not isinstance(enabled, bool):
+        chat_template_kwargs = sampling.get("chat_template_kwargs") or {}
+        enabled = bool(chat_template_kwargs.get("enable_thinking", False))
+
+    budget = req.get("thinking_budget")
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        sampling_budget = sampling.get("max_tokens")
+        budget = (
+            sampling_budget
+            if isinstance(sampling_budget, int)
+            and not isinstance(sampling_budget, bool)
+            and sampling_budget > 0
+            else DEFAULT_THINKING_BUDGET
+        )
+
+    return {
+        "enable_thinking": True,
+        "thinking_budget": budget if enabled else THINKING_BUDGET_FLOOR,
+    }
+
+
 def _translate_request(req: dict) -> dict:
     """Map runner's /verify-start payload → upstream's POST /run-scenario shape.
 
     Runner sends:
-      { scenario_id, scenario, model_endpoint, model_name, model_api_key, sampling }
+      { scenario_id, scenario, model_endpoint, model_name, model_api_key,
+        sampling, enable_thinking, thinking_budget }
 
     Upstream expects:
       { scenarioId, runId, model: {id, exposedModel, providerModel,
@@ -309,6 +347,7 @@ def _translate_request(req: dict) -> dict:
             "apiKey": str(req.get("model_api_key") or "dummy"),
             "provider": "custom",
             "authMode": "bearer",
+            "extraBody": _thinking_extra_body(req),
         },
         "generation": _filter_generation(req.get("sampling")),
     }
@@ -507,7 +546,10 @@ def _verify_start_via_upstream(req: dict) -> dict:
     if not _upstream_node_ready():
         return _upstream_unreachable_response(scenario_id, "/health probe failed")
 
-    reach = _detect_model_endpoint_reachable(str(req.get("model_endpoint") or ""))
+    reach = _detect_model_endpoint_reachable(
+        str(req.get("model_endpoint") or ""),
+        str(req.get("model_api_key") or ""),
+    )
     if not reach.get("ok"):
         return _endpoint_preflight_response(scenario_id, reach)
 

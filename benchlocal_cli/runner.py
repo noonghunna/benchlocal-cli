@@ -830,10 +830,11 @@ class Runner:
                 "temperature": 0,
                 "top_p": 1,
                 "max_tokens": 200,
-                # Probe content-decode TPS deterministically: force thinking OFF so
-                # we never measure reasoning-decode rate on a server whose chat
-                # template defaults to reasoning when no toggle is sent (#54).
-                "chat_template_kwargs": {"enable_thinking": False},
+                # Probe content-decode TPS with the same universal near-off
+                # mapping as Hermes. Thinking-only endpoints reject false, while
+                # a one-token budget avoids measuring reasoning-decode rate.
+                "chat_template_kwargs": {"enable_thinking": True},
+                "thinking_budget": 1,
             }
             started = time.perf_counter()
             # The probe must never be the thing that hangs a run: bounded read
@@ -1394,6 +1395,15 @@ class Runner:
                     "model_name": self.model,
                     "model_api_key": self.api_key or "dummy",  # forward the real key for cloud endpoints; "dummy" for local vLLM (doesn't validate)
                     "sampling": dict(sampling),
+                    # HermesAgent makes its own model calls, so the resolved
+                    # thinking mode and arm budget must cross the sandbox
+                    # protocol explicitly. They are not generation overrides.
+                    "enable_thinking": bool(
+                        dict(sampling.get("chat_template_kwargs") or {}).get(
+                            "enable_thinking", False
+                        )
+                    ),
+                    "thinking_budget": self.thinking_max_tokens,
                 }
             elif pack_id == "aider-polyglot-30":
                 # v0.9.0: aider needs a container-reachable URL. Apply the

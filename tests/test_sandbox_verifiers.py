@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -82,6 +84,7 @@ class _FakeHTTPClient:
         self.response = response or _FakeHTTPResponse()
         self.exc = exc
         self.urls: list[str] = []
+        self.headers: list[dict] = []
 
     def __call__(self, **_kwargs):
         return self
@@ -92,8 +95,9 @@ class _FakeHTTPClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
-    def get(self, url: str):
+    def get(self, url: str, *, headers: dict | None = None):
         self.urls.append(url)
+        self.headers.append(headers or {})
         if self.exc:
             raise self.exc
         return self.response
@@ -221,11 +225,12 @@ def test_hermes_detect_model_endpoint_reachable_ok(monkeypatch):
     monkeypatch.setattr(server, "_MODEL_ENDPOINT_REACHABLE_CACHE", None)
     monkeypatch.setattr(server.httpx, "Client", fake_client)
 
-    out = server._detect_model_endpoint_reachable("http://host:8000/v1/chat/completions")
+    out = server._detect_model_endpoint_reachable("http://host:8000/v1/chat/completions", "sk-test")
 
     assert out["ok"] is True
     assert out["probe_url"] == "http://host:8000/v1/models"
     assert fake_client.urls == ["http://host:8000/v1/models"]
+    assert fake_client.headers == [{"Authorization": "Bearer sk-test"}]
 
 
 def test_hermes_detect_model_endpoint_reachable_fails_on_refused(monkeypatch):
@@ -238,6 +243,7 @@ def test_hermes_detect_model_endpoint_reachable_fails_on_refused(monkeypatch):
 
     assert out["ok"] is False
     assert "model server not running" in out["reason"]
+    assert fake_client.headers == [{}]
 
 
 def test_hermes_detect_model_endpoint_reachable_fails_on_timeout(monkeypatch):
@@ -281,7 +287,7 @@ def test_hermes_verify_start_fails_fast_on_unreachable_endpoint(monkeypatch, tmp
     monkeypatch.setattr(
         server,
         "_detect_model_endpoint_reachable",
-        lambda endpoint: {"ok": False, "reason": f"model server not running at {endpoint}"},
+        lambda endpoint, api_key=None: {"ok": False, "reason": f"model server not running at {endpoint}"},
     )
 
     def fail_post(*_args, **_kwargs):
@@ -548,6 +554,8 @@ def test_hermes_translate_request_normalizes_endpoint_and_filters_generation():
         "model_name": "qwen3.6-27b-autoround",
         "model_api_key": "sk-test",
         "sampling": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 256, "ignored": "x"},
+        "enable_thinking": True,
+        "thinking_budget": 4096,
     }
     out = server._translate_request(req)
     assert out["scenarioId"] == "HA-01"
@@ -556,6 +564,54 @@ def test_hermes_translate_request_normalizes_endpoint_and_filters_generation():
     assert out["model"]["apiKey"] == "sk-test"
     assert out["generation"] == {"temperature": 0.6, "top_p": 0.95, "max_tokens": 256}
     assert "runId" in out and len(out["runId"]) > 0
+    assert out["model"]["extraBody"] == {"enable_thinking": True, "thinking_budget": 4096}
+
+
+@pytest.mark.parametrize(
+    ("thinking_enabled", "expected_budget"),
+    [(True, 4096), (False, 1)],
+)
+def test_hermes_config_emits_thinking_extra_body_for_all_models(
+    tmp_path, thinking_enabled, expected_budget
+):
+    server = _hermes_server()
+    translated = server._translate_request(
+        {
+            "scenario_id": "HA-01",
+            "scenario": {"id": "HA-01"},
+            "model_endpoint": "http://host:8001/v1",
+            "model_name": "qwen",
+            "sampling": {},
+            "enable_thinking": thinking_enabled,
+            "thinking_budget": 4096,
+        }
+    )
+    script = r'''
+import { readFile } from "node:fs/promises";
+import { writeHermesConfig } from "./vendor/HermesAgent-20/verification/hermes-runtime.mjs";
+const [home, workspace, modelJson] = process.argv.slice(1);
+await writeHermesConfig(home, workspace, JSON.parse(modelJson), 10);
+process.stdout.write(await readFile(`${home}/config.yaml`, "utf8"));
+'''
+    proc = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            script,
+            str(tmp_path / "hermes-home"),
+            str(tmp_path / "workspace"),
+            json.dumps(translated["model"]),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    config = proc.stdout
+    assert config.count("extra_body:") == 4
+    assert config.count("enable_thinking: true") == 4
+    assert config.count(f"thinking_budget: {expected_budget}") == 4
 
 
 def test_hermes_normalize_base_url_ensures_v1_suffix():

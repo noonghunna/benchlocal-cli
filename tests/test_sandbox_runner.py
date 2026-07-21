@@ -294,7 +294,7 @@ def test_runner_explicit_timeout_per_case_disables_dynamic_scaling(monkeypatch):
     assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300, "timeout_reference_tps": 100}) == 45
 
 
-def test_probe_sends_enable_thinking_false(monkeypatch):
+def test_probe_clamps_thinking_to_one_token(monkeypatch):
     runner = Runner(endpoint="http://localhost:9999", model="fake")
     requests = []
 
@@ -311,7 +311,8 @@ def test_probe_sends_enable_thinking_false(monkeypatch):
 
     assert runner._probe_decode_tps() == 50.0
     assert len(requests) == 3
-    assert all(req["chat_template_kwargs"] == {"enable_thinking": False} for req in requests)
+    assert all(req["chat_template_kwargs"] == {"enable_thinking": True} for req in requests)
+    assert all(req["thinking_budget"] == 1 for req in requests)
 
 
 def test_thinking_multiplier_applies_without_timeout_reference():
@@ -822,11 +823,19 @@ def test_runner_preserves_hermes_non_loopback_endpoint_without_env(monkeypatch):
     assert run.result.passed is True
     assert fake.start_kwargs["model_endpoint"] == "http://host.docker.internal:9999/v1"
 
-def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint():
+@pytest.mark.parametrize(
+    ("thinking_enabled", "thinking_budget", "expected_temperature"),
+    [(False, 16384, 0.0), (True, 4096, 1.0)],
+)
+def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint(
+    thinking_enabled, thinking_budget, expected_temperature
+):
     runner = Runner(
         endpoint="http://10.0.0.5:8001",
         model="qwen3.6-27b-autoround",
         enable_sandboxed_packs=True,
+        thinking_enabled=thinking_enabled,
+        thinking_max_tokens=thinking_budget,
     )
     fake = FakeHermesEarlyOutSandbox()
     runner._sandbox_clients["hermesagent-20"] = fake
@@ -854,8 +863,12 @@ def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint():
     assert fake.start_kwargs["model_endpoint"] == "http://10.0.0.5:8001"
     assert fake.start_kwargs["model_name"] == "qwen3.6-27b-autoround"
     assert fake.start_kwargs["model_api_key"] == "dummy"
-    assert fake.start_kwargs["sampling"]["temperature"] == 0.0
-    assert fake.start_kwargs["sampling"]["max_tokens"] == 256
+    assert fake.start_kwargs["sampling"]["temperature"] == expected_temperature
+    expected_max_tokens = thinking_budget if thinking_enabled else 256
+    assert fake.start_kwargs["sampling"]["max_tokens"] == expected_max_tokens
+    assert fake.start_kwargs["enable_thinking"] is thinking_enabled
+    assert fake.start_kwargs["thinking_budget"] == thinking_budget
+
     # verifier_trace populated from upstream payload — preserves the
     # `trace` sub-dict the sandbox returned (one level of nesting because
     # the runner strips top-level action/passed/failure_mode/detail keys).
