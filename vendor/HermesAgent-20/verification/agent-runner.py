@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import sys
 import traceback
 import uuid
@@ -147,6 +148,9 @@ def _build_approval_callback(follow_ups: Dict[str, Any], approval_events: List[D
             if isinstance(item, dict):
                 contains = str(item.get("commandContains") or "").strip().lower()
                 if contains and contains not in command.lower():
+                    continue
+                pattern = str(item.get("commandMatches") or "").strip()
+                if pattern and re.fullmatch(pattern, command, flags=re.IGNORECASE) is None:
                     continue
                 response = str(item.get("response") or default_response)
                 scripted.pop(index)
