@@ -9,6 +9,40 @@ the same content per-version.
 
 ---
 
+## v0.9.8 — 2026-07-21
+
+
+### ✨ Features
+
+- feat(run): add scenario-level persistence and resume (#82) (#85) ([#85](https://github.com/noonghunna/benchlocal-cli/pull/85) by @noonghunna)
+- feat(run): add scenario-level selection (#83) (#84) ([#84](https://github.com/noonghunna/benchlocal-cli/pull/84) by @noonghunna)
+
+
+### 🐛 Bug fixes
+
+- fix(reasonmath): make answers authoritative ([b5fd6fb](https://github.com/noonghunna/benchlocal-cli/commit/b5fd6fbbd3e999edb95a0f33fe3dd6793d42ec3f))
+- fix(cli-40): grade stated outcomes ([3ad43cb](https://github.com/noonghunna/benchlocal-cli/commit/3ad43cb770913769bce6a272c1da36cb4e3cacf9))
+- fix(hermes): support thinking-only endpoints (#86) ([#89](https://github.com/noonghunna/benchlocal-cli/pull/89) by @noonghunna)
+- fix(hermes): close verifier fidelity gaps (#90-#94) ([#95](https://github.com/noonghunna/benchlocal-cli/pull/95) by @noonghunna)
+- fix(runner): honest sandbox-unavailable hint (build tooling isn't pip-packaged) (#69) ([#69](https://github.com/noonghunna/benchlocal-cli/pull/69) by @noonghunna)
+
+
+### 📝 Documentation
+
+- docs: warn that managed endpoints may ignore the thinking flag (#71) ([#71](https://github.com/noonghunna/benchlocal-cli/pull/71) by @noonghunna)
+- docs(readme): add "Running against a cloud / managed endpoint" section (#70) ([#70](https://github.com/noonghunna/benchlocal-cli/pull/70) by @noonghunna)
+
+
+### 🧹 Other
+
+- fix sandbox model-call controls ([402aa31](https://github.com/noonghunna/benchlocal-cli/commit/402aa31a46288720e32cc9391f8ac6b5f9b18fad))
+- Bump version 0.9.7 -> 0.9.8 (scenario selection #84 + resume #85) ([72bee2a](https://github.com/noonghunna/benchlocal-cli/commit/72bee2a8fce7352fde9a5b3cd9ca316b6879eb38))
+- Fix ReasonMath trace scoring for reasoning-channel responses ([#81](https://github.com/noonghunna/benchlocal-cli/pull/81) by @noonghunna)
+- Fix quality harness fairness audit issues ([#79](https://github.com/noonghunna/benchlocal-cli/pull/79) by @noonghunna)
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.8`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.7...v0.9.8)
 ## v0.9.7 — 2026-06-15
 
 
