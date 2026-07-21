@@ -164,14 +164,14 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
                 answer_points, answer_note = _answer_axis(assertion, text)
                 trace_points, trace_note, matched_sources = _trace_axis(assertion, trace_text, trace_channels)
                 score = round(100 * (0.7 * (answer_points / 2) + 0.3 * (trace_points / 2)))
-                passed = score >= 85
+                passed = answer_points == 2
                 notes = " ".join(part for part in (answer_note, trace_note) if part)
                 trace = {
                     "upstream_style_score": score,
                     "answer_axis_points": answer_points,
                     "trace_axis_points": trace_points,
                     "trace_sources": matched_sources,
-                    "status_threshold": "pass >= 85",
+                    "status_threshold": "pass when answer_axis_points == 2; trace axis is diagnostic",
                     "notes": notes or None,
                 }
                 return _scored_result(

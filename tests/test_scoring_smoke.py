@@ -162,7 +162,7 @@ def test_reason_math_trace_axis_matches_split_content_and_reasoning_checkpoints(
     assert result.verifier_trace["trace_sources"] == ["message.content", "message.reasoning"]
 
 
-def test_reason_math_trace_axis_still_fails_when_no_channel_has_checkpoints():
+def test_reason_math_correct_answer_passes_without_checkpoint_matches():
     scenario = _reason_math_checkpoint_scenario()
     response = _split_response(
         "ANSWER: fit=no; max_meetings=3",
@@ -171,9 +171,10 @@ def test_reason_math_trace_axis_still_fails_when_no_channel_has_checkpoints():
 
     result = reason_math.score_scenario(scenario, response)
 
-    assert result.failure_mode == "wrong_answer"
+    assert result.passed
     assert result.verifier_trace["upstream_style_score"] == 70
     assert result.verifier_trace["trace_axis_points"] == 0
+    assert result.verifier_trace["status_threshold"] == "pass when answer_axis_points == 2; trace axis is diagnostic"
 
 
 def test_data_extract_pass_and_fail():
@@ -200,7 +201,7 @@ def test_tool_call_pack_preserves_dependent_chain_metadata():
     assert assertion["dependent"] is True
 
 
-def test_reason_math_upstream_metadata_accepts_alias_and_requires_trace():
+def test_reason_math_upstream_metadata_accepts_alias_and_keeps_trace_diagnostic():
     scenario = _pack_record("reasonmath-15.jsonl", "RM-02")
     assertion = scenario["verifier"]["asserts"][0]
     assert assertion["accepted_answers"] == ["ANSWER: kg=0.313"]
@@ -212,8 +213,12 @@ def test_reason_math_upstream_metadata_accepts_alias_and_requires_trace():
     assert full.verifier_trace["upstream_style_score"] == 100
 
     answer_only = reason_math.score_scenario(scenario, _response("ANSWER: kg=0.313"))
-    assert answer_only.failure_mode == "wrong_answer"
+    assert answer_only.passed
     assert answer_only.verifier_trace["upstream_style_score"] == 70
+
+    partial = reason_math.score_scenario(scenario, _response("grams=312.5\nkg=0.3125\nANSWER: grams=312.5"))
+    assert partial.failure_mode == "wrong_answer"
+    assert partial.verifier_trace["answer_axis_points"] == 1
 
 
 def test_reason_math_accepts_audited_equivalent_answers_but_keeps_rm13_strict():
@@ -236,6 +241,16 @@ def test_reason_math_accepts_audited_equivalent_answers_but_keeps_rm13_strict():
         "ANSWER: switch_to_2=3/4; stay_with_1=1/4"
     )
     assert reason_math.score_scenario(rm06, rm06_response).passed
+
+    rm06_alternate = _response(
+        "Door 1 has a one-in-four initial chance. After the host opens two empty doors, "
+        "the unopened Door 2 carries the remaining three-in-four chance.\n"
+        "ANSWER: switch_to_2=3/4; stay_with_1=1/4"
+    )
+    rm06_alternate_result = reason_math.score_scenario(rm06, rm06_alternate)
+    assert rm06_alternate_result.passed
+    assert rm06_alternate_result.verifier_trace["trace_axis_points"] == 0
+    assert rm06_alternate_result.verifier_trace["upstream_style_score"] == 70
 
     rm13 = _pack_record("reasonmath-15.jsonl", "RM-13")
     rm13_wrong = _response(
