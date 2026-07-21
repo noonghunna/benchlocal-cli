@@ -805,3 +805,60 @@ def test_hermes_verify_start_refuses_when_endpoint_missing(monkeypatch, tmp_path
     assert out["passed"] is False
     assert out["failure_mode"] == "server_error"
     assert "model_endpoint" in out["detail"]
+
+
+def test_cli_openai_adapter_forwards_generation_controls():
+    script = r"""
+import {
+  createChatCompletion,
+  resolveModelTimeoutMs
+} from "./vendor/CLI-40/verification/openai.mjs";
+
+let captured;
+globalThis.fetch = async (_url, options) => {
+  captured = JSON.parse(options.body);
+  return {
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { role: "assistant", content: "done" } }]
+    })
+  };
+};
+
+await createChatCompletion(
+  {
+    inferenceBaseUrl: "http://localhost:9999/v1",
+    exposedModel: "fake",
+    authMode: "none"
+  },
+  {
+    messages: [{ role: "user", content: "test" }],
+    temperature: 0.7,
+    top_p: 0.9,
+    max_tokens: 4096,
+    enable_thinking: true,
+    thinking_budget: 2048,
+    chat_template_kwargs: { enable_thinking: true }
+  }
+);
+captured.resolved_timeout_ms = resolveModelTimeoutMs(4_800_000, 300_000);
+console.log(JSON.stringify(captured));
+"""
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    body = json.loads(proc.stdout)
+
+    assert body["max_tokens"] == 4096
+    assert body["enable_thinking"] is True
+    assert body["thinking_budget"] == 2048
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert body["resolved_timeout_ms"] == 300_000
+
+    core = (ROOT / "vendor/CLI-40/verification/core.mjs").read_text(encoding="utf-8")
+    for field in ("max_tokens", "enable_thinking", "thinking_budget", "chat_template_kwargs"):
+        assert f"{field}: generation.{field}" in core

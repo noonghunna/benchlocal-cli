@@ -975,9 +975,14 @@ async function runOneShotModelScenario(ctx, model, generation) {
       { role: "user", content: ctx.scenario.promptText }
     ],
     temperature: generation.temperature,
-    top_p: generation.top_p
+    top_p: generation.top_p,
+    max_tokens: generation.max_tokens,
+    enable_thinking: generation.enable_thinking,
+    thinking_budget: generation.thinking_budget,
+    chat_template_kwargs: generation.chat_template_kwargs
   }, {
-    timeoutMs: (generation.request_timeout_seconds ?? 300) * 1000
+    timeoutMs: (generation.request_timeout_seconds ?? 300) * 1000,
+    modelTurnTimeoutMs: (generation.model_turn_timeout_seconds ?? 300) * 1000
   });
 
   ctx.rawLog.push(`assistant:\n${response.text}`);
@@ -1059,9 +1064,14 @@ async function runMultiRoundModelScenario(ctx, model, generation) {
         messages,
         tools: [BASH_TOOL_DEFINITION],
         temperature: generation.temperature,
-        top_p: generation.top_p
+        top_p: generation.top_p,
+        max_tokens: generation.max_tokens,
+        enable_thinking: generation.enable_thinking,
+        thinking_budget: generation.thinking_budget,
+        chat_template_kwargs: generation.chat_template_kwargs
       }, {
-        timeoutMs: (generation.request_timeout_seconds ?? 300) * 1000
+        timeoutMs: (generation.request_timeout_seconds ?? 300) * 1000,
+        modelTurnTimeoutMs: (generation.model_turn_timeout_seconds ?? 300) * 1000
       });
 
       assistantMessages.push(response.text);

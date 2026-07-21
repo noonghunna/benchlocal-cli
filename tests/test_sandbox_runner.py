@@ -1269,3 +1269,141 @@ def test_run_pack_single_scoreboard_timeout_surfaces_partial(monkeypatch):
     assert pack.total == 26           # completed denominator, NOT canonical 30
     assert abs(pack.score - 17 / 26) < 1e-9
     assert pack.status == "agent_runner_timeout"   # not masked as "ok"
+
+
+class CapturingHTTPClient(FakeHTTPClient):
+    requests: list[dict] = []
+
+    def post(self, url: str, json: dict, **kwargs) -> FakeHTTPResponse:
+        self.requests.append(json)
+        return super().post(url, json, **kwargs)
+
+
+def _cli_multiturn_fixture() -> tuple[dict, dict]:
+    return (
+        {
+            "supports_sandboxed_only": True,
+            "default_max_seconds": 60,
+            "sampling_defaults": {"max_tokens": 1024},
+        },
+        {
+            "id": "CLI-36",
+            "pack_id": "cli-40",
+            "messages": [{"role": "user", "content": "use jq"}],
+            "raw_scenario": {"kind": "multiround"},
+            "verifier": {"type": "_stub", "asserts": []},
+        },
+    )
+
+
+def test_sandbox_model_turn_timeout_caps_thinking_scaled_requests(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
+    CapturingHTTPClient.requests = []
+    monkeypatch.setattr(runner_module.httpx, "Client", CapturingHTTPClient)
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        thinking_enabled=True,
+        thinking_max_tokens=16384,
+    )
+    runner._sandbox_clients["cli-40"] = FakeMultiTurnSandbox()
+    meta, scenario = _cli_multiturn_fixture()
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert runner._timeout_budget_for_scenario(meta, scenario) == 960
+    assert FakeHTTPClient.timeouts == [300, 300]
+
+
+def test_sandbox_model_turn_timeout_caps_large_budget_and_is_configurable():
+    sandbox_meta = {"supports_sandboxed_only": True}
+    ordinary_meta: dict = {}
+
+    assert (
+        Runner(endpoint="http://localhost:9999", model="fake")
+        ._model_request_timeout(sandbox_meta, 4800)
+        == 300
+    )
+    assert (
+        Runner(endpoint="http://localhost:9999", model="fake", model_turn_timeout=120)
+        ._model_request_timeout(sandbox_meta, 4800)
+        == 120
+    )
+    assert (
+        Runner(endpoint="http://localhost:9999", model="fake", model_turn_timeout=0)
+        ._model_request_timeout(sandbox_meta, 4800)
+        == 4800
+    )
+    assert (
+        Runner(endpoint="http://localhost:9999", model="fake")
+        ._model_request_timeout(ordinary_meta, 4800)
+        == 4800
+    )
+    with pytest.raises(ValueError, match="non-negative"):
+        Runner(endpoint="http://localhost:9999", model="fake", model_turn_timeout=-1)
+
+
+@pytest.mark.parametrize(
+    ("thinking_enabled", "expected_budget", "expected_template_value"),
+    [(True, 4096, True), (False, 1, False)],
+)
+def test_cli_multiturn_forwards_native_thinking_controls(
+    monkeypatch,
+    thinking_enabled,
+    expected_budget,
+    expected_template_value,
+):
+    import benchlocal_cli.runner as runner_module
+
+    FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
+    CapturingHTTPClient.requests = []
+    monkeypatch.setattr(runner_module.httpx, "Client", CapturingHTTPClient)
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        thinking_enabled=thinking_enabled,
+        thinking_max_tokens=4096,
+    )
+    runner._sandbox_clients["cli-40"] = FakeMultiTurnSandbox()
+    meta, scenario = _cli_multiturn_fixture()
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert len(CapturingHTTPClient.requests) == 2
+    for request in CapturingHTTPClient.requests:
+        assert request["enable_thinking"] is True
+        assert request["thinking_budget"] == expected_budget
+        assert request["chat_template_kwargs"]["enable_thinking"] is expected_template_value
+    if thinking_enabled:
+        assert all(request["max_tokens"] == 4096 for request in CapturingHTTPClient.requests)
+
+
+def test_cli_native_thinking_controls_preserve_explicit_extra_body(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    FakeHTTPClient.calls = 0
+    FakeHTTPClient.timeouts = []
+    CapturingHTTPClient.requests = []
+    monkeypatch.setattr(runner_module.httpx, "Client", CapturingHTTPClient)
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        extra_body={"enable_thinking": False, "thinking_budget": 17},
+    )
+    runner._sandbox_clients["cli-40"] = FakeMultiTurnSandbox()
+    meta, scenario = _cli_multiturn_fixture()
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert CapturingHTTPClient.requests[0]["enable_thinking"] is False
+    assert CapturingHTTPClient.requests[0]["thinking_budget"] == 17
