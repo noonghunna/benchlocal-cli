@@ -136,6 +136,13 @@ def _parser() -> argparse.ArgumentParser:
              "(default: '(no answer)'; pass an empty string for the pure-empty control).",
     )
     run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
+    run.add_argument(
+        "--model-turn-timeout",
+        type=float,
+        default=_env_float("BENCHLOCAL_MODEL_TURN_TIMEOUT", 300.0),
+        help="maximum seconds for one runner-owned sandbox model call; 0 disables "
+             "(default: 300; env BENCHLOCAL_MODEL_TURN_TIMEOUT)",
+    )
     run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
     run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")
     run.add_argument("--timeout-scale-down", action="store_true", help="allow dynamic timeout scaling to shrink budgets for faster-than-reference models; off by default")
@@ -735,6 +742,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.thinking_sampler = json.dumps(config["thinking_sampler"])
             args.measured_tps = args.measured_tps or config.get("measured_tps")
             args.reference_tps = args.reference_tps or config.get("reference_tps")
+            args.model_turn_timeout = float(
+                config.get("model_turn_timeout", args.model_turn_timeout)
+            )
             args.timeout_per_case = args.timeout_per_case or config.get("timeout_per_case")
             args.timeout_scale_down = bool(config.get("timeout_scale_down"))
             args.enable_sandboxed_packs = bool(config.get("sandboxed_enabled"))
@@ -932,6 +942,7 @@ def main(argv: list[str] | None = None) -> int:
             "sampling_source": "server" if args.sampling_from_server else None,
             "extra_body": effective_extra_body,
             "timeout_per_case": args.timeout_per_case,
+            "model_turn_timeout": args.model_turn_timeout,
             "measured_tps": args.measured_tps,
             "reference_tps": args.reference_tps,
             "timeout_scale_down": args.timeout_scale_down,
@@ -989,6 +1000,7 @@ def main(argv: list[str] | None = None) -> int:
             endpoint=args.endpoint,
             model=args.model,
             timeout_per_case=args.timeout_per_case,
+            model_turn_timeout=args.model_turn_timeout,
             measured_tps=args.measured_tps,
             reference_tps=args.reference_tps,
             timeout_scale_down=args.timeout_scale_down,

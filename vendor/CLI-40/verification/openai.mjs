@@ -59,9 +59,17 @@ export function normalizeToolCalls(message) {
   return [];
 }
 
-export async function createChatCompletion(model, payload, { timeoutMs = 300_000, signal } = {}) {
+export function resolveModelTimeoutMs(timeoutMs, modelTurnTimeoutMs = 300_000) {
+  if (!Number.isFinite(modelTurnTimeoutMs) || modelTurnTimeoutMs <= 0) {
+    return timeoutMs;
+  }
+  return Math.min(timeoutMs, modelTurnTimeoutMs);
+}
+
+export async function createChatCompletion(model, payload, { timeoutMs = 300_000, modelTurnTimeoutMs = 300_000, signal } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error(`Model request timed out after ${timeoutMs}ms.`)), timeoutMs);
+  const effectiveTimeoutMs = resolveModelTimeoutMs(timeoutMs, modelTurnTimeoutMs);
+  const timeout = setTimeout(() => controller.abort(new Error(`Model request timed out after ${effectiveTimeoutMs}ms.`)), effectiveTimeoutMs);
 
   if (signal) {
     if (signal.aborted) {
@@ -83,6 +91,10 @@ export async function createChatCompletion(model, payload, { timeoutMs = 300_000
         parallel_tool_calls: false,
         temperature: payload.temperature,
         top_p: payload.top_p,
+        max_tokens: payload.max_tokens,
+        enable_thinking: payload.enable_thinking,
+        thinking_budget: payload.thinking_budget,
+        chat_template_kwargs: payload.chat_template_kwargs,
         stream: false
       }),
       signal: controller.signal

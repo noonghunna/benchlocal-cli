@@ -130,6 +130,20 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 | `server_error` | Sandbox infra issue (state id missing, fixture missing, container OOM, etc) |
 | `verifier_not_implemented` | Runner-side skip when a sandboxed pack is requested without sandbox support or a sandbox cannot start |
 
+## CLI-specific: model request controls
+
+The runner owns CLI-40 model turns in the normal benchmark path. Every request
+keeps the standard `max_tokens` and `chat_template_kwargs.enable_thinking`
+fields and also carries provider-native `enable_thinking` and
+`thinking_budget`. Thinking-only endpoints receive `enable_thinking: true`
+for both arms; the off arm uses `thinking_budget: 1`, while the on arm uses
+the configured thinking-token budget. Explicit `--extra-body` values win.
+
+Each runner-owned model turn is capped by `--model-turn-timeout` (300 seconds
+by default), independently of the larger scenario timeout. The vendored direct
+CLI adapter applies the same default cap and forwards all four generation
+controls when invoked through `/run-scenario`.
+
 ## Hermes-specific: v0.7.3 model-endpoint passthrough
 
 Hermes `/verify-start` requires the runner to pass `model_endpoint`,

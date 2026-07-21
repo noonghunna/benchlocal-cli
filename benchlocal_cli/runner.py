@@ -256,6 +256,28 @@ def build_request(
     return request, sampling
 
 
+def _apply_cli_thinking_controls(
+    scenario: dict,
+    request: dict,
+    sampling: dict,
+    thinking_max_tokens: int,
+) -> None:
+    """Add provider-native reasoning controls for CLI-40 model requests."""
+    if scenario.get("pack_id") != "cli-40":
+        return
+
+    request_thinking = bool(
+        dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking")
+    )
+    sampling.setdefault("enable_thinking", True)
+    sampling.setdefault(
+        "thinking_budget",
+        max(1, int(thinking_max_tokens)) if request_thinking else 1,
+    )
+    request["enable_thinking"] = sampling["enable_thinking"]
+    request["thinking_budget"] = sampling["thinking_budget"]
+
+
 def build_chat_request(
     messages: list[dict],
     sampling: dict,
@@ -374,6 +396,7 @@ class Runner:
         endpoint: str,
         model: str,
         timeout_per_case: float | None = None,
+        model_turn_timeout: float | None = 300.0,
         measured_tps: float | None = None,
         reference_tps: float | None = None,
         timeout_scale_down: bool = False,
@@ -400,6 +423,13 @@ class Runner:
         self.endpoint = endpoint
         self.model = model
         self.timeout_per_case = None if timeout_per_case is None else float(timeout_per_case)
+        if model_turn_timeout is not None and float(model_turn_timeout) < 0:
+            raise ValueError("model_turn_timeout must be non-negative")
+        self.model_turn_timeout = (
+            None
+            if model_turn_timeout is None or float(model_turn_timeout) == 0
+            else float(model_turn_timeout)
+        )
         self.measured_tps_override = None if measured_tps is None else float(measured_tps)
         self.reference_tps_override = None if reference_tps is None else float(reference_tps)
         self.timeout_scale_down = bool(timeout_scale_down)
@@ -684,6 +714,12 @@ class Runner:
             or DEFAULT_TIMEOUT_PER_CASE
         )
         return self._scale_timeout_budget(float(value), meta)
+
+    def _model_request_timeout(self, meta: dict, scenario_timeout: float) -> float:
+        """Bound one runner-owned sandbox model call without shrinking the scenario budget."""
+        if not meta.get("supports_sandboxed_only") or self.model_turn_timeout is None:
+            return scenario_timeout
+        return min(scenario_timeout, self.model_turn_timeout)
 
     def _scale_timeout_budget(self, base_seconds: float, meta: dict) -> float:
         # The returned budget is a deliberately-generous CEILING, not an SLA.
@@ -1023,7 +1059,14 @@ class Runner:
             sampling_from_server=self.sampling_from_server,
             thinking_sampler=self.thinking_sampler,
         )
+        _apply_cli_thinking_controls(
+            scenario,
+            request,
+            sampling,
+            self.thinking_max_tokens,
+        )
         timeout = self._timeout_budget_for_scenario(meta, scenario)
+        request_timeout = self._model_request_timeout(meta, timeout)
         started = time.perf_counter()
         status_code: int | None = None
         raw_response: dict | None = None
@@ -1045,7 +1088,7 @@ class Runner:
                 request,
                 sampling,
                 repeat_index,
-                timeout,
+                request_timeout,
             )
 
         if self.negative_control is not None:
@@ -1056,7 +1099,7 @@ class Runner:
             latency = 0.0
         else:
             try:
-                status_code, raw_response, transient_trace = self._post_chat(request, timeout)
+                status_code, raw_response, transient_trace = self._post_chat(request, request_timeout)
                 latency = time.perf_counter() - started
                 if status_code >= 500:
                     result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}", latency)
