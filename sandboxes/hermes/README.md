@@ -115,8 +115,20 @@ Runner-side env:
 
 | Var | Purpose |
 |---|---|
-| `HERMES_AGENT_FORCE_BAKED` | `1` → skip host detection (test override) |
-| `HERMES_AGENT_HOST_PATH` | Explicit bind-mount source on the host |
+| `HERMES_AGENT_ALLOW_HOST` | `1` → opt in to auto-detecting a host install. **Off by default** — see below |
+| `HERMES_AGENT_HOST_PATH` | Explicit bind-mount source on the host (opt-in, overrides the default) |
+| `HERMES_AGENT_FORCE_BAKED` | `1` → skip host detection. Redundant now that baked is the default; kept for back-compat |
+
+### Why the baked agent is the default
+
+Two components are versioned separately here, and only one used to be pinned:
+
+- The **Hermes CLI** (the tool under test) is baked into the verifier image and asserted against `HERMES_PINNED_COMMIT` — a mismatch throws.
+- **hermes-agent** (the agent implementation) was auto-detected from the host: `/opt/hermes-agent`, `~/hermes-agent`, `~/.local/hermes-agent`, `~/.hermes/hermes-agent`, then `which hermes`.
+
+`~/.hermes/hermes-agent` is where the official `hermes` installer puts its checkout, **and it rewrites it in place** — so a routine upgrade silently changed what the pack measured. Three runs of one model on one rig executed three different agent builds (`7f12d4f` → `d604141` → baked `44cdf555`) with a 4-point spread and no warning; the moves were initially misread as a verifier change and then as run-to-run variance.
+
+Pinning the agent alongside the CLI is what makes a score attributable to the model. Opt into a host checkout only when you're deliberately testing agent changes, and don't compare those numbers against baked-agent runs.
 
 ## Iterating on agent-runner.py against a fork's API drift
 

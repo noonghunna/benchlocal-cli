@@ -79,6 +79,12 @@ SANDBOX_MODES = {"full", "reasoning"}
 # on the verifier containers without paying the deterministic-pack cost.
 SANDBOXED_PACK_IDS = ["bugfind-15", "hermesagent-20", "cli-40", "humaneval-plus-30", "lcb-v6-30"]
 DEFAULT_TIMEOUT_PER_CASE = 60.0
+# Reference emission length that a pack's flat `default_max_seconds` was
+# written against. The timeout multiplier scales off THIS, never off the pack's
+# own max_tokens — those are two different quantities that shared one field
+# until #103, so raising a pack's emission budget silently shrank its clock.
+# Packs may override with `timeout_baseline_tokens` in their meta.
+DEFAULT_TIMEOUT_BASELINE_TOKENS = 1024
 
 # #61: content-verdict failure modes that a token-cap truncation should override.
 # A failure on any of these *while* finish_reason == "length" is confounded by
@@ -729,11 +735,16 @@ class Runner:
         #        Probe measures EMPTY-context decode TPS, which over-estimates the
         #        loaded rate (~3x on a filled KV cache). That over-estimate makes
         #        the budget *more* generous, which is safe for a ceiling.
-        #   2. thinking multiplier = thinking_max_tokens / nominal_max_tokens
-        #        Thinking-ON raises the emission ceiling ~16x (1024 -> 16384), so a
-        #        scenario legitimately decodes far longer than the flat base budget.
+        #   2. token-budget multiplier = effective_max_tokens / timeout_baseline_tokens
+        #        A raised emission ceiling (thinking-ON's 16384, or --max-tokens on
+        #        either arm) legitimately decodes far longer than the flat base
+        #        budget. Applies to BOTH arms since #103 — the arm a scenario runs
+        #        in doesn't change how long N tokens take to decode, and leaving the
+        #        non-thinking arm unscaled just converted token_limit into timeout.
+        #        The baseline is its own field: scaling off the pack's own
+        #        max_tokens made the ratio self-cancelling.
         #
-        # CRITICAL: the thinking multiplier must apply EVEN WHEN no reference_tps is
+        # CRITICAL: the token-budget multiplier must apply EVEN WHEN no reference_tps is
         # set (deterministic/reasoning packs). A previous attempt gated it behind the
         # reference check, making it dead code for exactly the packs that broke (#54).
         # Do NOT "tighten" this budget back toward the empty-context probe estimate —
@@ -752,12 +763,13 @@ class Runner:
             note_parts.append(f"reference_tps={float(reference):.1f}")
             note_parts.append(f"scale={scale:.2f}")
 
-        multiplier = self._thinking_timeout_multiplier(meta)
+        multiplier = self._token_budget_timeout_multiplier(meta)
         if multiplier > 1.0:
             budget *= multiplier
-            nominal_max = self._nominal_thinking_max_tokens(meta)
+            effective_max = self._effective_max_tokens(meta)
+            baseline = self._timeout_baseline_tokens(meta)
             note_parts.append(
-                f"thinking-budget-multiplier={self.thinking_max_tokens}/{nominal_max}={multiplier:.2f}"
+                f"token-budget-multiplier={effective_max}/{baseline}={multiplier:.2f}"
             )
 
         if note_parts:
@@ -792,22 +804,67 @@ class Runner:
         print(f"[runner] {self._timeout_scaling_note}", file=sys.stderr, flush=True)
         self._timeout_scaling_note_emitted = True
 
-    def _nominal_thinking_max_tokens(self, meta: dict) -> int:
+    def _timeout_baseline_tokens(self, meta: dict) -> int:
+        """Emission length the pack's flat time budget was calibrated for.
+
+        Defaults to the pack's own `sampling_defaults.max_tokens`, which is
+        what every pack's `default_max_seconds` was written against — so this
+        is behaviour-preserving for packs that don't opt out. A pack that
+        RAISES its emission ceiling without re-timing its clock must pin
+        `timeout_baseline_tokens` to the old value, or the ratio self-cancels
+        and the budget silently shrinks (#103: reasonmath went to 16384 while
+        its 60s clock still assumes 1024).
+
+        The two are separate quantities: `max_tokens` is how much the model may
+        emit, this is how much the clock was sized for. They coincided by
+        accident, not by design.
+        """
+        explicit = meta.get("timeout_baseline_tokens")
+        if explicit:
+            try:
+                value = int(explicit)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
         sampling_defaults = meta.get("sampling_defaults") or {}
         try:
-            return int(sampling_defaults.get("max_tokens") or 1024)
+            value = int(sampling_defaults.get("max_tokens") or 0)
         except (TypeError, ValueError):
-            return 1024
+            return DEFAULT_TIMEOUT_BASELINE_TOKENS
+        return value if value > 0 else DEFAULT_TIMEOUT_BASELINE_TOKENS
 
-    def _thinking_timeout_multiplier(self, meta: dict) -> float:
-        if not resolve_thinking_enabled(meta, self.thinking_override):
+    def _effective_max_tokens(self, meta: dict) -> int | None:
+        """Emission ceiling for the arm that is actually running."""
+        if resolve_thinking_enabled(meta, self.thinking_override):
+            return self.thinking_max_tokens
+        override = self.sampling_overrides.get("max_tokens")
+        if override is not None:
+            try:
+                return int(override)
+            except (TypeError, ValueError):
+                pass
+        sampling_defaults = meta.get("sampling_defaults") or {}
+        try:
+            return int(sampling_defaults.get("max_tokens") or 0) or None
+        except (TypeError, ValueError):
+            return None
+
+    def _token_budget_timeout_multiplier(self, meta: dict) -> float:
+        """Scale the clock with the emission ceiling — for BOTH arms.
+
+        This was thinking-only until #103, so a non-thinking arm raised via
+        --max-tokens kept the flat budget and merely traded `token_limit`
+        failures for `timeout` ones. The arm a scenario runs in doesn't change
+        how long N tokens take to decode.
+        """
+        effective = self._effective_max_tokens(meta)
+        if effective is None or effective <= 0:
             return 1.0
-        if self.thinking_max_tokens is None:
+        baseline = self._timeout_baseline_tokens(meta)
+        if effective <= baseline:
             return 1.0
-        nominal_max = self._nominal_thinking_max_tokens(meta)
-        if nominal_max <= 0 or self.thinking_max_tokens <= nominal_max:
-            return 1.0
-        return float(self.thinking_max_tokens) / float(nominal_max)
+        return float(effective) / float(baseline)
 
     def _timeout_measured_tps(self) -> float | None:
         # #62: negative-control never calls the endpoint — skip the decode probe
