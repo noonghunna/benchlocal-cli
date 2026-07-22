@@ -163,6 +163,9 @@ class RunResult:
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
+    # Failure-conditioned retries are diagnostic only; baseline pass@1 remains
+    # authoritative and is recorded alongside per-scenario consistency here.
+    retry_failed: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -189,4 +192,6 @@ class RunResult:
             out["server_defaults"] = self.server_defaults
         if self.selection is not None:
             out["selection"] = self.selection
+        if self.retry_failed is not None:
+            out["retry_failed"] = self.retry_failed
         return out
