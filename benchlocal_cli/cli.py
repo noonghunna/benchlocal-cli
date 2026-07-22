@@ -153,7 +153,21 @@ def _parser() -> argparse.ArgumentParser:
         metavar="RESULTS_JSON_OR_PARTIAL_JSONL",
         help="resume missing scenarios from a saved result or per-scenario partial journal",
     )
-    run.add_argument("--repeat", type=int, default=1, help="repeat each scenario N times (default: 1)")
+    run.add_argument(
+        "--repeat",
+        type=int,
+        default=0,
+        help="rigorous whole-benchmark variance: run every scenario N times; "
+             "0 or absent means one attempt (default: 0)",
+    )
+    run.add_argument(
+        "--retry-failed",
+        type=int,
+        nargs="?",
+        const=3,
+        help="diagnostic: retry each failed pass@1 scenario from --previous-result N times "
+             "(bare flag: 3); does not replace the baseline score",
+    )
     # v0.9.3: incremental progress (#23) — live output during long runs
     run.add_argument(
         "--progress",
@@ -455,6 +469,21 @@ def _markdown(result: RunResult) -> str:
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag} ===",
         "",
     ]
+    retry_diagnostic = result.retry_failed
+    if retry_diagnostic is not None:
+        baseline = retry_diagnostic.get("baseline_totals") or {}
+        lines.extend(
+            [
+                f"Baseline pass@1 (official): {baseline.get('passed', 0)} / "
+                f"{baseline.get('total', 0)} ({float(baseline.get('score') or 0.0):.0%})",
+                f"Retry diagnostic: {retry_diagnostic.get('failed_scenario_count', 0)} "
+                f"baseline failures × {retry_diagnostic.get('attempts_per_scenario', 0)} attempts.",
+                "Retry outcomes are diagnostic only and do not replace the baseline score.",
+                "",
+                "Retry sample:",
+                "",
+            ]
+        )
     show_variance = delta_pack_index is None and any(pack.variance for pack in result.packs)
     if delta_pack_index is None:
         if show_variance:
@@ -518,11 +547,12 @@ def _markdown(result: RunResult) -> str:
                 f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {delta_cell} | {p50} | {p95} | {status}"
             )
 
+    total_label = "RETRY SAMPLE" if retry_diagnostic is not None else "TOTAL"
     if delta_pack_index is None:
         lines.extend(
             [
                 "",
-                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |  |  |" if show_variance else f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
+                f"{total_label} | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |  |  |" if show_variance else f"{total_label} | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} |  |  |",
             ]
         )
     else:
@@ -533,13 +563,29 @@ def _markdown(result: RunResult) -> str:
         lines.extend(
             [
                 "",
-                f"TOTAL | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} | {delta_summary} |  |  |",
+                f"{total_label} | {result.totals['passed']} / {result.totals['total']} | {result.totals['score']:.0%} | {delta_summary} |  |  |",
             ]
         )
         if d.get("warnings"):
             lines.append("")
             lines.append("Delta warnings:")
             lines.extend(f"- {w}" for w in d["warnings"])
+    if retry_diagnostic is not None:
+        lines.extend(
+            [
+                "",
+                "Failure consistency:",
+                "",
+                "Scenario | Retry passes | Classification",
+                "---|---:|---",
+            ]
+        )
+        for scenario in retry_diagnostic.get("scenarios") or []:
+            lines.append(
+                f"{scenario['pack_id']}/{scenario['scenario_id']} | "
+                f"{scenario['retry_passed']} / {scenario['retry_total']} | "
+                f"{scenario['classification']}"
+            )
     failures: list[str] = []
     for pack in result.packs:
         for scenario in pack.scenarios:
@@ -547,7 +593,7 @@ def _markdown(result: RunResult) -> str:
                 failures.append(
                     f"{pack.pack_id} {scenario.id}: {scenario.result.failure_mode} ({scenario.result.detail})"
                 )
-    if failures:
+    if failures and retry_diagnostic is None:
         lines.append("")
         lines.append("Failure breakdown:")
         lines.extend(f"- {failure}" for failure in failures)
@@ -698,6 +744,10 @@ def main(argv: list[str] | None = None) -> int:
             from benchlocal_cli.rescore import rescore_result
             return rescore_result(args.path, args)
 
+        if args.repeat < 0:
+            raise ValueError("--repeat must be 0 or greater")
+        retry_failed_context: dict | None = None
+
         resume_state = None
         if args.resume:
             from benchlocal_cli.persistence import load_resume
@@ -710,7 +760,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             if conflicting_selector:
                 raise ValueError("--resume cannot be combined with scenario or pack-set selectors")
-            if args.repeat != 1:
+            if args.retry_failed is not None:
+                raise ValueError("--resume restores an existing retry diagnostic; do not pass --retry-failed")
+            if args.repeat != 0:
                 raise ValueError("--resume uses the original run repeat count; do not pass --repeat")
             if args.thinking_override is not None or args.thinking_max_tokens is not None:
                 raise ValueError("--resume uses the original thinking configuration")
@@ -725,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--resume uses the original sampling configuration")
 
             config = resume_state.config
+            retry_failed_context = config.get("retry_failed")
             args.endpoint = args.endpoint or config.get("endpoint")
             args.model = args.model or config.get("model")
             args.save_json = args.save_json or str(resume_state.final_path)
@@ -765,6 +818,58 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 0
 
+        if args.retry_failed is not None:
+            if not args.previous_result:
+                raise ValueError("--retry-failed requires --previous-result")
+            if args.scenario or args.scenarios_file:
+                raise ValueError("--retry-failed constructs the scenario selection; do not pass --scenario or --scenarios-file")
+            if args.repeat != 0:
+                raise ValueError("--retry-failed cannot be combined with --repeat")
+            if args.exit_on_regression:
+                raise ValueError("--retry-failed is diagnostic and cannot be used with --exit-on-regression")
+            if (
+                args.save_json
+                and Path(args.save_json).resolve() == Path(args.previous_result).resolve()
+            ):
+                raise ValueError("--retry-failed --save-json must not overwrite --previous-result")
+
+            from benchlocal_cli.retry_failed import load_retry_context
+
+            baseline, retry_failed_context = load_retry_context(
+                args.previous_result,
+                args.retry_failed,
+            )
+            if not retry_failed_context["selection"]:
+                print(
+                    f"benchlocal-cli: retry-failed complete — no failed pass@1 scenarios "
+                    f"in {args.previous_result}"
+                )
+                return 0
+
+            args.endpoint = args.endpoint or baseline.get("endpoint")
+            args.model = args.model or baseline.get("model")
+            if args.thinking_override is None:
+                if baseline.get("thinking_mode") == "force-on":
+                    args.thinking_override = True
+                elif baseline.get("thinking_mode") == "force-off":
+                    args.thinking_override = False
+            for key, value in (baseline.get("sampling_overrides") or {}).items():
+                attr = "repeat_penalty" if key == "repeat_penalty" else key.replace("-", "_")
+                if hasattr(args, attr) and getattr(args, attr) is None:
+                    setattr(args, attr, value)
+            explicit_distribution = any(
+                value is not None
+                for value in (
+                    args.temperature,
+                    args.top_p,
+                    args.top_k,
+                    args.min_p,
+                    args.repeat_penalty,
+                )
+            )
+            if baseline.get("sampling_source") == "server" and not explicit_distribution:
+                args.sampling_from_server = True
+            args.repeat = args.retry_failed
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):
             print(
@@ -812,10 +917,16 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 pack_ids = PACK_MODES[mode]
 
-            raw_selection = requested_ids(args.scenario, args.scenarios_file)
+            raw_selection = (
+                list(retry_failed_context["selection"])
+                if retry_failed_context is not None
+                else requested_ids(args.scenario, args.scenarios_file)
+            )
             selection_ids: list[str] | None = None
             selection_by_pack: dict[str, list[str]] | None = None
-            selection_requested = bool(args.scenario or args.scenarios_file)
+            selection_requested = (
+                retry_failed_context is not None or bool(args.scenario or args.scenarios_file)
+            )
             if selection_requested:
                 if not raw_selection:
                     raise ValueError("scenario selection is empty")
@@ -839,6 +950,8 @@ def main(argv: list[str] | None = None) -> int:
                 if selection_ids is not None
                 else selection_for_packs(pack_ids)[0]
             )
+            if retry_failed_context is not None:
+                retry_failed_context["selection"] = list(selection_ids or [])
 
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
         # --sandboxed-only also implies sandbox is enabled (no point otherwise).
@@ -948,6 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
             "timeout_scale_down": args.timeout_scale_down,
             "sandboxed_enabled": sandboxed_enabled,
             "request_delay": args.request_delay,
+            "retry_failed": retry_failed_context,
             "save_json": args.save_json,
         }
 
@@ -1053,6 +1167,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+
+        if retry_failed_context is not None:
+            from benchlocal_cli.retry_failed import build_retry_diagnostic
+
+            result.retry_failed = build_retry_diagnostic(result, retry_failed_context)
 
         # v0.8: --previous-result delta classification
         if args.previous_result:

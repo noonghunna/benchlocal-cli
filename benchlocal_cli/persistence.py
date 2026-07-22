@@ -227,7 +227,7 @@ def _build_result(
 
     total = sum(pack.total for pack in packs)
     passed = sum(pack.passed for pack in packs)
-    return RunResult(
+    result = RunResult(
         schema_version=str(config.get("schema_version") or "1"),
         runner_version=str(config.get("runner_version") or __version__),
         endpoint=str(config.get("endpoint") or ""),
@@ -245,6 +245,12 @@ def _build_result(
         server_defaults=config.get("server_defaults"),
         selection=config.get("result_selection"),
     )
+    retry_context = config.get("retry_failed")
+    if retry_context is not None:
+        from benchlocal_cli.retry_failed import build_retry_diagnostic
+
+        result.retry_failed = build_retry_diagnostic(result, retry_context)
+    return result
 
 
 def result_from_journal(path: str | Path) -> dict:

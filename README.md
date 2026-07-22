@@ -297,6 +297,24 @@ For agentic packs (e.g. `aider-polyglot-30`), the headline number is `pass_rate`
 
 When `--repeat N` is greater than 1, the markdown table adds per-pack `Std` and `CV` columns derived from repeat-arm pass rates. The saved JSON includes the same data under each pack result as `variance: {"repeat", "mean", "std", "cv"}` so cross-rig runs can distinguish real deltas from run-to-run noise.
 
+
+`--repeat N` is the rigorous whole-benchmark variance tool: it re-runs passes and failures, so it can detect flaky passes as well as flaky failures. The CLI default is `--repeat 0`, where `0` means the normal single attempt; `--repeat 3` executes every selected scenario three times.
+
+For the cheaper everyday question "are the failures in this saved run systematic or flaky?", retry only its failed pass@1 scenarios:
+
+```bash
+benchlocal-cli run --retry-failed --previous-result baseline.json \
+  --api-key "$BENCHLOCAL_API_KEY" --save-json failure-retries.json
+
+# Bare --retry-failed means 3 attempts per failed scenario; choose another count explicitly.
+benchlocal-cli run --retry-failed 5 --previous-result baseline.json \
+  --save-json failure-retries-5x.json
+```
+
+The source must be a pass@1 result; a prior `--repeat N` artifact already contains the rigorous variance signal and is rejected as a retry baseline.
+
+The endpoint, model, thinking mode, and recorded sampling overrides are inherited when available; current credentials still come from the CLI or environment. Pack-set flags such as `--pack` intersect with the generated failed-scenario selection. Human output keeps the baseline pass@1 score first and labels retry totals as `RETRY SAMPLE`; JSON remains an honest partial-selection artifact and adds top-level `retry_failed` consistency metadata. `0/N` is `systematic`; any passing retry is `flaky` because the baseline arm failed. This diagnostic cannot use `--exit-on-regression` and cannot overwrite its `--previous-result`.
+
 ## Inspecting failures
 
 The `Failure breakdown:` block above is the quickest read — `failure_mode` + full detail per failed scenario, printed at the end of every run. For deeper forensics, any run with `--save-json` (which `quality-test.sh` sets) records per-scenario tokens, latency, and the full verifier trace; the `inspect` subcommand reads it back:
