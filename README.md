@@ -254,7 +254,7 @@ benchlocal-cli run --pack toolcall-15 \
 | Flag | Role |
 |---|---|
 | `--request-delay <sec>` | **proactive** — minimum seconds between requests, to stay under the endpoint's RPM ceiling (env `BENCHLOCAL_REQUEST_DELAY`) |
-| `--max-transient-retries <N>` | **reactive** — auto-retry 429 / transient failures before failing a scenario (default 3) |
+| `--max-transient-retries <N>` | **reactive** — auto-retry 429 / transient failures before failing a scenario (default 3). Server `Retry-After` is honored up to 120s; without it, 429 retries wait 10s, 20s, then 40s so the default spans a minute window. |
 
 Leave `--retry-on-timeout` **off** for cloud — a timeout means the token budget was genuinely exhausted, so retrying just burns another budget.
 

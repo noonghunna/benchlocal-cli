@@ -1164,6 +1164,7 @@ class Runner:
                     return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
                 if status_code >= 400:
                     result = ScenarioResult(scenario["id"], False, "http_error", f"HTTP {status_code}", latency)
+                    result = self._inject_transient_trace(result, transient_trace)
                     return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
             except _TransientPostFailure as exc:
                 latency = time.perf_counter() - started
@@ -1324,7 +1325,11 @@ class Runner:
                         if response.status_code == 429
                         else None
                     )
-                    self._sleep_before_transient_retry(attempt, retry_after=retry_after)
+                    self._sleep_before_transient_retry(
+                        attempt,
+                        retry_after=retry_after,
+                        status_code=response.status_code,
+                    )
                     continue
 
             # Spend guard: accumulate reported usage (cloud-cost safety). Trips on
@@ -1402,11 +1407,19 @@ class Runner:
         return replace(result, verifier_trace=existing)
 
     @staticmethod
-    def _sleep_before_transient_retry(attempt: int, retry_after: float | None = None) -> None:
-        # Honor a server-provided Retry-After (429/503) when present + sane; else
-        # exponential backoff. Capped so a hostile/large header can't stall the run.
+    def _sleep_before_transient_retry(
+        attempt: int,
+        retry_after: float | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        # A minute-window throttle needs materially longer recovery than a brief
+        # connection/server error. Honor Retry-After first; otherwise let three
+        # default 429 retries span 70 seconds (10 + 20 + 40) while preserving the
+        # existing short exponential schedule for other transient failures.
         if retry_after is not None and retry_after > 0:
-            delay = min(float(retry_after), 30.0)
+            delay = min(float(retry_after), 120.0)
+        elif status_code == 429:
+            delay = min(10 * (2 ** (attempt - 1)), 60.0)
         else:
             delay = 2 ** (attempt - 1)
         if delay > 0:
