@@ -9,6 +9,26 @@ the same content per-version.
 
 ---
 
+## v0.9.9 — 2026-07-22
+
+
+### ✨ Features
+
+- feat(run): add failure retry diagnostics (#107) ([348e2ad](https://github.com/noonghunna/benchlocal-cli/commit/348e2ad4a68765af4dc8d2355fa0264d65b9d9d3))
+
+
+### 🐛 Bug fixes
+
+- fix(cloud): span minute-window 429 throttles (#106) ([5181327](https://github.com/noonghunna/benchlocal-cli/commit/518132763d4368ae1f1818c3b3b25140c5d440c7))
+
+
+### 🧹 Other
+
+- Pin hermes-agent by default; decouple timeout clock from token budget (#105) ([#105](https://github.com/noonghunna/benchlocal-cli/pull/105) by @noonghunna)
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.9.9`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.8...v0.9.9)
 ## v0.9.8 — 2026-07-21
 
 
