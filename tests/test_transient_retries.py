@@ -175,6 +175,13 @@ def test_single_turn_429_exhausted_is_http_error(monkeypatch):
     assert run.result.passed is False
     assert run.result.failure_mode == "http_error"
     assert SequenceHTTPClient.calls == 3
+    assert run.result.verifier_trace is not None
+    assert run.result.verifier_trace["transient_retries"] == 2
+    assert run.result.verifier_trace["transient_errors"] == [
+        "attempt 1: HTTP 429",
+        "attempt 2: HTTP 429",
+        "attempt 3: HTTP 429",
+    ]
 
 
 def test_retry_after_header_honored_and_capped(monkeypatch):
@@ -188,9 +195,22 @@ def test_retry_after_header_honored_and_capped(monkeypatch):
             self.headers = {"retry-after": value}
 
     Runner._sleep_before_transient_retry(1, retry_after=Runner._retry_after_seconds(_RespWithHeader("7")))    # honored
-    Runner._sleep_before_transient_retry(1, retry_after=Runner._retry_after_seconds(_RespWithHeader("999")))  # capped at 30s
+    Runner._sleep_before_transient_retry(1, retry_after=Runner._retry_after_seconds(_RespWithHeader("999")))  # capped at 120s
     Runner._sleep_before_transient_retry(2, retry_after=Runner._retry_after_seconds(object()))                # no header → backoff 2**(2-1)
-    assert slept == [7.0, 30.0, 2.0]
+    assert slept == [7.0, 120.0, 2.0]
+
+
+def test_429_fallback_backoff_spans_a_minute_window(monkeypatch):
+    import benchlocal_cli.runner as runner_module
+
+    slept: list[float] = []
+    monkeypatch.setattr(runner_module.time, "sleep", lambda delay: slept.append(delay))
+
+    for attempt in range(1, 4):
+        Runner._sleep_before_transient_retry(attempt, status_code=429)
+
+    assert slept == [10.0, 20.0, 40.0]
+    assert sum(slept) >= 60.0
 
 
 def test_request_delay_paces_requests(monkeypatch):
