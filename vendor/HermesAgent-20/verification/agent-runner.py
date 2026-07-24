@@ -16,6 +16,28 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 from tools.terminal_tool import set_approval_callback
 
+REASONING_HISTORY_FIELDS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+)
+
+
+def _set_reasoning_history_policy(agent: AIAgent, preserve: bool) -> None:
+    """Strip reasoning only from Hermes' outgoing replay copy by default."""
+    if preserve:
+        return
+
+    def _strip_reasoning_for_api(_source_msg: dict, api_msg: dict) -> None:
+        for field in REASONING_HISTORY_FIELDS:
+            api_msg.pop(field, None)
+
+    # The pinned agent calls this hook after copying each stored message and
+    # before sending api_messages. Replacing the instance hook leaves its
+    # session DB and result capture untouched.
+    agent._copy_reasoning_content_for_api = _strip_reasoning_for_api
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
@@ -254,6 +276,10 @@ def main() -> int:
             tool_start_callback=_tool_started,
             tool_complete_callback=_tool_completed,
             clarify_callback=clarify_callback,
+        )
+        _set_reasoning_history_policy(
+            agent,
+            bool((request.get("generation") or {}).get("preserve_reasoning_history")),
         )
 
         result = agent.run_conversation(str(request.get("prompt") or ""))

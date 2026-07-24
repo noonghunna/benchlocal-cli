@@ -91,9 +91,12 @@ Each scenario's timeout is sized by precedence (highest wins):
    - `thinking_multiplier` = `thinking_max_tokens / nominal_max_tokens`, applied only when thinking is enabled and the budget exceeds the nominal output. Prevents thinking-on runs from spuriously timing out (#54).
    - `max(1, …)` means a faster rig never shrinks the budget below `base`. The result deliberately **over-budgets** — a timeout is a ceiling, not a target.
 3. **Static default** — the pack's `default_max_seconds`, when no `reference_tps` is set or the probe is unavailable.
+
+The automatic or static result is then capped by `--timeout-ceiling-s N` (env `BENCHLOCAL_TIMEOUT_CEILING_S`) when set. A pack may provide the same guard as `timeout_ceiling_s` metadata; the CLI/environment value wins, and `--timeout-ceiling-s 0` explicitly disables a pack ceiling. The exact `--timeout-per-case` override is never capped.
+
 Runner-owned model calls in sandboxed packs have a second, independent watchdog: `--model-turn-timeout N` (default `300` seconds; env `BENCHLOCAL_MODEL_TURN_TIMEOUT`). It caps one endpoint call even when speed/thinking scaling gives the scenario a much larger overall budget. Pass `0` to disable the cap. Sandbox-owned agent processes retain their own subprocess watchdogs.
 
-A **timeout is not retried** as transient (a timeout means the budget was genuinely hit); connection errors and HTTP 5xx still retry. `--retry-on-timeout` (default off) restores the old retry behavior.
+A **request timeout is not retried** by the transport retry loop (a timeout means the request budget was genuinely hit); connection errors and HTTP 5xx still are. `--retry-on-timeout` (default off) restores the old transport behavior. Scenario-level timeout/runaway retries are separately controlled by `--retry-runaways`.
 
 ## Repo layout
 
@@ -182,6 +185,12 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 # run full mode with custom timeout per scenario
 benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-autoround --timeout-per-case 60
+
+# retain automatic speed/thinking scaling, but never allow more than 20 minutes per scenario
+benchlocal-cli run --full --endpoint http://localhost:8010 --model qwen3.6-27b-autoround --timeout-ceiling-s 1200
+
+# disable model-verdict inline retries (infrastructure recovery still applies)
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --no-retry
 
 # run full mode including Docker-backed verifier packs
 benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8010 --model qwen3.6-27b-autoround
@@ -274,31 +283,37 @@ Leave `--retry-on-timeout` **off** for cloud — a timeout means the token budge
 
 `benchlocal-cli` uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, `hermesagent-20`, and every `--reasoning-packs` pack run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `16384`) and the request uses the recommended thinking sampler (`temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`) instead of the deterministic pack's greedy sampler. Override it with `--thinking-sampler '{"temperature":0.7,"top_p":0.9}'`, override individual sampling keys with `--temperature`/`--top-p`/`--top-k`/`--min-p`, or use `--sampling-from-server` to omit sampler params entirely. HumanEval+ and LiveCodeBench also carry 16K scenario budgets so thinking-on code runs do not measure a 4K truncation failure; hardest LCB items may still exceed 16K, so compare against `--no-thinking` for budget-runaway diagnostics. Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
 
+In multi-turn CLI and Hermes agent loops, captured assistant reasoning stays in the saved result for inspection, but prior `reasoning`, `reasoning_content`, `reasoning_details`, and `codex_reasoning_items` fields are stripped from the next outgoing request by default. This avoids replaying provider-private or stale reasoning state. Use `--preserve-reasoning-history` only when an endpoint explicitly requires that history for signed or encrypted reasoning continuity.
+
 ## Output
 
 ```
 === benchlocal-cli --medium  (endpoint: http://localhost:8020, model: qwen3.6-27b-autoround, 2026-05-09T10:30) ===
 
-Pack                      | Pass / Total | Score | p50 latency | p95 latency | Status
-ToolCall-15 (v1.0.1)      |   14 / 15    |  93%  |     8.2s    |     12.1s   | ✅
-InstructFollow-15 (v1.0.0)|   13 / 15    |  87%  |    11.4s    |     17.8s   | ✅
-StructOutput-15 (v1.0.0)  |   15 / 15    | 100%  |     6.9s    |      9.2s   | ✅
-DataExtract-15 (v1.0.0)   |   12 / 15    |  80%  |     7.3s    |     10.5s   | ✅
-─────────────────────────|──────────────|───────|─────────────|─────────────|──────
-TOTAL                     |   54 / 60    |  90%  |             |             |
+Pack                      | Pass@1       | Pass@3         | Flaky | p50 latency | p95 latency | Status
+ToolCall-15 (v1.0.1)      | 14 / 15 (93%)| 15 / 15 (100%) |   1   |     8.2s    |     12.1s   | ✅
+InstructFollow-15 (v1.0.0)| 13 / 15 (87%)| 14 / 15 (93%)  |   1   |    11.4s    |     17.8s   | ✅
+StructOutput-15 (v1.0.0)  | 15 / 15 (100%)|15 / 15 (100%) |   0   |     6.9s    |      9.2s   | ✅
+DataExtract-15 (v1.0.0)   | 12 / 15 (80%)| 12 / 15 (80%)  |   0   |     7.3s    |     10.5s   | ✅
+─────────────────────────|──────────────|─────────────────|───────|─────────────|─────────────|──────
+TOTAL                     | 54 / 60 (90%)| 56 / 60 (93%)  |   2   |             |             |
 
 Failure breakdown:
-- toolcall-15 TC-07: verifier_fail (wrong arg value for "filename": expected report.pdf, got output.pdf)
-- instructfollow-15 IF-03: verifier_fail (word count 247, target 250 ±5)
+- toolcall-15 TC-07: pass@2 (wrong arg value on pass@1; recovered on retry)
+- instructfollow-15 IF-03: pass@2 (word count missed on pass@1; recovered on retry)
 - dataextract-15 DE-05: verifier_fail (7/14 atomic fields correct (50%). product_name: mismatch)
 ```
+
+Normal runs use failure-only inline retries by default: `--retry-failures 3` means at most three total attempts, stops on the first pass, and never reruns a clean pass@1. The official `passed`, `score`, and regression fields remain strict pass@1; the additive `pass_at_k` summary and `pass@1`/`pass@2`/`pass@3`/`fail` labels expose recovery without rewriting the baseline. Saved JSON keeps the baseline scenario at its existing location and nests complete later attempts under `retry_attempts`.
+
+Completed content failures are eligible by default. Harness/infrastructure failures are also retried, even with `--retry-failures 0`; expensive `token_limit`, `timeout`, and `agent_runner_timeout` runaways require `--retry-runaways`, while `verifier_not_implemented` is never retried. Use `--no-retry` for strict content pass@1-only execution. Pack authors can mark a safety-sensitive scenario with `no_best_of_n: true`: retries and their labels remain visible, but a later pass receives no pass@k credit.
 
 For agentic packs (e.g. `aider-polyglot-30`), the headline number is `pass_rate` over 30 exercises rather than per-scenario pass/fail; per-exercise breakdown is surfaced in the JSON `verifier_trace.upstream_per_exercise`. See [docs/AIDER_POLYGLOT_30.md](docs/AIDER_POLYGLOT_30.md) for the full output shape.
 
 When `--repeat N` is greater than 1, the markdown table adds per-pack `Std` and `CV` columns derived from repeat-arm pass rates. The saved JSON includes the same data under each pack result as `variance: {"repeat", "mean", "std", "cv"}` so cross-rig runs can distinguish real deltas from run-to-run noise.
 
 
-`--repeat N` is the rigorous whole-benchmark variance tool: it re-runs passes and failures, so it can detect flaky passes as well as flaky failures. The CLI default is `--repeat 0`, where `0` means the normal single attempt; `--repeat 3` executes every selected scenario three times.
+`--repeat N` is the rigorous whole-benchmark variance tool: it re-runs passes and failures, so it can detect flaky passes as well as flaky failures. The CLI default is `--repeat 0`, where `0` selects the normal failure-only inline path; `--repeat 3` disables inline retries and executes every selected scenario three times.
 
 For the cheaper everyday question "are the failures in this saved run systematic or flaky?", retry only its failed pass@1 scenarios:
 

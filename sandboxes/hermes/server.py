@@ -328,7 +328,7 @@ def _translate_request(req: dict) -> dict:
 
     Runner sends:
       { scenario_id, scenario, model_endpoint, model_name, model_api_key,
-        sampling, enable_thinking, thinking_budget }
+        sampling, enable_thinking, thinking_budget, preserve_reasoning_history }
 
     Upstream expects:
       { scenarioId, runId, model: {id, exposedModel, providerModel,
@@ -338,6 +338,11 @@ def _translate_request(req: dict) -> dict:
     scenario_id = req.get("scenario_id") or scenario.get("id") or "unknown"
     model_endpoint = req.get("model_endpoint") or ""
     model_name = req.get("model_name") or ""
+
+    generation = _filter_generation(req.get("sampling"))
+    generation["preserve_reasoning_history"] = bool(
+        req.get("preserve_reasoning_history")
+    )
 
     return {
         "scenarioId": scenario_id,
@@ -352,7 +357,7 @@ def _translate_request(req: dict) -> dict:
             "authMode": "bearer",
             "extraBody": _thinking_extra_body(req),
         },
-        "generation": _filter_generation(req.get("sampling")),
+        "generation": generation,
     }
 
 

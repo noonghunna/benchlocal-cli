@@ -63,10 +63,28 @@ def test_parser_defaults_retry_failed_to_three_and_repeat_to_zero():
 
     absent = parser.parse_args(["run"])
     bare = parser.parse_args(["run", "--retry-failed"])
+    disabled = parser.parse_args(["run", "--no-retry"])
 
     assert absent.repeat == 0
     assert absent.retry_failed is None
+    assert absent.retry_failures == 3
     assert bare.retry_failed == 3
+    assert disabled.retry_failures == 0
+
+
+def test_parser_reads_timeout_ceiling_env_and_reasoning_history_opt_in(monkeypatch):
+    monkeypatch.setenv("BENCHLOCAL_TIMEOUT_CEILING_S", "900")
+    parser = _parser()
+
+    defaults = parser.parse_args(["run"])
+    explicit = parser.parse_args(
+        ["run", "--timeout-ceiling-s", "1200", "--preserve-reasoning-history"]
+    )
+
+    assert defaults.timeout_ceiling_s == 900
+    assert defaults.preserve_reasoning_history is False
+    assert explicit.timeout_ceiling_s == 1200
+    assert explicit.preserve_reasoning_history is True
 
 
 def test_failed_selection_uses_pass_at_one_not_later_repeat_arms():

@@ -103,6 +103,46 @@ _CONTENT_FAILURE_MODES = frozenset({
     "wrong_structure",
 })
 
+# Inline failure-only retries (#111) deliberately distinguish model verdicts
+# from harness failures and expensive runaway behavior.
+DEFAULT_INLINE_RETRY_ATTEMPTS = 3
+_INFRA_FAILURE_MODES = frozenset({
+    "http_error",
+    "server_error",
+    "agent_runner_crashed",
+    "model_endpoint_unreachable",
+    "result_json_malformed",
+})
+_RUNAWAY_FAILURE_MODES = frozenset({
+    "token_limit",
+    "timeout",
+    "agent_runner_timeout",
+})
+
+_REASONING_HISTORY_FIELDS = frozenset({
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+})
+
+
+def strip_reasoning_history(messages: list[dict]) -> list[dict]:
+    """Return an outgoing-history copy without prior assistant reasoning fields.
+
+    Captured messages remain untouched. This intentionally operates only on the
+    request copy so saved raw responses, assistant_messages, and conversation
+    forensics retain the model's complete output.
+    """
+    sanitized: list[dict] = []
+    for message in messages:
+        outgoing = dict(message)
+        if outgoing.get("role") == "assistant":
+            for field in _REASONING_HISTORY_FIELDS:
+                outgoing.pop(field, None)
+        sanitized.append(outgoing)
+    return sanitized
+
 
 def pack_default_thinking(meta: dict) -> bool:
     """Return the pack-declared default thinking mode. Missing means off."""
@@ -395,6 +435,70 @@ def _repeat_variance(runs: list[ScenarioRun], repeat: int) -> dict[str, float | 
     return {"repeat": repeat, "mean": mean, "std": std, "cv": cv}
 
 
+def _pass_at_k_summary(
+    runs: list[ScenarioRun], configured_k: int
+) -> dict[str, float | int] | None:
+    """Aggregate nested inline retries without changing strict pass@1 fields."""
+    counted = [
+        run for run in runs
+        if run.result.failure_mode != "verifier_not_implemented"
+    ]
+    if not counted:
+        return None
+    max_attempts = max((run.attempt_count for run in counted), default=1)
+    if configured_k <= 1 and any(run.retry_eligible for run in counted):
+        # Infra failures retain the standard three-attempt ceiling even when
+        # model-verdict retries are disabled.
+        configured_k = DEFAULT_INLINE_RETRY_ATTEMPTS
+    k = max(int(configured_k), max_attempts)
+    if k <= 1:
+        return None
+    passed = sum(
+        1
+        for run in counted
+        if (run.result.passed if run.pass_at_k is None else bool(run.pass_at_k))
+    )
+    flaky = [
+        run for run in counted
+        if (run.label or "").startswith("pass@") and run.label != "pass@1"
+    ]
+    credited_flaky = sum(1 for run in flaky if bool(run.pass_at_k))
+    safety_flaky = sum(1 for run in flaky if not run.best_of_n_eligible)
+    total = len(counted)
+    return {
+        "k": k,
+        "passed": passed,
+        "total": total,
+        "score": passed / total if total else 0.0,
+        "credited_flaky": credited_flaky,
+        "safety_flaky": safety_flaky,
+        "systematic": sum(
+            1 for run in counted if not run.result.passed and run.label == "fail"
+        ),
+        "retried_scenarios": sum(1 for run in counted if run.attempt_count > 1),
+        "retry_attempts": sum(max(0, run.attempt_count - 1) for run in counted),
+    }
+
+
+def _combine_pass_at_k(packs: list[PackResult]) -> dict[str, float | int] | None:
+    summaries = [pack.pass_at_k for pack in packs if pack.pass_at_k is not None]
+    if not summaries:
+        return None
+    passed = sum(int(summary["passed"]) for summary in summaries)
+    total = sum(int(summary["total"]) for summary in summaries)
+    return {
+        "k": max(int(summary["k"]) for summary in summaries),
+        "passed": passed,
+        "total": total,
+        "score": passed / total if total else 0.0,
+        "credited_flaky": sum(int(summary.get("credited_flaky", 0)) for summary in summaries),
+        "safety_flaky": sum(int(summary.get("safety_flaky", 0)) for summary in summaries),
+        "systematic": sum(int(summary.get("systematic", 0)) for summary in summaries),
+        "retried_scenarios": sum(int(summary.get("retried_scenarios", 0)) for summary in summaries),
+        "retry_attempts": sum(int(summary.get("retry_attempts", 0)) for summary in summaries),
+    }
+
+
 class Runner:
     def __init__(
         self,
@@ -402,6 +506,7 @@ class Runner:
         endpoint: str,
         model: str,
         timeout_per_case: float | None = None,
+        timeout_ceiling_s: float | None = None,
         model_turn_timeout: float | None = 300.0,
         measured_tps: float | None = None,
         reference_tps: float | None = None,
@@ -419,6 +524,10 @@ class Runner:
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
         retry_on_timeout: bool = False,
+        preserve_reasoning_history: bool = False,
+        retry_failures: int = DEFAULT_INLINE_RETRY_ATTEMPTS,
+        retry_runaways: bool = False,
+        inline_retries_enabled: bool = True,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
         thinking_sampler: dict | None = None,
@@ -429,6 +538,11 @@ class Runner:
         self.endpoint = endpoint
         self.model = model
         self.timeout_per_case = None if timeout_per_case is None else float(timeout_per_case)
+        if timeout_ceiling_s is not None and float(timeout_ceiling_s) < 0:
+            raise ValueError("timeout_ceiling_s must be non-negative")
+        self.timeout_ceiling_s = (
+            None if timeout_ceiling_s is None else float(timeout_ceiling_s)
+        )
         if model_turn_timeout is not None and float(model_turn_timeout) < 0:
             raise ValueError("model_turn_timeout must be non-negative")
         self.model_turn_timeout = (
@@ -476,6 +590,15 @@ class Runner:
         # failing fast on the first timeout. Connection errors / HTTP 5xx are
         # genuinely transient and keep retrying regardless of this flag.
         self.retry_on_timeout = bool(retry_on_timeout)
+        # Reasoning is output-only for the default OpenAI-compatible/Qwen/R1
+        # path. Providers whose tool loops require signed/encrypted reasoning
+        # continuity can opt back into replay explicitly.
+        self.preserve_reasoning_history = bool(preserve_reasoning_history)
+        if int(retry_failures) < 0:
+            raise ValueError("retry_failures must be non-negative")
+        self.retry_failures = int(retry_failures)
+        self.retry_runaways = bool(retry_runaways)
+        self.inline_retries_enabled = bool(inline_retries_enabled)
         # CLI-level sampling overrides (--temperature, --top-p, etc.).
         # When set, the run is tagged as non-canonical in the output.
         self.sampling_overrides = sampling_overrides or {}
@@ -585,6 +708,7 @@ class Runner:
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
                 selection=selection_ids,
+                pass_at_k=_combine_pass_at_k(pack_results),
             )
         finally:
             self._stop_sandboxes()
@@ -772,12 +896,31 @@ class Runner:
                 f"token-budget-multiplier={effective_max}/{baseline}={multiplier:.2f}"
             )
 
+        ceiling = self._timeout_ceiling_for_meta(meta)
+        if ceiling is not None and budget > ceiling:
+            budget = ceiling
+            note_parts.append(f"ceiling-clamped={ceiling:.0f}s")
+
         if note_parts:
             if not note_parts[0].startswith("timeout scaling active"):
                 note_parts.insert(0, "timeout scaling active")
             self._timeout_scaling_note = ", ".join(note_parts)
             self._emit_timeout_scaling_note_once()
         return budget
+
+    def _timeout_ceiling_for_meta(self, meta: dict) -> float | None:
+        value = (
+            self.timeout_ceiling_s
+            if self.timeout_ceiling_s is not None
+            else meta.get("timeout_ceiling_s")
+        )
+        if value is None:
+            return None
+        try:
+            ceiling = float(value)
+        except (TypeError, ValueError):
+            return None
+        return ceiling if ceiling > 0 else None
 
     def _reference_speed_scale(self, meta: dict) -> float | None:
         """rig-speed scale (reference_tps / measured_tps), or None when inapplicable."""
@@ -947,6 +1090,82 @@ class Runner:
             return None
         return statistics.mean(samples)
 
+    def _inline_retry_limit(self, meta: dict, run: ScenarioRun) -> int:
+        """Return the total-attempt cap for the latest failed attempt."""
+        if run.result.passed or run.result.failure_mode == "verifier_not_implemented":
+            return 1
+        mode = run.result.failure_mode
+        if mode in _CONTENT_FAILURE_MODES:
+            # A single-scoreboard scenario represents many independent units;
+            # best-of-N at the outer boolean would misstate its real pass rate.
+            if meta.get("_architecture") == "single-scoreboard":
+                return 1
+            return max(1, self.retry_failures)
+        if mode in _INFRA_FAILURE_MODES:
+            # Harness failures remain retryable even when model-verdict retries
+            # are disabled. This complements request-level transient retries.
+            return max(DEFAULT_INLINE_RETRY_ATTEMPTS, self.retry_failures)
+        if mode in _RUNAWAY_FAILURE_MODES and self.retry_runaways:
+            return max(DEFAULT_INLINE_RETRY_ATTEMPTS, self.retry_failures)
+        return 1
+
+    @staticmethod
+    def _best_of_n_eligible(scenario: dict) -> bool:
+        raw = scenario.get("raw_scenario")
+        return not bool(
+            scenario.get("no_best_of_n")
+            or (isinstance(raw, dict) and raw.get("no_best_of_n"))
+        )
+
+    def _run_scenario_with_inline_retries(
+        self,
+        meta: dict,
+        scenario: dict,
+        *,
+        repeat_index: int,
+    ) -> ScenarioRun:
+        """Run pass@1, then nest only retry-eligible failure attempts."""
+        baseline = self.run_scenario(meta, scenario, repeat_index=repeat_index)
+        baseline.best_of_n_eligible = self._best_of_n_eligible(scenario)
+        if baseline.result.failure_mode == "verifier_not_implemented":
+            return baseline
+
+        current = baseline
+        baseline.retry_eligible = self._inline_retry_limit(meta, current) > 1
+        while not current.result.passed:
+            attempt_limit = self._inline_retry_limit(meta, current)
+            if baseline.attempt_count >= attempt_limit:
+                break
+            current = self.run_scenario(meta, scenario, repeat_index=repeat_index)
+            baseline.retry_attempts.append(current.to_dict())
+            baseline.attempt_count += 1
+
+        passed_attempt: int | None = 1 if baseline.result.passed else None
+        if passed_attempt is None:
+            for attempt_index, retry in enumerate(baseline.retry_attempts, start=2):
+                if retry.get("passed"):
+                    passed_attempt = attempt_index
+                    break
+        baseline.label = f"pass@{passed_attempt}" if passed_attempt is not None else "fail"
+        baseline.pass_at_k = bool(
+            baseline.result.passed
+            or (passed_attempt is not None and baseline.best_of_n_eligible)
+        )
+        return baseline
+
+    def _configured_pass_at_k(self, meta: dict, repeat: int) -> int:
+        if (
+            repeat != 1
+            or self.negative_control is not None
+            or not self.inline_retries_enabled
+        ):
+            return 0
+        if meta.get("_architecture") == "single-scoreboard":
+            return 0
+        if self.retry_failures > 1:
+            return self.retry_failures
+        return DEFAULT_INLINE_RETRY_ATTEMPTS if self.retry_runaways else 0
+
     def run_pack(
         self,
         pack_id: str,
@@ -1037,7 +1256,18 @@ class Runner:
                 if repeat_index in completed_repeats.get(scenario["id"], set()):
                     continue
                 scenario_index += 1
-                run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
+                if (
+                    repeat == 1
+                    and self.negative_control is None
+                    and self.inline_retries_enabled
+                ):
+                    run = self._run_scenario_with_inline_retries(
+                        meta, scenario, repeat_index=repeat_index
+                    )
+                else:
+                    # --repeat is the symmetric variance path and negative
+                    # controls must never multiply deterministic junk samples.
+                    run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
                 runs.append(run)
                 if self._on_scenario_complete is not None:
                     self._on_scenario_complete(run, scenario_index, total_scenarios)
@@ -1084,6 +1314,10 @@ class Runner:
                     thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
                     catalog_scenario_count=selected_catalog_count,
                     variance=_repeat_variance(runs, repeat),
+                    pass_at_k=_pass_at_k_summary(
+                        runs,
+                        self._configured_pass_at_k(meta, repeat),
+                    ),
                 )
 
         passed = sum(1 for run in counted if run.result.passed)
@@ -1102,6 +1336,10 @@ class Runner:
             thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
             catalog_scenario_count=selected_catalog_count,
             variance=_repeat_variance(runs, repeat),
+            pass_at_k=_pass_at_k_summary(
+                runs,
+                self._configured_pass_at_k(meta, repeat),
+            ),
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
@@ -1517,6 +1755,7 @@ class Runner:
                         )
                     ),
                     "thinking_budget": self.thinking_max_tokens,
+                    "preserve_reasoning_history": self.preserve_reasoning_history,
                 }
             elif pack_id == "aider-polyglot-30":
                 # v0.9.0: aider needs a container-reachable URL. Apply the
@@ -1601,7 +1840,12 @@ class Runner:
             final_payload: dict | None = None
 
             for _turn in range(1, max_turns + 1):
-                request = build_chat_request(history, sampling, self.model, tools=tools)
+                request_history = (
+                    history
+                    if self.preserve_reasoning_history
+                    else strip_reasoning_history(history)
+                )
+                request = build_chat_request(request_history, sampling, self.model, tools=tools)
                 try:
                     status_code, raw_response, turn_transient_trace = self._post_chat(request, timeout)
                     transient_trace = _merge_transient_trace(transient_trace, turn_transient_trace)

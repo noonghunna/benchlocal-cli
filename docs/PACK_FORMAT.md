@@ -51,6 +51,7 @@ Field reference:
 | `default_max_seconds` | yes | int | Default per-scenario timeout from the upstream pack metadata |
 | `timeout_per_case_default` | no | int | Runner wall-clock timeout default for packs that need a larger local-model budget; overridden by `--timeout-per-case` |
 | `timeout_reference_tps` | no | number | Decode TPS used to calibrate `timeout_per_case_default`. When present and `--timeout-per-case` is not set, runner computes `effective_budget = base * max(1.0, timeout_reference_tps / measured_tps)`; `--timeout-scale-down` allows the scale to drop below 1.0 for faster models. |
+| `timeout_ceiling_s` | no | number | Maximum automatic/static scenario budget, applied after speed and thinking-token scaling. `--timeout-ceiling-s` / `BENCHLOCAL_TIMEOUT_CEILING_S` overrides it; an explicit CLI value of `0` disables the pack ceiling. Exact `--timeout-per-case` always wins. |
 | `verifier_module` | yes | string | Name of `benchlocal_cli/scoring/<name>.py` to dispatch to |
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
 | `safety_policy` | no | object / null | Optional benchmark-intent metadata for packs with safety/refusal scenarios. `mode: "implicit_benchmark_local"` means the pack uses terse task-local instructions and scores operational restraint under existing workspace/tool rules; it is not an explicit policy-following test. |
@@ -62,7 +63,9 @@ Field reference:
 
 ## Dynamic timeout scaling
 
-Agentic packs may include both `timeout_per_case_default` and `timeout_reference_tps`. The runner measures decode TPS once per `benchlocal-cli run` when a referenced pack needs scaling, unless `--measured-tps N` is provided. Slow models get proportionally larger wall-clock budgets; faster models keep the calibrated budget unless `--timeout-scale-down` is set. `--reference-tps N` overrides pack metadata for experiments. Explicit `--timeout-per-case` disables dynamic scaling and remains the exact per-scenario budget.
+Agentic packs may include both `timeout_per_case_default` and `timeout_reference_tps`. The runner measures decode TPS once per `benchlocal-cli run` when a referenced pack needs scaling, unless `--measured-tps N` is provided. Slow models get proportionally larger wall-clock budgets; faster models keep the calibrated budget unless `--timeout-scale-down` is set. `--reference-tps N` overrides pack metadata for experiments.
+
+After speed and thinking-token scaling, the runner applies `timeout_ceiling_s` when present. `--timeout-ceiling-s N` (or `BENCHLOCAL_TIMEOUT_CEILING_S`) overrides pack metadata, while `--timeout-ceiling-s 0` disables a pack ceiling. Explicit `--timeout-per-case` disables scaling and ceiling logic and remains the exact per-scenario budget.
 
 ## Scenario line
 
@@ -103,6 +106,7 @@ Agentic packs may include both `timeout_per_case_default` and `timeout_reference
   "sampling_overrides": {
     "max_tokens": 256
   },
+  "no_best_of_n": false,
   "max_seconds_override": null,
   "tags": ["single-tool", "date-format"],
   "upstream_scenario_id": "toolcall-15-001"
@@ -121,6 +125,7 @@ Scenario field reference:
 | `verifier.type` | yes | string | One of: `tool_call`, `instruct_follow`, `struct_output`, `reason_math`, `data_extract`, `answer_match`, `_stub` |
 | `verifier.asserts` | yes | array | Module-specific assertion objects (see below) |
 | `sampling_overrides` | no | object | Override metadata `sampling_defaults` for this scenario |
+| `no_best_of_n` | no | bool | Safety-sensitive best-of-N guard. Inline retries still run and are labeled, but a later pass does not receive pass@k credit. The same flag is honored inside `raw_scenario` for vendored payloads. |
 | `max_seconds_override` | no | int / null | Override metadata `default_max_seconds` |
 | `tags` | no | array | Free-form tags for filtering / grouping |
 | `upstream_scenario_id` | no | string | If this scenario was ported, the upstream id (usually same as `id`) |

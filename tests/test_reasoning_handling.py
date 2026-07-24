@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from benchlocal_cli.runner import Runner, build_request
+from benchlocal_cli.runner import Runner, build_request, strip_reasoning_history
 from benchlocal_cli.scoring.common import content_with_source, sanitize_reasoning_tags
 
 
@@ -142,6 +142,32 @@ def test_content_fallback_reads_reasoning_content():
     response = {"choices": [{"message": {"content": "", "reasoning_content": "hello from thought"}}]}
 
     assert content_with_source(response) == ("hello from thought", "message.reasoning_content")
+
+
+def test_strip_reasoning_history_removes_only_outgoing_assistant_fields():
+    messages = [
+        {"role": "user", "content": "go", "reasoning": "user metadata"},
+        {
+            "role": "assistant",
+            "content": "calling tool",
+            "reasoning": "private",
+            "reasoning_content": "private-alt",
+            "reasoning_details": [{"signature": "opaque"}],
+            "codex_reasoning_items": [{"type": "reasoning"}],
+            "tool_calls": [{"id": "call-1"}],
+        },
+    ]
+
+    outgoing = strip_reasoning_history(messages)
+
+    assert outgoing[0]["reasoning"] == "user metadata"
+    assert outgoing[1] == {
+        "role": "assistant",
+        "content": "calling tool",
+        "tool_calls": [{"id": "call-1"}],
+    }
+    assert messages[1]["reasoning"] == "private"
+    assert messages[1]["reasoning_details"] == [{"signature": "opaque"}]
 
 
 def test_runner_json_records_thinking_state_and_response_field():

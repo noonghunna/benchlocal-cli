@@ -148,6 +148,7 @@ class FakeHTTPResponse:
 class FakeHTTPClient:
     calls = 0
     timeouts: list[float] = []
+    requests: list[dict] = []
 
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
@@ -161,6 +162,7 @@ class FakeHTTPClient:
 
     def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
         FakeHTTPClient.calls += 1
+        FakeHTTPClient.requests.append(json)
         if FakeHTTPClient.calls == 1:
             return FakeHTTPResponse(
                 {
@@ -169,6 +171,10 @@ class FakeHTTPClient:
                             "message": {
                                 "role": "assistant",
                                 "content": "",
+                                "reasoning": "private chain",
+                                "reasoning_content": "private content",
+                                "reasoning_details": [{"type": "summary", "text": "private"}],
+                                "codex_reasoning_items": [{"type": "reasoning", "id": "r1"}],
                                 "tool_calls": [
                                     {
                                         "id": "call-1",
@@ -185,13 +191,25 @@ class FakeHTTPClient:
         return FakeHTTPResponse({"choices": [{"message": {"role": "assistant", "content": "<solution verdict=\"done\"></solution>"}}], "usage": {"completion_tokens": 5}})
 
 
-def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
+@pytest.mark.parametrize(
+    ("preserve_reasoning_history", "expect_replayed"),
+    [(False, False), (True, True)],
+)
+def test_runner_drives_sandbox_multiturn_loop(
+    monkeypatch, preserve_reasoning_history, expect_replayed
+):
     import benchlocal_cli.runner as runner_module
 
     FakeHTTPClient.calls = 0
     FakeHTTPClient.timeouts = []
+    FakeHTTPClient.requests = []
     monkeypatch.setattr(runner_module.httpx, "Client", FakeHTTPClient)
-    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        enable_sandboxed_packs=True,
+        preserve_reasoning_history=preserve_reasoning_history,
+    )
     fake = FakeMultiTurnSandbox()
     runner._sandbox_clients["cli-40"] = fake
     meta = {
@@ -216,6 +234,15 @@ def test_runner_drives_sandbox_multiturn_loop(monkeypatch):
     assert len(run.tool_calls) == 1
     assert fake.ended is False
     assert "model_endpoint" not in fake.start_kwargs
+    assert run.assistant_messages[0]["reasoning"] == "private chain"
+    assert run.conversation[1]["reasoning_content"] == "private content"
+    replayed_assistant = next(
+        message
+        for message in FakeHTTPClient.requests[1]["messages"]
+        if message.get("role") == "assistant"
+    )
+    for field in ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items"):
+        assert (field in replayed_assistant) is expect_replayed
 
 
 def test_runner_scales_timeout_budget_for_slow_measured_tps(monkeypatch):
@@ -292,6 +319,60 @@ def test_runner_explicit_timeout_per_case_disables_dynamic_scaling(monkeypatch):
     monkeypatch.setattr(runner, "_probe_decode_tps", fail_probe)
 
     assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300, "timeout_reference_tps": 100}) == 45
+
+
+def test_runner_applies_timeout_ceiling_after_speed_and_token_scaling():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=50,
+        thinking_enabled=True,
+        thinking_max_tokens=4096,
+        timeout_ceiling_s=400,
+    )
+    meta = {
+        "timeout_per_case_default": 60,
+        "timeout_reference_tps": 100,
+        "timeout_baseline_tokens": 1024,
+        "sampling_defaults": {"max_tokens": 1024},
+    }
+
+    assert runner._timeout_budget_for_meta(meta) == 400
+    assert "scale=2.00" in runner._timeout_scaling_note
+    assert "token-budget-multiplier=4096/1024=4.00" in runner._timeout_scaling_note
+    assert "ceiling-clamped=400s" in runner._timeout_scaling_note
+
+
+def test_runner_uses_pack_timeout_ceiling_when_cli_ceiling_is_unset():
+    runner = Runner(endpoint="http://localhost:9999", model="fake")
+
+    assert runner._timeout_budget_for_meta(
+        {"timeout_per_case_default": 300, "timeout_ceiling_s": 75}
+    ) == 75
+
+
+def test_runner_cli_timeout_ceiling_overrides_pack_ceiling():
+    runner = Runner(endpoint="http://localhost:9999", model="fake", timeout_ceiling_s=45)
+
+    assert runner._timeout_budget_for_meta(
+        {"timeout_per_case_default": 300, "timeout_ceiling_s": 75}
+    ) == 45
+
+
+def test_runner_zero_timeout_ceiling_disables_pack_ceiling():
+    runner = Runner(endpoint="http://localhost:9999", model="fake", timeout_ceiling_s=0)
+
+    assert runner._timeout_budget_for_meta(
+        {"timeout_per_case_default": 300, "timeout_ceiling_s": 75}
+    ) == 300
+
+
+def test_runner_explicit_timeout_per_case_wins_over_timeout_ceiling():
+    runner = Runner(
+        endpoint="http://localhost:9999", model="fake", timeout_per_case=180, timeout_ceiling_s=45
+    )
+
+    assert runner._timeout_budget_for_meta({"timeout_per_case_default": 300}) == 180
 
 
 def test_probe_clamps_thinking_to_one_token(monkeypatch):
