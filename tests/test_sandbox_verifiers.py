@@ -48,6 +48,28 @@ def _load_hermes_approval_callback():
     return namespace["_build_approval_callback"]
 
 
+def _load_hermes_reasoning_policy():
+    source_path = ROOT / "vendor/HermesAgent-20/verification/agent-runner.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    selected = [
+        node for node in tree.body
+        if isinstance(node, (ast.Assign, ast.FunctionDef))
+        and (
+            (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "_set_reasoning_history_policy"
+            )
+            or (
+                isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == "REASONING_HISTORY_FIELDS" for target in node.targets)
+            )
+        )
+    ]
+    namespace = {"AIAgent": object}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["_set_reasoning_history_policy"]
+
+
 def test_bugfind_rubric_pass_and_fail():
     server = _load("bugfind_server", "sandboxes/bugfind/server.py")
     scenario = {
@@ -653,9 +675,33 @@ def test_hermes_translate_request_normalizes_endpoint_and_filters_generation():
     assert out["model"]["inferenceBaseUrl"] == "http://10.0.0.5:8001/v1"
     assert out["model"]["exposedModel"] == "qwen3.6-27b-autoround"
     assert out["model"]["apiKey"] == "sk-test"
-    assert out["generation"] == {"temperature": 0.6, "top_p": 0.95, "max_tokens": 256}
+    assert out["generation"] == {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "max_tokens": 256,
+        "preserve_reasoning_history": False,
+    }
+    assert server._translate_request(
+        {**req, "preserve_reasoning_history": True}
+    )["generation"]["preserve_reasoning_history"] is True
     assert "runId" in out and len(out["runId"]) > 0
     assert out["model"]["extraBody"] == {"enable_thinking": True, "thinking_budget": 4096}
+
+
+def test_hermes_reasoning_policy_strips_only_outgoing_api_copy():
+    class FakeAgent:
+        def _copy_reasoning_content_for_api(self, source_msg, api_msg):
+            api_msg["reasoning"] = source_msg.get("reasoning")
+
+    agent = FakeAgent()
+    _load_hermes_reasoning_policy()(agent, preserve=False)
+    stored = {"role": "assistant", "content": "tool call", "reasoning": "private"}
+    outgoing = dict(stored)
+
+    agent._copy_reasoning_content_for_api(stored, outgoing)
+
+    assert "reasoning" not in outgoing
+    assert stored["reasoning"] == "private"
 
 
 @pytest.mark.parametrize(

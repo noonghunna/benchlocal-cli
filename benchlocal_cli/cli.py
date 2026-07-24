@@ -137,6 +137,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
     run.add_argument(
+        "--timeout-ceiling-s",
+        type=float,
+        default=_env_optional_float("BENCHLOCAL_TIMEOUT_CEILING_S"),
+        help="maximum auto-scaled per-scenario budget in seconds, applied after speed/token "
+             "scaling; 0 disables any pack ceiling, unset uses pack metadata or remains "
+             "unbounded (env BENCHLOCAL_TIMEOUT_CEILING_S)",
+    )
+    run.add_argument(
         "--model-turn-timeout",
         type=float,
         default=_env_float("BENCHLOCAL_MODEL_TURN_TIMEOUT", 300.0),
@@ -159,6 +167,27 @@ def _parser() -> argparse.ArgumentParser:
         default=0,
         help="rigorous whole-benchmark variance: run every scenario N times; "
              "0 or absent means one attempt (default: 0)",
+    )
+    inline_retry = run.add_mutually_exclusive_group()
+    inline_retry.add_argument(
+        "--retry-failures",
+        type=int,
+        default=3,
+        metavar="N",
+        help="total attempts for retry-eligible failed scenarios (default: 3; "
+             "0 disables model-verdict retries)",
+    )
+    inline_retry.add_argument(
+        "--no-retry",
+        dest="retry_failures",
+        action="store_const",
+        const=0,
+        help="alias for --retry-failures 0",
+    )
+    run.add_argument(
+        "--retry-runaways",
+        action="store_true",
+        help="also retry token-limit and timeout runaways; off by default because each attempt is expensive",
     )
     run.add_argument(
         "--retry-failed",
@@ -239,6 +268,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_const",
         const=False,
         help="force reasoning/thinking off for every pack, ignoring pack defaults",
+    )
+    run.add_argument(
+        "--preserve-reasoning-history",
+        action="store_true",
+        help="replay prior assistant reasoning fields in multi-turn agent loops; default strips "
+             "them from outgoing history while retaining them in captured results",
     )
     run.add_argument(
         "--thinking-max-tokens",
@@ -390,6 +425,13 @@ def _pack_line(pack: PackResult) -> str:
         )
     score = f"{pack.score:.0%}" if pack.total else "-"
     p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
+    if pack.pass_at_k is not None:
+        best = pack.pass_at_k
+        return (
+            f"{pack.pack_id} (v{pack.version}) | pass@1 {pack.passed} / {pack.total} ({score}) | "
+            f"pass@{best['k']} {best['passed']} / {best['total']} "
+            f"({float(best['score']):.0%}) | {p50} | {status}"
+        )
     return f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | {score} | {p50} | {status}"
 
 
@@ -411,8 +453,9 @@ def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
     """Print per-scenario progress line to stderr (#23)."""
     result_char = "✓" if run.result.passed else "✗"
     latency = f"{run.result.latency_seconds:.1f}s" if run.result.latency_seconds > 0 else "?"
+    label = f" {run.label}" if run.label else ""
     print(
-        f"  [{index}/{total}] {run.id} {result_char} {run.result.failure_mode} ({latency})",
+        f"  [{index}/{total}] {run.id} {result_char} {run.result.failure_mode}{label} ({latency})",
         file=sys.stderr,
         flush=True,
     )
@@ -484,8 +527,21 @@ def _markdown(result: RunResult) -> str:
                 "",
             ]
         )
+    inline_pass_at_k = result.pass_at_k if retry_diagnostic is None else None
     show_variance = delta_pack_index is None and any(pack.variance for pack in result.packs)
-    if delta_pack_index is None:
+    if inline_pass_at_k is not None:
+        k = int(inline_pass_at_k["k"])
+        if delta_pack_index is None:
+            lines.append(
+                f"Pack | Pass@1 | Pass@{k} | Flaky | p50 latency | p95 latency | Status"
+            )
+            lines.append("---|---:|---:|---:|---:|---:|---")
+        else:
+            lines.append(
+                f"Pack | Pass@1 | Pass@{k} | Flaky | Δ (vs prev) | p50 latency | p95 latency | Status"
+            )
+            lines.append("---|---:|---:|---:|---|---:|---:|---")
+    elif delta_pack_index is None:
         if show_variance:
             lines.append("Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status")
             lines.append("---|---:|---:|---:|---:|---:|---:|---")
@@ -516,7 +572,35 @@ def _markdown(result: RunResult) -> str:
         score = f"{pack.score:.0%}" if pack.total else "-"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
-        if delta_pack_index is None:
+        if inline_pass_at_k is not None:
+            best = pack.pass_at_k
+            if best is None:
+                pass_k = "-"
+                flaky = "-"
+            else:
+                pass_k = f"{best['passed']} / {best['total']} ({float(best['score']):.0%})"
+                flaky = str(best.get("credited_flaky", 0))
+                if best.get("safety_flaky"):
+                    flaky += f" (+{best['safety_flaky']} safety, no credit)"
+            pass_one = f"{pack.passed} / {pack.total} ({score})"
+            row = f"{pack.pack_id} (v{pack.version}) | {pass_one} | {pass_k} | {flaky}"
+            if delta_pack_index is not None:
+                d = delta_pack_index.get(pack.pack_id)
+                if d and d.get("regressions"):
+                    delta_cell = f"⚠ {d['regressions']} regr / {d.get('fixes', 0)} fix"
+                elif d and d.get("fixes"):
+                    delta_cell = f"+{d['fixes']} fix"
+                elif d and (d.get("new") or d.get("dropped")):
+                    delta_cell = (
+                        f"new={d.get('new', 0)}, dropped={d.get('dropped', 0)}"
+                    )
+                elif d:
+                    delta_cell = "stable"
+                else:
+                    delta_cell = "-"
+                row += f" | {delta_cell}"
+            lines.append(f"{row} | {p50} | {p95} | {status}")
+        elif delta_pack_index is None:
             if show_variance:
                 variance = pack.variance or {}
                 std = "-" if variance.get("std") is None else f"{float(variance['std']):.1%}"
@@ -548,7 +632,24 @@ def _markdown(result: RunResult) -> str:
             )
 
     total_label = "RETRY SAMPLE" if retry_diagnostic is not None else "TOTAL"
-    if delta_pack_index is None:
+    if inline_pass_at_k is not None:
+        pass_one = (
+            f"{result.totals['passed']} / {result.totals['total']} "
+            f"({result.totals['score']:.0%})"
+        )
+        pass_k = (
+            f"{inline_pass_at_k['passed']} / {inline_pass_at_k['total']} "
+            f"({float(inline_pass_at_k['score']):.0%})"
+        )
+        row = f"TOTAL | {pass_one} | {pass_k} | {inline_pass_at_k.get('credited_flaky', 0)}"
+        if delta_pack_index is not None:
+            d = result.delta or {}
+            regr = d.get("total_regressions", 0)
+            fixes = d.get("total_fixes", 0)
+            delta_summary = f"⚠ {regr} regressions, {fixes} fixes" if regr else f"+{fixes} fixes" if fixes else "stable"
+            row += f" | {delta_summary}"
+        lines.extend(["", f"{row} |  |  |"])
+    elif delta_pack_index is None:
         lines.extend(
             [
                 "",
@@ -586,12 +687,38 @@ def _markdown(result: RunResult) -> str:
                 f"{scenario['retry_passed']} / {scenario['retry_total']} | "
                 f"{scenario['classification']}"
             )
+    if inline_pass_at_k is not None:
+        classified = [
+            (pack.pack_id, scenario)
+            for pack in result.packs
+            for scenario in pack.scenarios
+            if scenario.label and scenario.label != "pass@1"
+        ]
+        lines.extend(
+            [
+                "",
+                "Inline retry classification (clean pass@1 rows omitted):",
+                "",
+                "Scenario | Label | Attempts | Pass@k credit",
+                "---|---|---:|---",
+            ]
+        )
+        if classified:
+            for pack_id, scenario in classified:
+                credit = "yes" if scenario.pass_at_k else "no"
+                lines.append(
+                    f"{pack_id}/{scenario.id} | {scenario.label} | "
+                    f"{scenario.attempt_count} | {credit}"
+                )
+        else:
+            lines.append("all scenarios | pass@1 | 1 | yes")
     failures: list[str] = []
     for pack in result.packs:
         for scenario in pack.scenarios:
             if not scenario.result.passed and scenario.result.failure_mode != "verifier_not_implemented":
                 failures.append(
-                    f"{pack.pack_id} {scenario.id}: {scenario.result.failure_mode} ({scenario.result.detail})"
+                    f"{pack.pack_id} {scenario.id}: {scenario.result.failure_mode} "
+                    f"[{scenario.label or 'fail'}] ({scenario.result.detail})"
                 )
     if failures and retry_diagnostic is None:
         lines.append("")
@@ -683,6 +810,16 @@ def _env_float(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a number") from exc
 
 
+def _env_optional_float(name: str) -> float | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -746,6 +883,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.repeat < 0:
             raise ValueError("--repeat must be 0 or greater")
+        if args.retry_failures < 0:
+            raise ValueError("--retry-failures must be 0 or greater")
+        if args.timeout_ceiling_s is not None and args.timeout_ceiling_s < 0:
+            raise ValueError("--timeout-ceiling-s must be 0 or greater")
         retry_failed_context: dict | None = None
 
         resume_state = None
@@ -799,7 +940,17 @@ def main(argv: list[str] | None = None) -> int:
                 config.get("model_turn_timeout", args.model_turn_timeout)
             )
             args.timeout_per_case = args.timeout_per_case or config.get("timeout_per_case")
+            args.timeout_ceiling_s = (
+                args.timeout_ceiling_s
+                if args.timeout_ceiling_s is not None
+                else config.get("timeout_ceiling_s")
+            )
             args.timeout_scale_down = bool(config.get("timeout_scale_down"))
+            args.preserve_reasoning_history = bool(
+                config.get("preserve_reasoning_history")
+            )
+            args.retry_failures = int(config.get("retry_failures") or 0)
+            args.retry_runaways = bool(config.get("retry_runaways"))
             args.enable_sandboxed_packs = bool(config.get("sandboxed_enabled"))
             args.request_delay = float(config.get("request_delay") or args.request_delay)
 
@@ -1022,6 +1173,21 @@ def main(argv: list[str] | None = None) -> int:
 
         # Per-scenario durability (#82). The journal metadata is repeated on every
         # line so any intact scored-scenario record is independently recoverable.
+        inline_retry_failures = args.retry_failures
+        inline_retry_runaways = args.retry_runaways
+        inline_retries_enabled = (
+            bool(resume_state.config.get("inline_retries_enabled", True))
+            if resume_state is not None
+            else True
+        )
+
+        if args.repeat > 1 or retry_failed_context is not None or args.negative_control:
+            # --repeat owns symmetric variance, the post-hoc diagnostic owns its
+            # retry sample, and negative controls are deterministic grader probes.
+            inline_retry_failures = 0
+            inline_retry_runaways = False
+            inline_retries_enabled = False
+
         effective_extra_body = _load_extra_body(args.extra_body)
         effective_thinking_sampler = _load_thinking_sampler(args.thinking_sampler)
         run_started_at = (
@@ -1055,10 +1221,15 @@ def main(argv: list[str] | None = None) -> int:
             "sampling_source": "server" if args.sampling_from_server else None,
             "extra_body": effective_extra_body,
             "timeout_per_case": args.timeout_per_case,
+            "timeout_ceiling_s": args.timeout_ceiling_s,
             "model_turn_timeout": args.model_turn_timeout,
             "measured_tps": args.measured_tps,
             "reference_tps": args.reference_tps,
             "timeout_scale_down": args.timeout_scale_down,
+            "preserve_reasoning_history": args.preserve_reasoning_history,
+            "retry_failures": inline_retry_failures,
+            "retry_runaways": inline_retry_runaways,
+            "inline_retries_enabled": inline_retries_enabled,
             "sandboxed_enabled": sandboxed_enabled,
             "request_delay": args.request_delay,
             "retry_failed": retry_failed_context,
@@ -1114,6 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
             endpoint=args.endpoint,
             model=args.model,
             timeout_per_case=args.timeout_per_case,
+            timeout_ceiling_s=args.timeout_ceiling_s,
             model_turn_timeout=args.model_turn_timeout,
             measured_tps=args.measured_tps,
             reference_tps=args.reference_tps,
@@ -1136,6 +1308,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
             max_transient_retries=args.max_transient_retries,
             retry_on_timeout=args.retry_on_timeout,
+            preserve_reasoning_history=args.preserve_reasoning_history,
+            retry_failures=inline_retry_failures,
+            retry_runaways=inline_retry_runaways,
+            inline_retries_enabled=inline_retries_enabled,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
             thinking_sampler=effective_thinking_sampler,

@@ -6,10 +6,14 @@ import json
 import os
 from dataclasses import dataclass, fields
 from pathlib import Path
+
 from benchlocal_cli import __version__
 from benchlocal_cli.runner import (
+    DEFAULT_INLINE_RETRY_ATTEMPTS,
     PACK_MODES,
+    _combine_pass_at_k,
     _latency,
+    _pass_at_k_summary,
     _repeat_variance,
     _utc_now,
     load_pack,
@@ -117,8 +121,16 @@ def _aggregate_pack(
     catalog_scenario_count: int | None,
     repeat: int,
     thinking_override: bool | None,
+    retry_failures: int,
+    retry_runaways: bool,
 ) -> PackResult:
     meta, _scenarios = load_pack(pack_id)
+    configured_k = 0
+    if repeat == 1 and meta.get("_architecture") != "single-scoreboard":
+        if retry_failures > 1:
+            configured_k = retry_failures
+        elif retry_runaways:
+            configured_k = DEFAULT_INLINE_RETRY_ATTEMPTS
     counted = [run for run in runs if run.result.failure_mode != "verifier_not_implemented"]
     latencies = [run.result.latency_seconds for run in counted if run.result.latency_seconds > 0]
 
@@ -158,6 +170,7 @@ def _aggregate_pack(
                 thinking_enabled=resolve_thinking_enabled(meta, thinking_override),
                 variance=_repeat_variance(runs, repeat),
                 catalog_scenario_count=catalog_scenario_count,
+                pass_at_k=_pass_at_k_summary(runs, configured_k),
             )
 
     passed = sum(1 for run in counted if run.result.passed)
@@ -176,6 +189,7 @@ def _aggregate_pack(
         thinking_enabled=resolve_thinking_enabled(meta, thinking_override),
         variance=_repeat_variance(runs, repeat),
         catalog_scenario_count=catalog_scenario_count,
+        pass_at_k=_pass_at_k_summary(runs, configured_k),
     )
 
 
@@ -194,6 +208,8 @@ def _build_result(
     target_selection = list(config["target_selection"])
     _canonical, target_by_pack = validate_selection(target_selection)
     repeat = int(config.get("repeat") or 1)
+    retry_failures = int(config.get("retry_failures") or 0)
+    retry_runaways = bool(config.get("retry_runaways"))
     thinking_override = config.get("thinking_override")
     pack_order = list(config["pack_ids"])
     rows_by_pack: dict[str, dict[tuple[str, int], ScenarioRun]] = {}
@@ -222,6 +238,8 @@ def _build_result(
                 ),
                 repeat=repeat,
                 thinking_override=thinking_override,
+                retry_failures=retry_failures,
+                retry_runaways=retry_runaways,
             )
         )
 
@@ -244,6 +262,7 @@ def _build_result(
         sampling_source=config.get("sampling_source"),
         server_defaults=config.get("server_defaults"),
         selection=config.get("result_selection"),
+        pass_at_k=_combine_pass_at_k(packs),
     )
     retry_context = config.get("retry_failed")
     if retry_context is not None:
@@ -319,6 +338,8 @@ def _infer_config(data: dict, source: Path) -> dict:
         "sampling_overrides": data.get("sampling_overrides"),
         "sampling_source": data.get("sampling_source"),
         "server_defaults": data.get("server_defaults"),
+        "retry_failures": int((data.get("pass_at_k") or {}).get("k") or 0),
+        "retry_runaways": False,
         "save_json": str(final_path_for(source)),
     }
 
@@ -360,6 +381,8 @@ def load_resume(path: str | Path) -> ResumeState:
     config.setdefault("pack_ids", list(target_by_pack))
     config.setdefault("result_selection", previous_result.get("selection"))
     config.setdefault("repeat", 1)
+    config.setdefault("retry_failures", 0)
+    config.setdefault("retry_runaways", False)
     config.setdefault("save_json", str(final_path))
 
     completed: dict[str, dict[str, set[int]]] = {}

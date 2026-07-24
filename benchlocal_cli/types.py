@@ -75,6 +75,18 @@ class ScenarioRun:
     # single-turn scenarios where the request `messages` field already captures
     # the full input. Populated by the runner's multi-turn loop.
     conversation: list[dict] = field(default_factory=list)
+    # Inline failure-only retry classification (#111). The top-level run is
+    # always attempt 1 and remains the authoritative pass@1 result. Retry
+    # attempts are nested so existing pass@1/delta/repeat consumers never
+    # accidentally count best-of-N samples as ordinary scenarios.
+    label: str | None = None
+    attempt_count: int = 1
+    retry_attempts: list[dict] = field(default_factory=list)
+    retry_eligible: bool = False
+    best_of_n_eligible: bool = True
+    # Whether this scenario receives pass@k credit. A safety scenario marked
+    # no_best_of_n can have label=pass@2 while this remains False.
+    pass_at_k: bool | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -106,6 +118,8 @@ class PackResult:
     # Present only for a selected subset. scenario_count is the selected count;
     # this records the pack's complete catalog size for honest human rendering.
     catalog_scenario_count: int | None = None
+    # Additive best-of-k rollup; strict pass@1 remains in passed/total/score.
+    pass_at_k: dict[str, float | int] | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -126,6 +140,8 @@ class PackResult:
         }
         if self.catalog_scenario_count is not None:
             out["catalog_scenario_count"] = self.catalog_scenario_count
+        if self.pass_at_k is not None:
+            out["pass_at_k"] = self.pass_at_k
         return out
 
 
@@ -166,6 +182,8 @@ class RunResult:
     # Failure-conditioned retries are diagnostic only; baseline pass@1 remains
     # authoritative and is recorded alongside per-scenario consistency here.
     retry_failed: dict | None = None
+    # Additive best-of-k rollup for inline retries (#111).
+    pass_at_k: dict[str, float | int] | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -194,4 +212,6 @@ class RunResult:
             out["selection"] = self.selection
         if self.retry_failed is not None:
             out["retry_failed"] = self.retry_failed
+        if self.pass_at_k is not None:
+            out["pass_at_k"] = self.pass_at_k
         return out
