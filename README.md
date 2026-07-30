@@ -315,6 +315,15 @@ When `--repeat N` is greater than 1, the markdown table adds per-pack `Std` and 
 
 `--repeat N` is the rigorous whole-benchmark variance tool: it re-runs passes and failures, so it can detect flaky passes as well as flaky failures. The CLI default is `--repeat 0`, where `0` selects the normal failure-only inline path; `--repeat 3` disables inline retries and executes every selected scenario three times.
 
+For an issue-ready Results Card v2, opt in with `--report md`. Its stable table always includes `Std`/`CV` (shown as `—` for a single run), p50/p95 latency, the score normalized to `/150`, and a collapsed raw per-item log reconstructed from the saved scenario records:
+
+```bash
+benchlocal-cli run --full --repeat 3 --report md --report-out results.md \
+  --endpoint http://localhost:8020 --model qwen3.6-27b --save-json results.json
+```
+
+With Markdown output, the card is printed to stdout and optionally copied to `--report-out`. JSON stdout remains available with `--output json --report md --report-out results.md`; the file receives Markdown while stdout stays pure JSON. Without `--report`, the existing stdout shape is unchanged. Saved JSON adds top-level `repeat` and `equivalent_score_150` fields, alongside each pack's existing `variance` and `latency` aggregates.
+
 For the cheaper everyday question "are the failures in this saved run systematic or flaky?", retry only its failed pass@1 scenarios:
 
 ```bash

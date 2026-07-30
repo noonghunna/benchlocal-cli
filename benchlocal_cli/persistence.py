@@ -263,6 +263,7 @@ def _build_result(
         server_defaults=config.get("server_defaults"),
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
+        repeat=repeat,
     )
     retry_context = config.get("retry_failed")
     if retry_context is not None:
