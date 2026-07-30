@@ -184,8 +184,13 @@ class RunResult:
     retry_failed: dict | None = None
     # Additive best-of-k rollup for inline retries (#111).
     pass_at_k: dict[str, float | int] | None = None
+    # Whole-benchmark repeat count. Always at least 1; additive for schema-v1 readers.
+    repeat: int = 1
 
     def to_dict(self) -> dict:
+        total = int(self.totals.get("total") or 0)
+        passed = int(self.totals.get("passed") or 0)
+        equivalent_score_150 = int((passed * 150 / total) + 0.5) if total else 0
         out = {
             "schema_version": self.schema_version,
             "runner_version": self.runner_version,
@@ -199,6 +204,8 @@ class RunResult:
             "thinking_enabled": self.thinking_enabled,
             "thinking_mode": self.thinking_mode,
             "warnings": self.warnings,
+            "repeat": self.repeat,
+            "equivalent_score_150": equivalent_score_150,
         }
         if self.delta is not None:
             out["delta"] = self.delta

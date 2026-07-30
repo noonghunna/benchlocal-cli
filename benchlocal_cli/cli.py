@@ -157,6 +157,16 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
     run.add_argument(
+        "--report",
+        choices=["md"],
+        help="emit the paste-ready Results Card v2 report (currently: md)",
+    )
+    run.add_argument(
+        "--report-out",
+        metavar="PATH",
+        help="also write the selected --report to PATH",
+    )
+    run.add_argument(
         "--resume",
         metavar="RESULTS_JSON_OR_PARTIAL_JSONL",
         help="resume missing scenarios from a saved result or per-scenario partial journal",
@@ -449,16 +459,17 @@ def _sandbox_progress_event(event: dict) -> None:
     print(f"  [{index}/{total}] {pack_id}/{exercise_id} {result_char} {mode} ({latency})", file=sys.stderr, flush=True)
 
 
-def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
-    """Print per-scenario progress line to stderr (#23)."""
+def _scenario_progress_text(run: ScenarioRun, index: int, total: int) -> str:
+    """Format the durable per-scenario line used by live and saved reports."""
     result_char = "✓" if run.result.passed else "✗"
     latency = f"{run.result.latency_seconds:.1f}s" if run.result.latency_seconds > 0 else "?"
     label = f" {run.label}" if run.label else ""
-    print(
-        f"  [{index}/{total}] {run.id} {result_char} {run.result.failure_mode}{label} ({latency})",
-        file=sys.stderr,
-        flush=True,
-    )
+    return f"  [{index}/{total}] {run.id} {result_char} {run.result.failure_mode}{label} ({latency})"
+
+
+def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
+    """Print per-scenario progress line to stderr (#23)."""
+    print(_scenario_progress_text(run, index, total), file=sys.stderr, flush=True)
 
 
 def _compute_partial_totals(packs: list) -> dict:
@@ -731,6 +742,83 @@ def _markdown(result: RunResult) -> str:
     return "\n".join(lines)
 
 
+def _results_card_markdown(result: RunResult) -> str:
+    """Render the stable, paste-ready Results Card v2 shape (#114)."""
+    version = result.runner_version.removeprefix("v")
+    lines = [
+        f"## Quality bench, thinking {_thinking_label(result)}, "
+        f"benchlocal-cli v{version}, repeat = {result.repeat}",
+        "",
+        "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status",
+        "---|---:|---:|---:|---:|---:|---:|---",
+    ]
+    for pack in result.packs:
+        if pack.skipped:
+            status = "skipped"
+        elif pack.status not in ("ok", "stubbed"):
+            status = pack.status
+        else:
+            status = "ok" if pack.total else pack.status
+        if (
+            pack.catalog_scenario_count is not None
+            and pack.scenario_count < pack.catalog_scenario_count
+        ):
+            status = (
+                f"{status}; partial — {pack.scenario_count} of "
+                f"{pack.catalog_scenario_count} selected"
+            )
+        score = f"{pack.score:.0%}" if pack.total else "-"
+        variance = pack.variance or {}
+        std = "—" if result.repeat == 1 or variance.get("std") is None else f"{float(variance['std']):.1%}"
+        cv = "—" if result.repeat == 1 or variance.get("cv") is None else f"{float(variance['cv']):.2f}"
+        p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
+        p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
+        lines.append(
+            f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | "
+            f"{score} | {std} | {cv} | {p50} | {p95} | {status}"
+        )
+
+    total = int(result.totals.get("total") or 0)
+    passed = int(result.totals.get("passed") or 0)
+    equivalent_score_150 = int((passed * 150 / total) + 0.5) if total else 0
+    lines.extend(
+        [
+            "",
+            f"TOTAL | {passed} / {total} | {float(result.totals.get('score') or 0.0):.0%} |  |  |  |  |",
+            "",
+            f"Equivalent to: {equivalent_score_150}/150",
+        ]
+    )
+
+    legacy_lines = _markdown(result).splitlines()
+    raw_lines = legacy_lines[:2]
+    for pack in result.packs:
+        pack_total = len(pack.scenarios)
+        raw_lines.extend(
+            _scenario_progress_text(run, index, pack_total)
+            for index, run in enumerate(pack.scenarios, 1)
+        )
+        raw_lines.append(_pack_line(pack))
+    raw_lines.append("")
+    raw_lines.extend(legacy_lines[2:])
+    raw = "\n".join(raw_lines)
+    fence = "````" if "```" in raw else "```"
+    lines.extend(
+        [
+            "",
+            "<details>",
+            "<summary>Raw data</summary>",
+            "",
+            fence,
+            raw,
+            fence,
+            "",
+            "</details>",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _load_mock(path: str | None) -> dict[str, dict] | None:
     if not path:
         return None
@@ -883,6 +971,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.repeat < 0:
             raise ValueError("--repeat must be 0 or greater")
+        if args.report_out and args.report is None:
+            raise ValueError("--report-out requires --report md")
+        if args.output == "json" and args.report and not args.report_out:
+            raise ValueError("--output json with --report requires --report-out")
         if args.retry_failures < 0:
             raise ValueError("--retry-failures must be 0 or greater")
         if args.timeout_ceiling_s is not None and args.timeout_ceiling_s < 0:
@@ -1382,8 +1474,13 @@ def main(argv: list[str] | None = None) -> int:
                 append_run(result_dict, history_path, allow_partial=args.allow_partial)
             except Exception as exc:
                 print(f"benchlocal-cli: warning — history append failed: {exc}", file=sys.stderr)
+        report_markdown = _results_card_markdown(result) if args.report == "md" else None
+        if args.report_out:
+            Path(args.report_out).write_text(f"{report_markdown}\n", encoding="utf-8")
         if args.output == "json":
             print(json.dumps(result_dict, indent=2, sort_keys=True))
+        elif report_markdown is not None:
+            print(report_markdown)
         else:
             print(_markdown(result))
 

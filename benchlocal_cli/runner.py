@@ -709,6 +709,7 @@ class Runner:
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
+                repeat=repeat,
             )
         finally:
             self._stop_sandboxes()
