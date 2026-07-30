@@ -8,6 +8,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 from benchlocal_cli import __version__
+from benchlocal_cli.diagnostics import pack_diagnostics
 from benchlocal_cli.runner import (
     DEFAULT_INLINE_RETRY_ATTEMPTS,
     PACK_MODES,
@@ -171,6 +172,7 @@ def _aggregate_pack(
                 variance=_repeat_variance(runs, repeat),
                 catalog_scenario_count=catalog_scenario_count,
                 pass_at_k=_pass_at_k_summary(runs, configured_k),
+                diagnostics=pack_diagnostics(runs),
             )
 
     passed = sum(1 for run in counted if run.result.passed)
@@ -190,6 +192,7 @@ def _aggregate_pack(
         variance=_repeat_variance(runs, repeat),
         catalog_scenario_count=catalog_scenario_count,
         pass_at_k=_pass_at_k_summary(runs, configured_k),
+        diagnostics=pack_diagnostics(runs),
     )
 
 

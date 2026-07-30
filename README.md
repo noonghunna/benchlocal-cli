@@ -352,11 +352,11 @@ benchlocal-cli inspect results.json --logs ./sandbox-logs    # pull sandboxed-pa
 benchlocal-cli rescore results.json --pack reasonmath-15 --output rescored.json
 ```
 
-Use `rescore` when a deterministic scorer changes and the saved JSON already contains `raw_response`. It re-grades from the stored model responses without calling the endpoint again; sandbox-backed packs are skipped because their verifier state lives in Docker fixtures.
+Use `rescore` when a scorer changes and the saved JSON already contains `raw_response`. It re-grades from stored model responses without calling the endpoint again. Replayable single-turn sandbox packs (currently BugFind, HumanEval+, and LiveCodeBench) are re-run inside their pre-built verifier containers; multi-turn/workspace packs remain skipped because their destroyed filesystem or agent state cannot be reconstructed from JSON. Use `--sandbox-image-tag` when the corrected verifier was built under a non-`latest` tag.
 
 `failure_mode` is one of `verifier_fail`, `token_limit`, `timeout`, `agent_runner_timeout`, `agent_runner_crashed`, `server_error`, `http_error`, `model_endpoint_unreachable`, `result_json_malformed`, `wrong_answer`, `verifier_not_implemented`.
 
-`token_limit` (#61) means the completion hit the token cap (`finish_reason == "length"`) and was truncated mid-output — the model overthought or looped until the budget ran out, *not* a content verdict. It's reclassified from the underlying content-failure (the original verdict is kept in `detail`), so "looped / truncated" reads distinctly from "ran to completion but wrong" (`verifier_fail`). Filter it with `inspect --mode token_limit`.
+`token_limit` (#61) means a failed completion hit the token cap (`finish_reason == "length"`) and was truncated mid-output — the model overthought or looped until the budget ran out, *not* a content verdict. It's reclassified from the underlying content-failure (the original verdict is kept in `detail`), so "looped / truncated" reads distinctly from "ran to completion but wrong" (`verifier_fail`). Filter it with `inspect --mode token_limit`. The pack-level `diagnostics.finish_reasons` rollup counts `length` across every recorded completion, including successful, retry, and multi-turn responses that the failure label intentionally does not reclassify. Code-reasoning packs also expose extraction method, issue, and selected response-field distributions under `diagnostics.extraction`.
 
 ## Negative control (grader false-positive probe)
 

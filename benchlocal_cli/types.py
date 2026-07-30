@@ -120,6 +120,9 @@ class PackResult:
     catalog_scenario_count: int | None = None
     # Additive best-of-k rollup; strict pass@1 remains in passed/total/score.
     pass_at_k: dict[str, float | int] | None = None
+    # Additive pack-level telemetry over every recorded completion, including
+    # successful finish_reason=length responses and nested retries/turns.
+    diagnostics: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -142,6 +145,8 @@ class PackResult:
             out["catalog_scenario_count"] = self.catalog_scenario_count
         if self.pass_at_k is not None:
             out["pass_at_k"] = self.pass_at_k
+        if self.diagnostics is not None:
+            out["diagnostics"] = self.diagnostics
         return out
 
 

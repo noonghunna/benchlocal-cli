@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from benchlocal_cli.runner import _utc_now, load_pack
+from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.runner import Runner, _utc_now, load_pack
+from benchlocal_cli.sandbox import SANDBOX_REGISTRY, SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source
 
 
@@ -19,13 +22,24 @@ def add_rescore_subparser(sub) -> None:
     parser.add_argument("--in-place", action="store_true", help="overwrite the input JSON with rescored results")
     parser.add_argument("--pack", help="only rescore one pack id, e.g. reasonmath-15")
     parser.add_argument(
+        "--sandbox-image-tag",
+        default="latest",
+        help="sandbox image tag for replayable execution-backed packs (default: latest)",
+    )
+    parser.add_argument(
         "--allow-partial",
         action="store_true",
         help="allow rescoring a scenario-selection result (not a canonical pack total)",
     )
 
 
-def _score_saved_scenario(pack_meta: dict, scenario_index: dict[str, dict], run: dict) -> tuple[bool, str | None]:
+def _score_saved_scenario(
+    pack_meta: dict,
+    scenario_index: dict[str, dict],
+    run: dict,
+    *,
+    sandbox_client: SandboxClient | None = None,
+) -> tuple[bool, str | None]:
     raw_response = run.get("raw_response")
     if not isinstance(raw_response, dict):
         return False, "missing raw_response"
@@ -35,17 +49,28 @@ def _score_saved_scenario(pack_meta: dict, scenario_index: dict[str, dict], run:
     if not isinstance(scenario, dict):
         return False, "missing scenario definition"
 
-    verifier_type = scenario.get("verifier", {}).get("type") or pack_meta.get("verifier_module")
-    if not verifier_type or verifier_type == "_stub":
-        return False, "sandbox/stub scorer not rescored"
-
-    module = importlib.import_module(f"benchlocal_cli.scoring.{verifier_type}")
-    result = module.score_scenario(scenario, raw_response)
+    if pack_meta.get("supports_sandboxed_only"):
+        if sandbox_client is None:
+            return False, "sandbox state not replayable"
+        request = run.get("request") if isinstance(run.get("request"), dict) else {}
+        messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+        result = sandbox_client.verify(scenario, raw_response, messages)
+    else:
+        verifier_type = scenario.get("verifier", {}).get("type") or pack_meta.get("verifier_module")
+        if not verifier_type or verifier_type == "_stub":
+            return False, "sandbox/stub scorer not rescored"
+        module = importlib.import_module(f"benchlocal_cli.scoring.{verifier_type}")
+        result = module.score_scenario(scenario, raw_response)
 
     previous = run.get("result") if isinstance(run.get("result"), dict) else {}
-    result.latency_seconds = float(previous.get("latency_seconds") or run.get("latency_seconds") or 0.0)
+    latency = float(previous.get("latency_seconds") or run.get("latency_seconds") or 0.0)
     tokens = previous.get("tokens_completion", run.get("tokens_completion"))
-    result.tokens_completion = tokens if isinstance(tokens, int) else None
+    result = replace(
+        result,
+        latency_seconds=latency,
+        tokens_completion=tokens if isinstance(tokens, int) else None,
+    )
+    result = Runner._reclassify_if_truncated(result, raw_response)
 
     result_dict = result.to_dict()
     run["result"] = result_dict
@@ -66,6 +91,11 @@ def _recompute_pack(pack: dict) -> None:
     pack["passed"] = passed
     pack["total"] = total
     pack["score"] = passed / total if total else 0.0
+    diagnostics = pack_diagnostics(scenarios)
+    if diagnostics is not None:
+        pack["diagnostics"] = diagnostics
+    else:
+        pack.pop("diagnostics", None)
 
 
 def _recompute_totals(data: dict) -> None:
@@ -73,6 +103,11 @@ def _recompute_totals(data: dict) -> None:
     total = sum(int(pack.get("total") or 0) for pack in packs)
     passed = sum(int(pack.get("passed") or 0) for pack in packs)
     data["totals"] = {"passed": passed, "total": total, "score": passed / total if total else 0.0}
+
+
+def _sandbox_client_for_pack(pack_id: str, image_tag: str) -> SandboxClient:
+    """Construct a replay verifier; kept separate so unit tests need no Docker."""
+    return SandboxClient(config_for_pack(pack_id, image_tag))
 
 
 def rescore_result(path: str, args: Any) -> int:
@@ -85,6 +120,7 @@ def rescore_result(path: str, args: Any) -> int:
 
     rescored = 0
     skipped: dict[str, int] = {}
+    sandboxed_packs: list[str] = []
     for pack in data.get("packs", []):
         if not isinstance(pack, dict):
             continue
@@ -95,18 +131,39 @@ def rescore_result(path: str, args: Any) -> int:
             pack_meta, current_scenarios = load_pack(pack_id)
         except Exception:
             pack_meta, current_scenarios = {"verifier_module": None}, []
+
+        sandbox_client: SandboxClient | None = None
         if pack_meta.get("supports_sandboxed_only"):
-            skipped[pack_id] = len(pack.get("scenarios") or [])
-            continue
-        scenario_index = {str(scenario.get("id")): scenario for scenario in current_scenarios if isinstance(scenario, dict)}
-        for run in pack.get("scenarios", []):
-            if not isinstance(run, dict):
+            config = SANDBOX_REGISTRY.get(pack_id)
+            if config is None or config.multi_turn:
+                skipped[pack_id] = len(pack.get("scenarios") or [])
                 continue
-            did_score, reason = _score_saved_scenario(pack_meta, scenario_index, run)
-            if did_score:
-                rescored += 1
-            elif reason:
-                skipped[reason] = skipped.get(reason, 0) + 1
+            sandbox_client = _sandbox_client_for_pack(pack_id, args.sandbox_image_tag)
+            sandbox_client.start()
+            sandboxed_packs.append(pack_id)
+
+        scenario_index = {
+            str(scenario.get("id")): scenario
+            for scenario in current_scenarios
+            if isinstance(scenario, dict)
+        }
+        try:
+            for run in pack.get("scenarios", []):
+                if not isinstance(run, dict):
+                    continue
+                did_score, reason = _score_saved_scenario(
+                    pack_meta,
+                    scenario_index,
+                    run,
+                    sandbox_client=sandbox_client,
+                )
+                if did_score:
+                    rescored += 1
+                elif reason:
+                    skipped[reason] = skipped.get(reason, 0) + 1
+        finally:
+            if sandbox_client is not None:
+                sandbox_client.stop()
         _recompute_pack(pack)
 
     _recompute_totals(data)
@@ -115,6 +172,7 @@ def rescore_result(path: str, args: Any) -> int:
         "scenarios": rescored,
         "skipped": skipped,
         "pack_filter": args.pack,
+        "sandboxed_packs": sandboxed_packs,
     }
 
     if args.in_place and args.output:

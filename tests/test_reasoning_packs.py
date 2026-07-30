@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 
+from benchlocal_cli import rescore as rescore_module
 from benchlocal_cli.cli import _mode_from_args, main
 from benchlocal_cli.runner import PACK_MODES, Runner, load_pack
 from benchlocal_cli.scoring import answer_match
+from benchlocal_cli.types import ScenarioResult
 
 
 def _mode_ns(**kw) -> argparse.Namespace:
@@ -216,3 +218,120 @@ def test_cli_list_marks_gpqa_gated(capsys):
     assert main(["list"]) == 0
     out = capsys.readouterr().out
     assert "gpqa-diamond | 0.1.0 | 0 | answer_match | on | gated" in out
+
+
+class _FakeReplaySandbox:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self.calls = []
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def verify(self, scenario, response, messages):
+        self.calls.append((scenario, response, messages))
+        return ScenarioResult(
+            scenario_id=scenario["id"],
+            passed=True,
+            failure_mode="passed",
+            detail="functional tests passed",
+            verifier_trace={
+                "extraction_method": "last_fenced",
+                "extraction_issue": "none",
+                "response_field_used": "message.content",
+            },
+        )
+
+
+def test_rescore_replays_single_turn_code_sandbox_and_refreshes_diagnostics(
+    monkeypatch, tmp_path
+):
+    source = tmp_path / "code-run.json"
+    target = tmp_path / "code-rescored.json"
+    fake = _FakeReplaySandbox()
+    factory_calls = []
+
+    def factory(pack_id, image_tag):
+        factory_calls.append((pack_id, image_tag))
+        return fake
+
+    monkeypatch.setattr(rescore_module, "_sandbox_client_for_pack", factory)
+    source.write_text(json.dumps({
+        "schema_version": "1",
+        "packs": [{
+            "pack_id": "humaneval-plus-30",
+            "scenarios": [{
+                "id": "HumanEval-0",
+                "passed": False,
+                "failure_mode": "verifier_fail",
+                "detail": "legacy reasoning-first extraction",
+                "latency_seconds": 1.25,
+                "tokens_completion": 42,
+                "result": {
+                    "scenario_id": "HumanEval-0",
+                    "passed": False,
+                    "failure_mode": "verifier_fail",
+                    "detail": "legacy reasoning-first extraction",
+                    "latency_seconds": 1.25,
+                    "tokens_completion": 42,
+                    "verifier_trace": {
+                        "extraction_method": "code_start_after_think",
+                    },
+                },
+                "raw_scenario": {"id": "HumanEval-0"},
+                "raw_response": {
+                    "choices": [{
+                        "message": {
+                            "reasoning_content": "def broken(): pass",
+                            "content": "def has_close_elements(numbers, threshold): return False",
+                        },
+                        "finish_reason": "length",
+                    }]
+                },
+                "request": {"messages": [{"role": "user", "content": "solve"}]},
+            }],
+        }],
+        "totals": {"passed": 0, "total": 1, "score": 0.0},
+    }))
+
+    assert main([
+        "rescore",
+        str(source),
+        "--pack",
+        "humaneval-plus-30",
+        "--sandbox-image-tag",
+        "fixed",
+        "--output",
+        str(target),
+    ]) == 0
+
+    data = json.loads(target.read_text())
+    run = data["packs"][0]["scenarios"][0]
+    assert factory_calls == [("humaneval-plus-30", "fixed")]
+    assert fake.started is True
+    assert fake.stopped is True
+    assert len(fake.calls) == 1
+    assert run["passed"] is True
+    assert run["failure_mode"] == "passed"
+    assert run["latency_seconds"] == 1.25
+    assert run["tokens_completion"] == 42
+    assert run["response_field_used"] == "message.content"
+    assert data["packs"][0]["diagnostics"] == {
+        "finish_reasons": {
+            "total": 1,
+            "length": 1,
+            "length_rate": 1.0,
+            "counts": {"length": 1},
+        },
+        "extraction": {
+            "methods": {"last_fenced": 1},
+            "issues": {"none": 1},
+            "response_fields": {"message.content": 1},
+        },
+    }
+    assert data["totals"] == {"passed": 1, "total": 1, "score": 1.0}
+    assert data["rescored"]["sandboxed_packs"] == ["humaneval-plus-30"]

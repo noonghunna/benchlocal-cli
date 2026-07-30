@@ -18,6 +18,7 @@ from importlib import resources
 import httpx
 
 from benchlocal_cli import __version__
+from benchlocal_cli.diagnostics import pack_diagnostics
 from benchlocal_cli.sandbox import SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
@@ -1319,6 +1320,7 @@ class Runner:
                         runs,
                         self._configured_pass_at_k(meta, repeat),
                     ),
+                    diagnostics=pack_diagnostics(runs),
                 )
 
         passed = sum(1 for run in counted if run.result.passed)
@@ -1341,6 +1343,7 @@ class Runner:
                 runs,
                 self._configured_pass_at_k(meta, repeat),
             ),
+            diagnostics=pack_diagnostics(runs),
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
