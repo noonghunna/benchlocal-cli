@@ -999,3 +999,70 @@ console.log(JSON.stringify(captured));
     core = (ROOT / "vendor/CLI-40/verification/core.mjs").read_text(encoding="utf-8")
     for field in ("max_tokens", "enable_thinking", "thinking_budget", "chat_template_kwargs"):
         assert f"{field}: generation.{field}" in core
+
+
+def test_code_reasoning_prefers_content_over_out_of_band_reasoning():
+    server = _load("code_reasoning_content_first", "sandboxes/code-reasoning/server.py")
+    response = {
+        "choices": [{
+            "message": {
+                "reasoning_content": "def draft(x):\n    return x\nThat is it.",
+                "content": "```python\ndef final_answer(x):\n    return x + 1\n```",
+            }
+        }]
+    }
+
+    text, source = server._response_text(response)
+    code, info = server.extract_code_with_info(text, response_field_used=source)
+
+    assert code.strip() == "def final_answer(x):\n    return x + 1"
+    assert info == {
+        "extraction_method": "last_fenced",
+        "extraction_issue": "none",
+        "response_field_used": "message.content",
+    }
+    assert "after_think" not in info["extraction_method"]
+
+
+def test_code_reasoning_falls_back_only_when_content_is_empty():
+    server = _load("code_reasoning_reasoning_fallback", "sandboxes/code-reasoning/server.py")
+    response = {
+        "choices": [{
+            "message": {
+                "content": "",
+                "reasoning_content": "def fallback(x):\n    return x",
+            }
+        }]
+    }
+
+    text, source = server._response_text(response)
+    code, info = server.extract_code_with_info(text, response_field_used=source)
+
+    assert code == "def fallback(x):\n    return x"
+    assert info["extraction_method"] == "code_start"
+    assert info["response_field_used"] == "message.reasoning_content"
+
+
+def test_code_reasoning_verifier_executes_content_not_reasoning_draft():
+    server = _load("code_reasoning_functional", "sandboxes/code-reasoning/server.py")
+    scenario = {
+        "raw_problem": {
+            "dataset": "humaneval-plus",
+            "entry_point": "add",
+            "test": "def check(candidate):\n    assert candidate(2, 3) == 5",
+        }
+    }
+    response = {
+        "choices": [{
+            "message": {
+                "reasoning_content": "def add(a, b):\n    return a - b\nThis draft is wrong.",
+                "content": "```python\ndef add(a, b):\n    return a + b\n```",
+            }
+        }]
+    }
+
+    result = server.verify_code("HE-test", scenario, response)
+
+    assert result["passed"] is True
+    assert result["response_field_used"] == "message.content"
+    assert result["extraction_method"] == "last_fenced"

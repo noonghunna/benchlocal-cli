@@ -12,7 +12,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 9000
 
-THINK_OPEN_CLOSE_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 CODE_FENCED_RE = re.compile(r"```(?:python|py)?[ \t\r]*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
 CODE_DEF_RE = re.compile(r"^(def\s+\w+.*?)(?=\n\S|\Z)", re.DOTALL | re.MULTILINE)
 CODE_START_RE = re.compile(r"^(?:from\s+\S+\s+import\s+.+|import\s+.+|class\s+\w+\b.*|def\s+\w+\s*\(.*|@\w+.*)$", re.MULTILINE)
@@ -30,14 +29,15 @@ def _message(response: dict) -> dict:
     return {}
 
 
-def _response_text(response: dict) -> str:
+def _response_text(response: dict) -> tuple[str, str | None]:
+    """Resolve exactly one answer channel using the shared content-first policy."""
     msg = _message(response)
-    parts = []
-    for key in ("reasoning_content", "reasoning", "content"):
-        value = msg.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(value)
-    return "\n".join(parts)
+    for prefix, container in (("", response), ("message.", msg)):
+        for key in ("content", "reasoning_content", "reasoning"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value, f"{prefix}{key}"
+    return "", None
 
 
 def _strip_unmatched_fence(code: str) -> str:
@@ -48,44 +48,51 @@ def _strip_unmatched_fence(code: str) -> str:
     return code
 
 
-def extract_code_with_info(text: str) -> tuple[str, dict]:
-    think_close_count = text.count("</think>")
-    after_think = text.rsplit("</think>", 1)[-1] if think_close_count else text
-    extraction_issue_override = "extra_think_tag_after_code" if think_close_count > 1 else None
+def extract_code_with_info(
+    text: str,
+    *,
+    response_field_used: str | None = None,
+) -> tuple[str, dict]:
+    """Extract code from one already-selected response channel."""
 
-    def _issue(default: str) -> str:
-        return extraction_issue_override or default
+    def _info(method: str, issue: str) -> dict:
+        info = {"extraction_method": method, "extraction_issue": issue}
+        if response_field_used is not None:
+            info["response_field_used"] = response_field_used
+        return info
 
-    clean_after_think = after_think.lstrip()
-    matches = CODE_FENCED_RE.findall(after_think)
-    if matches:
-        return matches[-1], {"extraction_method": "last_fenced_after_think", "extraction_issue": _issue("none")}
+    clean = text.lstrip()
     matches = CODE_FENCED_RE.findall(text)
     if matches:
-        return matches[-1], {"extraction_method": "last_fenced_anywhere", "extraction_issue": "none"}
-    stripped = after_think.lstrip()
-    if OPENING_FENCE_RE.match(stripped):
-        return _strip_unmatched_fence(stripped), {"extraction_method": "opening_fence_after_think", "extraction_issue": _issue("unterminated_fence")}
-    m = OPENING_FENCE_ANYWHERE_RE.search(clean_after_think)
-    if m:
-        return _strip_unmatched_fence(clean_after_think[m.end():]), {"extraction_method": "opening_fence_anywhere", "extraction_issue": _issue("prose_before_unterminated_fence")}
-    label = LANGUAGE_LABEL_RE.match(clean_after_think)
+        return matches[-1], _info("last_fenced", "none")
+    if OPENING_FENCE_RE.match(clean):
+        return _strip_unmatched_fence(clean), _info("opening_fence", "unterminated_fence")
+    match = OPENING_FENCE_ANYWHERE_RE.search(clean)
+    if match:
+        return (
+            _strip_unmatched_fence(clean[match.end():]),
+            _info("opening_fence_anywhere", "prose_before_unterminated_fence"),
+        )
+    label = LANGUAGE_LABEL_RE.match(clean)
     if label:
-        after_label = clean_after_think[label.end():].lstrip()
-        m = CODE_START_RE.search(after_label)
-        if m:
-            prefix = after_label[:m.start()]
+        after_label = clean[label.end():].lstrip()
+        match = CODE_START_RE.search(after_label)
+        if match:
+            prefix = after_label[:match.start()]
             issue = "language_label_before_code" if not prefix.strip() else "language_label_then_prose_before_code"
-            return _strip_unmatched_fence(after_label[m.start():]), {"extraction_method": "code_start_after_language_label", "extraction_issue": _issue(issue)}
-    m = CODE_START_RE.search(clean_after_think)
-    if m:
-        prefix = clean_after_think[:m.start()]
+            return (
+                _strip_unmatched_fence(after_label[match.start():]),
+                _info("code_start_after_language_label", issue),
+            )
+    match = CODE_START_RE.search(clean)
+    if match:
+        prefix = clean[:match.start()]
         issue = "no_fenced_block" if not prefix.strip() else "prose_before_code"
-        return _strip_unmatched_fence(clean_after_think[m.start():]), {"extraction_method": "code_start_after_think", "extraction_issue": _issue(issue)}
-    m = CODE_DEF_RE.search(clean_after_think)
-    if m:
-        return m.group(1), {"extraction_method": "def_after_think", "extraction_issue": _issue("no_fenced_block")}
-    return "", {"extraction_method": "empty", "extraction_issue": "empty_code"}
+        return _strip_unmatched_fence(clean[match.start():]), _info("code_start", issue)
+    match = CODE_DEF_RE.search(clean)
+    if match:
+        return match.group(1), _info("def", "no_fenced_block")
+    return "", _info("empty", "empty_code")
 
 
 def _run_python(source: str, timeout: int = 30) -> tuple[bool, str]:
@@ -166,8 +173,11 @@ _run()
 
 
 def verify_code(scenario_id: str, scenario: dict, response: dict) -> dict:
-    text = _response_text(response)
-    code, info = extract_code_with_info(text)
+    text, response_field_used = _response_text(response)
+    code, info = extract_code_with_info(
+        text,
+        response_field_used=response_field_used,
+    )
     if not code.strip():
         return fail(scenario_id, "wrong_answer", "no runnable-looking Python code extracted", info)
     raw = scenario.get("raw_problem") or {}

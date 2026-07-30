@@ -247,6 +247,19 @@ def test_run_and_markdown_report_pass_at_one_and_pass_at_k_together(monkeypatch)
 
     monkeypatch.setattr(runner, "run_scenario", fake_run_scenario)
     result = runner.run(["test-pack"])
+    result.packs[0].diagnostics = {
+        "finish_reasons": {
+            "total": 2,
+            "length": 1,
+            "length_rate": 0.5,
+            "counts": {"length": 1, "stop": 1},
+        },
+        "extraction": {
+            "methods": {"last_fenced": 2},
+            "issues": {"none": 2},
+            "response_fields": {"message.content": 2},
+        },
+    }
     rendered = _markdown(result)
 
     assert result.totals == {"passed": 0, "total": 1, "score": 0.0}
@@ -254,3 +267,5 @@ def test_run_and_markdown_report_pass_at_one_and_pass_at_k_together(monkeypatch)
     assert "Pack | Pass@1 | Pass@3 | Flaky" in rendered
     assert "TOTAL | 0 / 1 (0%) | 1 / 1 (100%) | 1" in rendered
     assert "test-pack/T-01 | pass@2 | 2 | yes" in rendered
+    assert "Completion and extraction diagnostics:" in rendered
+    assert "test-pack | 1 / 2 (50.0%) | last_fenced=2 | none=2 | message.content=2" in rendered

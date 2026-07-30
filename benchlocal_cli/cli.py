@@ -712,6 +712,35 @@ def _markdown(result: RunResult) -> str:
                 )
         else:
             lines.append("all scenarios | pass@1 | 1 | yes")
+    diagnostic_packs = [pack for pack in result.packs if pack.diagnostics]
+    if diagnostic_packs:
+        lines.extend(
+            [
+                "",
+                "Completion and extraction diagnostics:",
+                "",
+                "Pack | finish_reason=length | extraction_method | extraction_issue | response_field_used",
+                "---|---:|---|---|---",
+            ]
+        )
+        for pack in diagnostic_packs:
+            diagnostics = pack.diagnostics or {}
+            finish = diagnostics.get("finish_reasons") or {}
+            total = int(finish.get("total") or 0)
+            length = int(finish.get("length") or 0)
+            rate = float(finish.get("length_rate") or 0.0)
+            finish_cell = f"{length} / {total} ({rate:.1%})" if total else "—"
+            extraction = diagnostics.get("extraction") or {}
+
+            def _counts(name: str) -> str:
+                values = extraction.get(name) or {}
+                return ", ".join(f"{key}={value}" for key, value in values.items()) or "—"
+
+            lines.append(
+                f"{pack.pack_id} | {finish_cell} | {_counts('methods')} | "
+                f"{_counts('issues')} | {_counts('response_fields')}"
+            )
+
     failures: list[str] = []
     for pack in result.packs:
         for scenario in pack.scenarios:
