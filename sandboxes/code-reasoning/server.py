@@ -69,10 +69,19 @@ def extract_code_with_info(
         return _strip_unmatched_fence(clean), _info("opening_fence", "unterminated_fence")
     match = OPENING_FENCE_ANYWHERE_RE.search(clean)
     if match:
-        return (
-            _strip_unmatched_fence(clean[match.end():]),
-            _info("opening_fence_anywhere", "prose_before_unterminated_fence"),
-        )
+        remainder = clean[match.end():]
+        if remainder.strip():
+            return (
+                _strip_unmatched_fence(remainder),
+                _info("opening_fence_anywhere", "prose_before_unterminated_fence"),
+            )
+        # Nothing after the fence, so it is a stray CLOSER, not an opener --
+        # the language group in OPENING_FENCE_ANYWHERE_RE is optional, so a
+        # bare trailing ``` satisfies the "opening" pattern. Claiming the
+        # record here would return the empty remainder AND short-circuit the
+        # CODE_START_RE / CODE_DEF_RE heuristics below, which is what recovers
+        # unfenced code. Drop the stray fence and keep going.
+        clean = clean[:match.start()].rstrip()
     label = LANGUAGE_LABEL_RE.match(clean)
     if label:
         after_label = clean[label.end():].lstrip()
