@@ -332,6 +332,23 @@ def test_data_extract_generated_prompt_emphasizes_json_numbers():
     assert "16GB -> 16" in system
 
 
+def test_de10_declares_visit_duration_as_exact_source_text():
+    scenario = _pack_record("dataextract-15.jsonl", "DE-10")
+    user_prompt = scenario["messages"][1]["content"]
+
+    assert "visit_duration: string | null" in user_prompt
+    assert scenario["expected"]["visit_duration"] == "about 2 hours"
+
+    numeric_duration = dict(scenario["expected"])
+    numeric_duration["visit_duration"] = 2
+    result = data_extract.score_scenario(scenario, _response(json.dumps(numeric_duration)))
+
+    assert (
+        'visit_duration: expected string "about 2 hours", received number 2'
+        in result.verifier_trace["comparison_notes"]
+    )
+
+
 def test_if12_accepts_spelled_out_numbers_but_requires_impossible_contract():
     scenario = _pack_record("instructfollow-15.jsonl", "IF-12")
     good = (
