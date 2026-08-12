@@ -88,6 +88,25 @@ _LITELLM_PROVIDERS = {
 DEFAULT_EDIT_FORMAT = "whole"
 
 
+def _model_settings_text(
+    model_name: str,
+    edit_format: str,
+    thinking_extra_body: dict,
+) -> str:
+    """Render aider's model settings with a JSON-compatible inline YAML value."""
+    compact_body = json.dumps(
+        thinking_extra_body,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        f"- name: {model_name}\n"
+        f"  edit_format: {edit_format}\n"
+        "  extra_params:\n"
+        f"    extra_body: {compact_body}\n"
+    )
+
+
 # ============================================================================
 # Exercise list — canonical 30 from vendor/AiderPolyglot-30/exercises.json
 # Loaded at startup (Codex 2nd-pass #5: exact-id match, not count).
@@ -611,25 +630,24 @@ def _verify_start(req: dict) -> dict:
         # (org/model) are not litellm provider-qualified either.
         aider_model = _qualify_aider_model(model_name)
 
-        # Disable Qwen3-style thinking via per-request `extra_body`.
-        # vLLM doesn't accept --chat-template-kwargs at the CLI; the
-        # per-request mechanism is the supported path. Aider reads
-        # `.aider.model.settings.yml` from cwd (job_dir) and forwards
-        # extra_params to litellm, which forwards to vLLM as extra_body.
-        #
-        # Written for ALL models (not just Qwen):
-        #   - Gemma 4 default thinking=off already, so the kwarg is a no-op
-        #   - llama.cpp ignores unknown chat_template_kwargs
-        # If a future bench wants thinking ON, set
-        # BENCHLOCAL_AIDER_ENABLE_THINKING=1 in the runner env.
-        if os.environ.get("BENCHLOCAL_AIDER_ENABLE_THINKING") != "1":
+        # Aider reads .aider.model.settings.yml from cwd (job_dir) and
+        # forwards extra_params to litellm as extra_body. The runner resolves
+        # the model-specific reasoning switch once and sends the complete
+        # fragment here. Older callers keep the historical Qwen-off default.
+        thinking_extra_body = req.get("thinking_extra_body")
+        if isinstance(thinking_extra_body, dict):
             (job_dir / ".aider.model.settings.yml").write_text(
-                "- name: " + aider_model + "\n"
-                "  edit_format: " + edit_format + "\n"
-                "  extra_params:\n"
-                "    extra_body:\n"
-                "      chat_template_kwargs:\n"
-                "        enable_thinking: false\n"
+                _model_settings_text(aider_model, edit_format, thinking_extra_body),
+                encoding="utf-8",
+            )
+        elif os.environ.get("BENCHLOCAL_AIDER_ENABLE_THINKING") != "1":
+            (job_dir / ".aider.model.settings.yml").write_text(
+                _model_settings_text(
+                    aider_model,
+                    edit_format,
+                    {"chat_template_kwargs": {"enable_thinking": False}},
+                ),
+                encoding="utf-8",
             )
 
         argv = _build_benchmark_args(

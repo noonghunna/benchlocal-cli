@@ -166,6 +166,76 @@ def thinking_mode_from_override(override: bool | None) -> str:
     return "pack-defaults"
 
 
+THINKING_CONTROL_ENABLE = "enable_thinking"
+THINKING_CONTROL_EFFORT = "reasoning_effort"
+THINKING_CONTROL_NONE = "none"
+
+
+def thinking_control_from_template(template: str) -> str:
+    """Resolve the model's reasoning switch from its live chat template.
+
+    The order is compatibility-sensitive: templates that mention both controls
+    already work with enable_thinking, so keep their existing request shape.
+    """
+    if "enable_thinking" in template:
+        return THINKING_CONTROL_ENABLE
+    if "reasoning_effort" in template:
+        return THINKING_CONTROL_EFFORT
+    return THINKING_CONTROL_NONE
+
+
+def _effort_is_enabled(value: object, fallback: bool) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value) > 0
+    return str(value).strip().lower() not in {"", "0", "0.0", "none", "off", "false"}
+
+
+def _apply_thinking_control(
+    sampling: dict,
+    control: str,
+    enabled: bool,
+    reasoning_effort: str | float,
+) -> None:
+    """Apply one resolved reasoning control while preserving unrelated kwargs."""
+    kwargs = dict(sampling.get("chat_template_kwargs") or {})
+    kwargs.pop(THINKING_CONTROL_ENABLE, None)
+    kwargs.pop(THINKING_CONTROL_EFFORT, None)
+
+    if control == THINKING_CONTROL_EFFORT:
+        value: str | float = reasoning_effort if enabled else "none"
+        kwargs[THINKING_CONTROL_EFFORT] = value
+        # OpenAI-standard location. Keep the kwargs copy because llama.cpp does
+        # not yet forward this field into templates that read reasoning_effort.
+        sampling[THINKING_CONTROL_EFFORT] = value
+    elif control == THINKING_CONTROL_ENABLE:
+        kwargs[THINKING_CONTROL_ENABLE] = enabled
+
+    sampling["chat_template_kwargs"] = kwargs
+
+
+def _request_thinking_enabled(sampling: dict, control: str, fallback: bool) -> bool:
+    kwargs = dict(sampling.get("chat_template_kwargs") or {})
+    if control == THINKING_CONTROL_EFFORT:
+        value = sampling.get(THINKING_CONTROL_EFFORT, kwargs.get(THINKING_CONTROL_EFFORT))
+        return _effort_is_enabled(value, fallback)
+    if control == THINKING_CONTROL_ENABLE:
+        return bool(kwargs.get(THINKING_CONTROL_ENABLE, fallback))
+    return fallback
+
+
+def _thinking_extra_body(sampling: dict, control: str) -> dict:
+    """Return only reasoning fields for a sandbox-owned model client."""
+    kwargs = dict(sampling.get("chat_template_kwargs") or {})
+    body: dict = {"chat_template_kwargs": kwargs}
+    if control == THINKING_CONTROL_EFFORT and THINKING_CONTROL_EFFORT in sampling:
+        body[THINKING_CONTROL_EFFORT] = sampling[THINKING_CONTROL_EFFORT]
+    return body
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -269,19 +339,25 @@ def build_request(
     sampling_overrides: dict | None = None,
     sampling_from_server: bool = False,
     thinking_sampler: dict | None = None,
+    thinking_control: str = THINKING_CONTROL_ENABLE,
+    reasoning_effort: str | float = "high",
 ) -> tuple[dict, dict]:
     sampling = dict(meta.get("sampling_defaults", {}))
     scenario_overrides = scenario.get("sampling_overrides") or {}
     if extra_body:
         sampling.update(extra_body)
     resolved_thinking = resolve_thinking_enabled(meta, thinking_enabled)
-    sampling["chat_template_kwargs"] = {
-        **dict(sampling.get("chat_template_kwargs") or {}),
-        "enable_thinking": resolved_thinking,
-    }
+    _apply_thinking_control(
+        sampling,
+        thinking_control,
+        resolved_thinking,
+        reasoning_effort,
+    )
     sampling.update(scenario_overrides)
-    request_thinking = bool(
-        dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking", resolved_thinking)
+    request_thinking = _request_thinking_enabled(
+        sampling,
+        thinking_control,
+        resolved_thinking,
     )
     if request_thinking and not sampling_from_server:
         sampling.update(_thinking_sampler_for(meta, thinking_sampler))
@@ -308,14 +384,29 @@ def _apply_cli_thinking_controls(
     request: dict,
     sampling: dict,
     thinking_max_tokens: int,
+    thinking_control: str,
+    preserve_native_controls: bool = False,
 ) -> None:
     """Add provider-native reasoning controls for CLI-40 model requests."""
     if scenario.get("pack_id") != "cli-40":
         return
 
-    request_thinking = bool(
-        dict(sampling.get("chat_template_kwargs") or {}).get("enable_thinking")
-    )
+    request_thinking = _request_thinking_enabled(sampling, thinking_control, False)
+    if preserve_native_controls:
+        for key in ("enable_thinking", "thinking_budget"):
+            if key in sampling:
+                request[key] = sampling[key]
+        return
+    if thinking_control != THINKING_CONTROL_ENABLE:
+        # Do not add a Qwen-native instruction to an effort-controlled model.
+        # The resolved effort control already owns this request.
+        sampling.pop("enable_thinking", None)
+        sampling.pop("thinking_budget", None)
+        request.pop("enable_thinking", None)
+        request.pop("thinking_budget", None)
+        return
+    # Preserve CLI-40's compatibility-sensitive Qwen shape exactly: its
+    # answer-only arm is represented as enabled with a one-token budget.
     sampling.setdefault("enable_thinking", True)
     sampling.setdefault(
         "thinking_budget",
@@ -349,6 +440,15 @@ def _negative_control_response(text: str) -> dict:
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
+
+
+def _endpoint_base(endpoint: str) -> str:
+    """Strip supported OpenAI endpoint suffixes to the serving base URL."""
+    base = endpoint.rstrip("/")
+    for suffix in ("/v1/chat/completions", "/chat/completions", "/v1"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
 
 
 def _chat_url(endpoint: str) -> str:
@@ -517,6 +617,8 @@ class Runner:
         negative_control: str | None = None,
         thinking_enabled: bool | None = None,
         thinking_max_tokens: int = 16384,
+        reasoning_effort: str | float | None = None,
+        probe_thinking_control: bool = False,
         extra_body: dict | None = None,
         api_key: str | None = None,
         max_total_tokens: int | None = None,
@@ -566,6 +668,26 @@ class Runner:
         self.thinking_enabled = bool(thinking_enabled)
         self.thinking_mode = thinking_mode_from_override(thinking_enabled)
         self.thinking_max_tokens = thinking_max_tokens
+        self.reasoning_effort: str | float = (
+            reasoning_effort if reasoning_effort is not None else "high"
+        )
+        self.probe_thinking_control = bool(probe_thinking_control)
+        # An explicit effort value selects the standard effort control even when
+        # the endpoint cannot expose /props. Otherwise preserve the historical
+        # Qwen request shape until template detection or an opt-in probe proves
+        # a different control.
+        self.thinking_control = (
+            THINKING_CONTROL_EFFORT
+            if reasoning_effort is not None
+            else THINKING_CONTROL_ENABLE
+        )
+        self.thinking_control_source = (
+            "explicit --reasoning-effort"
+            if reasoning_effort is not None
+            else "compatibility default"
+        )
+        self._thinking_control_resolved = reasoning_effort is not None
+        self._thinking_control_announced = False
         self.extra_body = extra_body or {}
         self.api_key = api_key
         # Bearer auth for cloud OpenAI-compatible endpoints (OpenRouter, DashScope, …);
@@ -651,6 +773,10 @@ class Runner:
         signal.signal(signal.SIGINT, _cleanup_and_raise)
         signal.signal(signal.SIGTERM, _cleanup_and_raise)
         try:
+            # Resolve the request-level reasoning control before any pack or
+            # sandbox starts. /props is metadata-only; inference probing remains
+            # opt-in because it consumes real endpoint responses.
+            self._resolve_thinking_control(warnings)
             # --sampling-from-server (#21): read server defaults before
             # any requests so we can tag the run and record what was used.
             if self.sampling_from_server:
@@ -704,6 +830,12 @@ class Runner:
                 totals={"passed": passed, "total": total, "score": (passed / total if total else 0.0)},
                 thinking_enabled=self.thinking_enabled,
                 thinking_mode=self.thinking_mode,
+                thinking_control=self.thinking_control,
+                reasoning_effort=(
+                    self.reasoning_effort
+                    if self.thinking_control == THINKING_CONTROL_EFFORT
+                    else None
+                ),
                 warnings=warnings,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,
@@ -716,6 +848,98 @@ class Runner:
             self._stop_sandboxes()
             signal.signal(signal.SIGINT, old_sigint)
             signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _props_chat_template(self) -> str | None:
+        """Return llama.cpp's live chat template, or None when unavailable."""
+        base = _endpoint_base(self.endpoint)
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{base}/props", headers=self._request_headers)
+            if response.status_code != 200:
+                return None
+            template = response.json().get("chat_template")
+            return template if isinstance(template, str) and template else None
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _message_content(response: dict) -> str:
+        if not isinstance(response, dict):
+            return ""
+        choices = response.get("choices") if isinstance(response, dict) else None
+        if not (isinstance(choices, list) and choices and isinstance(choices[0], dict)):
+            return ""
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        return content.strip() if isinstance(content, str) else ""
+
+    def _probe_thinking_control(self) -> str | None:
+        """Probe known off-switches; None means the probe was inconclusive."""
+        if not self._endpoint_reachable():
+            return None
+        saw_successful_response = False
+        for control in (THINKING_CONTROL_ENABLE, THINKING_CONTROL_EFFORT):
+            fields: dict = {}
+            _apply_thinking_control(fields, control, False, self.reasoning_effort)
+            request = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "Say OK."}],
+                "max_tokens": 24,
+                "temperature": 0.0,
+                **fields,
+            }
+            try:
+                status, response, _trace = self._post_chat(
+                    request, 90.0, max_attempts=1
+                )
+            except (httpx.HTTPError, _TransientPostFailure, TypeError, ValueError):
+                continue
+            if 200 <= status < 300:
+                saw_successful_response = True
+                if self._message_content(response):
+                    return control
+        return THINKING_CONTROL_NONE if saw_successful_response else None
+
+    def _announce_thinking_control(self, warnings: list[str]) -> None:
+        if self._thinking_control_announced or self.thinking_control == THINKING_CONTROL_ENABLE:
+            return
+        self._thinking_control_announced = True
+        print(
+            "benchlocal-cli: thinking control "
+            f"{self.thinking_control!r} ({self.thinking_control_source})",
+            file=sys.stderr,
+            flush=True,
+        )
+        if self.thinking_control == THINKING_CONTROL_NONE:
+            warnings.append(
+                "no request-level thinking control detected; thinking-on/off arms "
+                "cannot be enforced for this model"
+            )
+
+    def _resolve_thinking_control(self, warnings: list[str]) -> None:
+        if not self._thinking_control_resolved:
+            # Mock/negative-control runs must not consume or wait on an endpoint.
+            if self.mock_responses or self.negative_control is not None:
+                self._thinking_control_resolved = True
+            else:
+                template = self._props_chat_template()
+                if template is not None:
+                    self.thinking_control = thinking_control_from_template(template)
+                    self.thinking_control_source = "GET /props chat_template"
+                    self._thinking_control_resolved = True
+                elif self.probe_thinking_control:
+                    probed = self._probe_thinking_control()
+                    if probed is not None:
+                        self.thinking_control = probed
+                        self.thinking_control_source = "behavioral probe"
+                    # Inconclusive means unreachable/failed: retain the safe
+                    # compatibility default instead of misclassifying no switch.
+                    self._thinking_control_resolved = True
+                else:
+                    self._thinking_control_resolved = True
+        self._announce_thinking_control(warnings)
 
     def _read_server_defaults(self, warnings: list[str]) -> dict | None:
         """Query the server for its effective sampling defaults (#21).
@@ -1034,9 +1258,7 @@ class Runner:
         short timeout and NO transient retry; if nothing answers, the caller
         skips the decode probe and falls back to static pack budgets.
         """
-        base = self.endpoint.rstrip("/")
-        if base.endswith("/v1"):
-            base = base[: -len("/v1")]
+        base = _endpoint_base(self.endpoint)
         for suffix in ("/v1/models", "/models"):
             url = f"{base}{suffix}"
             try:
@@ -1068,12 +1290,20 @@ class Runner:
                 "temperature": 0,
                 "top_p": 1,
                 "max_tokens": 200,
-                # Probe content-decode TPS with the same universal near-off
-                # mapping as Hermes. Thinking-only endpoints reject false, while
-                # a one-token budget avoids measuring reasoning-decode rate.
-                "chat_template_kwargs": {"enable_thinking": True},
-                "thinking_budget": 1,
             }
+            if self.thinking_control == THINKING_CONTROL_ENABLE:
+                # Preserve the historical near-off shape for Qwen/thinking-only
+                # endpoints: they can reject false, while budget=1 avoids
+                # measuring full reasoning-decode rate.
+                request["chat_template_kwargs"] = {"enable_thinking": True}
+                request["thinking_budget"] = 1
+            else:
+                _apply_thinking_control(
+                    request,
+                    self.thinking_control,
+                    False,
+                    self.reasoning_effort,
+                )
             started = time.perf_counter()
             # The probe must never be the thing that hangs a run: bounded read
             # budget and NO transient retry (max_attempts=1). Combined with the
@@ -1357,12 +1587,19 @@ class Runner:
             sampling_overrides=self.sampling_overrides or None,
             sampling_from_server=self.sampling_from_server,
             thinking_sampler=self.thinking_sampler,
+            thinking_control=self.thinking_control,
+            reasoning_effort=self.reasoning_effort,
         )
         _apply_cli_thinking_controls(
             scenario,
             request,
             sampling,
             self.thinking_max_tokens,
+            self.thinking_control,
+            preserve_native_controls=any(
+                key in self.extra_body
+                for key in ("enable_thinking", "thinking_budget")
+            ),
         )
         timeout = self._timeout_budget_for_scenario(meta, scenario)
         request_timeout = self._model_request_timeout(meta, timeout)
@@ -1753,14 +1990,18 @@ class Runner:
                     # HermesAgent makes its own model calls, so the resolved
                     # thinking mode and arm budget must cross the sandbox
                     # protocol explicitly. They are not generation overrides.
-                    "enable_thinking": bool(
-                        dict(sampling.get("chat_template_kwargs") or {}).get(
-                            "enable_thinking", False
-                        )
+                    "enable_thinking": _request_thinking_enabled(
+                        sampling,
+                        self.thinking_control,
+                        False,
                     ),
                     "thinking_budget": self.thinking_max_tokens,
                     "preserve_reasoning_history": self.preserve_reasoning_history,
                 }
+                if self.thinking_control != THINKING_CONTROL_ENABLE:
+                    start_kwargs["thinking_extra_body"] = _thinking_extra_body(
+                        sampling, self.thinking_control
+                    )
             elif pack_id == "aider-polyglot-30":
                 # v0.9.0: aider needs a container-reachable URL. Apply the
                 # endpoint resolver (rewrites localhost → host.docker.internal).
@@ -1771,6 +2012,10 @@ class Runner:
                     "model_api_key": self.api_key or "benchlocal-cli-aider-polyglot",  # forward the real key for cloud endpoints; placeholder for local
                     "sampling": dict(sampling),
                 }
+                if self.thinking_control != THINKING_CONTROL_ENABLE:
+                    start_kwargs["thinking_extra_body"] = _thinking_extra_body(
+                        sampling, self.thinking_control
+                    )
             if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:
                 start_payload = self._verify_aider_start_with_progress(sandbox_client, scenario, start_kwargs)
             else:

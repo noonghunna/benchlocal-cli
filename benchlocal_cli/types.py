@@ -163,6 +163,9 @@ class RunResult:
     totals: dict[str, float | int]
     thinking_enabled: bool = False
     thinking_mode: str = "pack-defaults"
+    # Additive audit fields for model-family-specific reasoning controls.
+    thinking_control: str = "enable_thinking"
+    reasoning_effort: str | float | None = None
     warnings: list[str] = field(default_factory=list)
     # v0.8: populated when `--previous-result PATH` was passed to the run.
     # None means delta wasn't computed (the default; preserves saved-JSON
@@ -212,6 +215,10 @@ class RunResult:
             "repeat": self.repeat,
             "equivalent_score_150": equivalent_score_150,
         }
+        if self.thinking_control != "enable_thinking":
+            out["thinking_control"] = self.thinking_control
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
         if self.delta is not None:
             out["delta"] = self.delta
         if self.sampling_overrides is not None:

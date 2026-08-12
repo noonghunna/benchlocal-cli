@@ -1066,3 +1066,36 @@ def test_code_reasoning_verifier_executes_content_not_reasoning_draft():
     assert result["passed"] is True
     assert result["response_field_used"] == "message.content"
     assert result["extraction_method"] == "last_fenced"
+
+
+def test_hermes_prefers_resolved_reasoning_extra_body():
+    server = _hermes_server()
+    resolved = {
+        "chat_template_kwargs": {"reasoning_effort": "none"},
+        "reasoning_effort": "none",
+    }
+
+    assert server._thinking_extra_body({
+        "thinking_extra_body": resolved,
+        "enable_thinking": True,
+        "thinking_budget": 4096,
+    }) == resolved
+
+
+def test_aider_model_settings_accepts_effort_control():
+    server = _load(
+        "aider_polyglot_thinking_control",
+        "sandboxes/aider-polyglot/server.py",
+    )
+    rendered = server._model_settings_text(
+        "openai/inkling",
+        "whole",
+        {
+            "chat_template_kwargs": {"reasoning_effort": "none"},
+            "reasoning_effort": "none",
+        },
+    )
+
+    assert "extra_body: {" in rendered
+    assert '"chat_template_kwargs":{"reasoning_effort":"none"}' in rendered
+    assert '"reasoning_effort":"none"' in rendered

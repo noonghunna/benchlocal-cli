@@ -293,6 +293,26 @@ def _parser() -> argparse.ArgumentParser:
              "(default: --max-tokens if set, else 16384)",
     )
     run.add_argument(
+        "--reasoning-effort",
+        type=_parse_reasoning_effort,
+        default=None,
+        metavar="VALUE",
+        help=(
+            "use the OpenAI reasoning_effort control for the thinking axis; VALUE "
+            "is none/minimal/low/medium/high/xhigh/max or a float from 0.0 to 0.99. "
+            "The off arm always sends none; the on arm sends VALUE."
+        ),
+    )
+    run.add_argument(
+        "--probe-thinking-control",
+        action="store_true",
+        help=(
+            "when GET /props exposes no chat template, run up to two tiny inference "
+            "requests to detect enable_thinking vs reasoning_effort (default: off; "
+            "probing consumes real endpoint responses)"
+        ),
+    )
+    run.add_argument(
         "--thinking-sampler",
         help=(
             "JSON object used as the thinking-on distribution sampler "
@@ -898,6 +918,25 @@ def _load_extra_body(value: str | None) -> dict | None:
     return data
 
 
+def _parse_reasoning_effort(value: str) -> str | float:
+    raw = value.strip()
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+    if raw.lower() in allowed:
+        return raw.lower()
+    try:
+        numeric = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "reasoning effort must be none/minimal/low/medium/high/xhigh/max "
+            "or a float from 0.0 to 0.99"
+        ) from exc
+    if not 0.0 <= numeric <= 0.99:
+        raise argparse.ArgumentTypeError(
+            "numeric reasoning effort must be between 0.0 and 0.99"
+        )
+    return numeric
+
+
 def _load_thinking_sampler(value: str | None) -> dict | None:
     if not value:
         return None
@@ -1026,7 +1065,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--resume restores an existing retry diagnostic; do not pass --retry-failed")
             if args.repeat != 0:
                 raise ValueError("--resume uses the original run repeat count; do not pass --repeat")
-            if args.thinking_override is not None or args.thinking_max_tokens is not None:
+            if (
+                args.thinking_override is not None
+                or args.thinking_max_tokens is not None
+                or args.reasoning_effort is not None
+                or args.probe_thinking_control
+            ):
                 raise ValueError("--resume uses the original thinking configuration")
             if any(
                 value is not None
@@ -1046,6 +1090,8 @@ def main(argv: list[str] | None = None) -> int:
             args.repeat = int(config.get("repeat") or 1)
             args.thinking_override = config.get("thinking_override")
             args.thinking_max_tokens = config.get("thinking_max_tokens")
+            args.reasoning_effort = config.get("reasoning_effort")
+            args.probe_thinking_control = bool(config.get("probe_thinking_control"))
             for key, value in (config.get("sampling_overrides") or {}).items():
                 attr = "repeat_penalty" if key == "repeat_penalty" else key.replace("-", "_")
                 if hasattr(args, attr):
@@ -1125,6 +1171,8 @@ def main(argv: list[str] | None = None) -> int:
                     args.thinking_override = True
                 elif baseline.get("thinking_mode") == "force-off":
                     args.thinking_override = False
+            if args.reasoning_effort is None:
+                args.reasoning_effort = baseline.get("reasoning_effort")
             for key, value in (baseline.get("sampling_overrides") or {}).items():
                 attr = "repeat_penalty" if key == "repeat_penalty" else key.replace("-", "_")
                 if hasattr(args, attr) and getattr(args, attr) is None:
@@ -1337,6 +1385,13 @@ def main(argv: list[str] | None = None) -> int:
                 else "pack-defaults"
             ),
             "thinking_max_tokens": effective_thinking_max,
+            "reasoning_effort": args.reasoning_effort,
+            "thinking_control": (
+                "reasoning_effort"
+                if args.reasoning_effort is not None
+                else "enable_thinking"
+            ),
+            "probe_thinking_control": args.probe_thinking_control,
             "thinking_sampler": effective_thinking_sampler,
             "sampling_overrides": sampling_overrides or None,
             "sampling_source": "server" if args.sampling_from_server else None,
@@ -1416,6 +1471,8 @@ def main(argv: list[str] | None = None) -> int:
             negative_control=args.negative_control_text if args.negative_control else None,
             thinking_enabled=args.thinking_override,
             thinking_max_tokens=effective_thinking_max,
+            reasoning_effort=args.reasoning_effort,
+            probe_thinking_control=args.probe_thinking_control,
             extra_body=effective_extra_body,
             api_key=args.api_key,
             max_total_tokens=args.max_total_tokens,
