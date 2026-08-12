@@ -9,6 +9,7 @@ from pathlib import Path
 
 from benchlocal_cli import __version__
 from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.runner import (
     DEFAULT_INLINE_RETRY_ATTEMPTS,
     PACK_MODES,
@@ -200,6 +201,17 @@ def _unique_warnings(*groups: list[str] | None) -> list[str]:
     return list(dict.fromkeys(item for group in groups for item in (group or [])))
 
 
+def _strip_validity_warnings(warnings: list[str], pack_ids: set[str]) -> list[str]:
+    """#126: validity warnings are regenerated from the merged rows in
+    _build_result, so partial-run copies must be dropped first or a resumed
+    run carries stale counts beside the recomputed ones."""
+    return [
+        warning
+        for warning in warnings
+        if not any(warning.startswith(f"{pack_id}: thinking was") for pack_id in pack_ids)
+    ]
+
+
 def _build_result(
     config: dict,
     scenario_rows: list[tuple[str, dict]],
@@ -248,6 +260,14 @@ def _build_result(
 
     total = sum(pack.total for pack in packs)
     passed = sum(pack.passed for pack in packs)
+    # #126: regenerate the reasoning-validity observations from the assembled
+    # rows (raw_response is persisted), so resumed/journal-recovered runs carry
+    # the same check a live run does. Synthetic traffic is skipped, matching
+    # the live path.
+    if config.get("synthetic_traffic"):
+        thinking_validity, validity_warnings = None, []
+    else:
+        thinking_validity, validity_warnings = thinking_validity_for_packs(packs)
     result = RunResult(
         schema_version=str(config.get("schema_version") or "1"),
         runner_version=str(config.get("runner_version") or __version__),
@@ -262,7 +282,8 @@ def _build_result(
         thinking_mode=str(config.get("thinking_mode") or "pack-defaults"),
         thinking_control=str(config.get("thinking_control") or "enable_thinking"),
         reasoning_effort=config.get("reasoning_effort"),
-        warnings=warnings or [],
+        warnings=_unique_warnings(warnings, validity_warnings),
+        thinking_validity=thinking_validity or None,
         sampling_overrides=config.get("sampling_overrides"),
         sampling_source=config.get("sampling_source"),
         server_defaults=config.get("server_defaults"),
@@ -348,6 +369,7 @@ def _infer_config(data: dict, source: Path) -> dict:
         "server_defaults": data.get("server_defaults"),
         "retry_failures": int((data.get("pass_at_k") or {}).get("k") or 0),
         "retry_runaways": False,
+        "synthetic_traffic": bool(data.get("synthetic_traffic")),
         "save_json": str(final_path_for(source)),
     }
 
@@ -464,13 +486,17 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
         for warning in state.previous_result.get("warnings") or []
         if warning != "partial per-scenario journal; run is incomplete"
     ]
+    validity_pack_ids = {
+        str(pack.get("pack_id") or "")
+        for pack in state.previous_result.get("packs") or []
+    } | {pack.pack_id for pack in new_result.packs}
     return _build_result(
         config,
         rows,
         finished_at=new_result.finished_at,
         warnings=_unique_warnings(
-            previous_warnings,
-            new_result.warnings,
+            _strip_validity_warnings(previous_warnings, validity_pack_ids),
+            _strip_validity_warnings(list(new_result.warnings), validity_pack_ids),
         ),
         pack_templates=templates,
     )

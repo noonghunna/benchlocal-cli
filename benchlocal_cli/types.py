@@ -167,6 +167,11 @@ class RunResult:
     thinking_control: str = "enable_thinking"
     reasoning_effort: str | float | None = None
     warnings: list[str] = field(default_factory=list)
+    # #126: per-pack reasoning-validity observations — did a requested
+    # thinking arm actually think, did a disabled arm stay silent. None means
+    # the check didn't run (synthetic traffic); the invalidity travels with the
+    # data instead of living only in a terminal someone scrolled past.
+    thinking_validity: dict | None = None
     # v0.8: populated when `--previous-result PATH` was passed to the run.
     # None means delta wasn't computed (the default; preserves saved-JSON
     # back-compat with v0.7.x readers per Codex review #9).
@@ -219,6 +224,8 @@ class RunResult:
             out["thinking_control"] = self.thinking_control
         if self.reasoning_effort is not None:
             out["reasoning_effort"] = self.reasoning_effort
+        if self.thinking_validity:
+            out["thinking_validity"] = self.thinking_validity
         if self.delta is not None:
             out["delta"] = self.delta
         if self.sampling_overrides is not None:

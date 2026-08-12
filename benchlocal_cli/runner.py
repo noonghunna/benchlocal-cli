@@ -19,6 +19,7 @@ import httpx
 
 from benchlocal_cli import __version__
 from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.sandbox import SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
@@ -806,6 +807,16 @@ class Runner:
                 )
             if self._timeout_scaling_note:
                 warnings.append(self._timeout_scaling_note)
+            # #126: a reasoning arm that never thought, or a no-thinking arm
+            # the server forced reasoning onto, produces plausible-but-invalid
+            # numbers. Detect both from the responses already collected and
+            # fail loudly. Synthetic traffic is skipped: its response shape is
+            # not the model's.
+            thinking_validity: dict | None = None
+            if self.negative_control is None and not self.mock_responses:
+                observations, validity_warnings = thinking_validity_for_packs(pack_results)
+                warnings.extend(validity_warnings)
+                thinking_validity = observations or None
             if self.sampling_from_server:
                 if self._server_defaults:
                     sd_desc = ", ".join(f"{k}={v}" for k, v in self._server_defaults.items())
@@ -837,6 +848,7 @@ class Runner:
                     else None
                 ),
                 warnings=warnings,
+                thinking_validity=thinking_validity,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
