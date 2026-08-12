@@ -1024,6 +1024,60 @@ def test_code_reasoning_prefers_content_over_out_of_band_reasoning():
     assert "after_think" not in info["extraction_method"]
 
 
+def test_code_reasoning_stray_closing_fence_does_not_swallow_code():
+    """A bare trailing ``` is a CLOSER, not an opener (issue #120).
+
+    OPENING_FENCE_ANYWHERE_RE's language group is optional, so an unpaired
+    trailing fence matched the "opening" pattern; the branch then returned the
+    empty remainder and short-circuited the CODE_START_RE fallback that would
+    have recovered the code. Observed on real traffic: three complete, correct
+    solutions scored `wrong_answer` because their content ended in a stray ```.
+    """
+    server = _load("code_reasoning_stray_fence", "sandboxes/code-reasoning/server.py")
+
+    code, info = server.extract_code_with_info("def f():\n    return 1\n```")
+
+    assert code == "def f():\n    return 1"
+    assert info["extraction_method"] == "code_start"
+
+
+def test_code_reasoning_real_stray_fence_records_extract(tmp_path):
+    """Regression fixtures from the corpus in issue #120."""
+    server = _load("code_reasoning_stray_fence_real", "sandboxes/code-reasoning/server.py")
+
+    # HumanEval-75: content is a complete solution followed by a stray closer.
+    content = (
+        "def is_multiply_prime(a):\n"
+        '    """Return True iff a is the product of exactly three primes."""\n'
+        "    count = 0\n"
+        "    i = 2\n"
+        "    while a > 1:\n"
+        "        while a % i == 0:\n"
+        "            count += 1\n"
+        "            a //= i\n"
+        "        i += 1\n"
+        "    return count == 3\n"
+        "```"
+    )
+    code, info = server.extract_code_with_info(content)
+
+    assert code.startswith("def is_multiply_prime(a):")
+    assert not code.rstrip().endswith("```")
+    ast.parse(code)
+
+
+def test_code_reasoning_genuine_unterminated_fence_still_wins():
+    """A fence WITH content after it is still an opener -- unchanged behaviour."""
+    server = _load("code_reasoning_open_fence", "sandboxes/code-reasoning/server.py")
+
+    code, info = server.extract_code_with_info(
+        "Here is the answer:\n```python\ndef g():\n    return 2"
+    )
+
+    assert code == "def g():\n    return 2"
+    assert info["extraction_method"] == "opening_fence_anywhere"
+
+
 def test_code_reasoning_falls_back_only_when_content_is_empty():
     server = _load("code_reasoning_reasoning_fallback", "sandboxes/code-reasoning/server.py")
     response = {
