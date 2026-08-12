@@ -10,6 +10,7 @@ from benchlocal_cli.runner import (
     THINKING_CONTROL_ENABLE,
     THINKING_CONTROL_NONE,
     Runner,
+    _apply_cli_thinking_controls,
     _endpoint_base,
     build_request,
     thinking_control_from_template,
@@ -305,6 +306,88 @@ def test_effort_result_json_records_resolved_control():
 
     assert result["thinking_control"] == THINKING_CONTROL_EFFORT
     assert result["reasoning_effort"] == 0.75
+
+
+def _cli40_meta() -> dict:
+    return {
+        "sampling_defaults": {
+            "temperature": 0,
+            "top_p": 1,
+            "max_tokens": 1024,
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+        "default_thinking": "off",
+    }
+
+
+def _cli40_scenario() -> dict:
+    scenario = _scenario()
+    scenario["pack_id"] = "cli-40"
+    return scenario
+
+
+def _cli40_request(thinking_enabled, thinking_control=THINKING_CONTROL_ENABLE):
+    scenario = _cli40_scenario()
+    request, sampling = build_request(
+        scenario,
+        _cli40_meta(),
+        "fake",
+        thinking_enabled=thinking_enabled,
+        thinking_max_tokens=4096,
+        thinking_control=thinking_control,
+    )
+    _apply_cli_thinking_controls(
+        scenario,
+        request,
+        sampling,
+        4096,
+        thinking_control,
+    )
+    return request
+
+
+def test_cli40_no_thinking_defers_to_template_kwargs_only():
+    """#129: the answer-only arm must not carry the top-level Qwen pair."""
+    request = _cli40_request(thinking_enabled=False)
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "enable_thinking" not in request
+    assert "thinking_budget" not in request
+
+
+def test_cli40_thinking_keeps_native_qwen_shape():
+    request = _cli40_request(thinking_enabled=True)
+
+    assert request["chat_template_kwargs"] == {"enable_thinking": True}
+    assert request["enable_thinking"] is True
+    assert request["thinking_budget"] == 4096
+    assert request["max_tokens"] == 4096
+
+
+def test_cli40_effort_controlled_model_gets_no_native_pair():
+    request = _cli40_request(
+        thinking_enabled=False, thinking_control=THINKING_CONTROL_EFFORT
+    )
+
+    assert request["chat_template_kwargs"] == {"reasoning_effort": "none"}
+    assert request["reasoning_effort"] == "none"
+    assert "enable_thinking" not in request
+    assert "thinking_budget" not in request
+
+
+def test_non_cli40_pack_never_gets_native_pair():
+    scenario = _scenario()
+    request, sampling = build_request(
+        scenario,
+        _cli40_meta(),
+        "fake",
+        thinking_enabled=True,
+        thinking_max_tokens=4096,
+    )
+    _apply_cli_thinking_controls(scenario, request, sampling, 4096, THINKING_CONTROL_ENABLE)
+
+    assert "enable_thinking" not in request
+    assert "thinking_budget" not in request
 
 
 @pytest.mark.parametrize(
