@@ -396,6 +396,13 @@ def _parser() -> argparse.ArgumentParser:
              "are active (non-canonical runs shouldn't gate CI).",
     )
     run.add_argument(
+        "--strict-thinking",
+        action="store_true",
+        help="exit code 4 when the thinking-validity check (#126) finds a contaminated "
+             "no-thinking arm or a thinking arm that never produced reasoning. "
+             "CI-friendly; the run summary warns either way.",
+    )
+    run.add_argument(
         "--history-file",
         help="append a summary row to this CSV after the run completes (one row "
              "per run; columns: timestamp, run_id, mode, model, total_pass, total, "
@@ -1410,6 +1417,9 @@ def main(argv: list[str] | None = None) -> int:
             "request_delay": args.request_delay,
             "retry_failed": retry_failed_context,
             "save_json": args.save_json,
+            # #126: synthetic traffic (mocks / negative control) skips the
+            # thinking-validity check; journal-recovered runs must too.
+            "synthetic_traffic": bool(args.mock_responses_from_json or args.negative_control),
         }
 
         journal_writer = None
@@ -1575,6 +1585,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.exit_on_regression and result.delta and result.delta.get("total_regressions", 0) > 0:
             return 3  # CI-friendly regression exit code
+        if args.strict_thinking and any(
+            observation.get("status") in ("silent", "contaminated")
+            for observation in (result.thinking_validity or {}).values()
+        ):
+            return 4  # CI-friendly thinking-validity exit code (#126)
         return 0 if result.totals["total"] > 0 else 2
     except Exception as exc:
         print(f"benchlocal-cli: error: {exc}", file=sys.stderr)

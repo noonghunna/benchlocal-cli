@@ -304,6 +304,8 @@ Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--th
 
 In multi-turn CLI and Hermes agent loops, captured assistant reasoning stays in the saved result for inspection, but prior `reasoning`, `reasoning_content`, `reasoning_details`, and `codex_reasoning_items` fields are stripped from the next outgoing request by default. This avoids replaying provider-private or stale reasoning state. Use `--preserve-reasoning-history` only when an endpoint explicitly requires that history for signed or encrypted reasoning continuity.
 
+**Arm validity is checked automatically (#126).** Every completed pack is inspected for whether the requested reasoning state actually took effect: a thinking arm where *no* response returned reasoning is flagged `silent` (the model may not support thinking, or the server is not parsing it — the arm is not a valid thinking arm), and a no-thinking arm where *any* response returned reasoning is flagged `contaminated` (the server is likely forcing reasoning, e.g. llama.cpp `--reasoning on`, or the off-switch sent is not the one the model's chat template reads — the arm is not a valid baseline). Reasoning counts `reasoning_content`/`reasoning` fields and `<tool_call>` markers left in `content` (thinking happened but was not extracted, so the grader scores it as answer text). Findings appear in the run-summary `Warnings:` list and in saved JSON as `thinking_validity` (per-pack `expected` / `responses` / `with_reasoning` / `status`), so the invalidity travels with the data. Add `--strict-thinking` to turn a finding into exit code 4 for CI. The check runs on the responses already collected — no extra requests — and is skipped for synthetic traffic (mocks / negative control).
+
 ## Output
 
 ```
