@@ -1,6 +1,6 @@
 # Extractor notes
 
-`node tools/build-packs.js` is the canonical pack generator. It reads vendored upstream sources from `vendor/<PackName>/` and writes JSONL to `benchlocal_cli/packs/`.
+`node tools/build-packs.js` is the canonical pack generator. It reads vendored upstream sources from `vendor/<PackName>/` and writes JSONL to `benchlocal_cli/packs/`. Exception: the reasoning packs (`humaneval-plus-30`, `lcb-v6-30`) have no vendor tree and are not built by this tool — see [REASONING_PACKS.md](./REASONING_PACKS.md) for their provenance and extension rules.
 
 ## Source of truth
 
