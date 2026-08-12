@@ -397,21 +397,24 @@ def _apply_cli_thinking_controls(
             if key in sampling:
                 request[key] = sampling[key]
         return
-    if thinking_control != THINKING_CONTROL_ENABLE:
-        # Do not add a Qwen-native instruction to an effort-controlled model.
-        # The resolved effort control already owns this request.
+    if thinking_control != THINKING_CONTROL_ENABLE or not request_thinking:
+        # Effort-controlled model: the resolved effort control already owns
+        # this request. Answer-only arm (#129): do NOT send the top-level
+        # Qwen pair (enable_thinking=true + thinking_budget=1) — it
+        # contradicts the harness-level chat_template_kwargs.enable_thinking=
+        # false, and budget-honoring endpoints then run the model thinking-ON
+        # truncated to one token: reasoning leaks into content and the
+        # no-thinking arm is scored on contaminated output. Defer to
+        # chat_template_kwargs, which the other packs use cleanly for no-think.
         sampling.pop("enable_thinking", None)
         sampling.pop("thinking_budget", None)
         request.pop("enable_thinking", None)
         request.pop("thinking_budget", None)
         return
-    # Preserve CLI-40's compatibility-sensitive Qwen shape exactly: its
-    # answer-only arm is represented as enabled with a one-token budget.
+    # Thinking is enabled: preserve CLI-40's compatibility-sensitive Qwen
+    # shape (top-level enable_thinking + thinking_budget).
     sampling.setdefault("enable_thinking", True)
-    sampling.setdefault(
-        "thinking_budget",
-        max(1, int(thinking_max_tokens)) if request_thinking else 1,
-    )
+    sampling.setdefault("thinking_budget", max(1, int(thinking_max_tokens)))
     request["enable_thinking"] = sampling["enable_thinking"]
     request["thinking_budget"] = sampling["thinking_budget"]
 

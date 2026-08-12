@@ -1593,7 +1593,7 @@ def test_sandbox_model_turn_timeout_caps_large_budget_and_is_configurable():
 
 @pytest.mark.parametrize(
     ("thinking_enabled", "expected_budget", "expected_template_value"),
-    [(True, 4096, True), (False, 1, False)],
+    [(True, 4096, True), (False, None, False)],
 )
 def test_cli_multiturn_forwards_native_thinking_controls(
     monkeypatch,
@@ -1622,11 +1622,18 @@ def test_cli_multiturn_forwards_native_thinking_controls(
     assert run.result.passed is True
     assert len(CapturingHTTPClient.requests) == 2
     for request in CapturingHTTPClient.requests:
-        assert request["enable_thinking"] is True
-        assert request["thinking_budget"] == expected_budget
         assert request["chat_template_kwargs"]["enable_thinking"] is expected_template_value
-    if thinking_enabled:
-        assert all(request["max_tokens"] == 4096 for request in CapturingHTTPClient.requests)
+        if thinking_enabled:
+            assert request["enable_thinking"] is True
+            assert request["thinking_budget"] == expected_budget
+            assert request["max_tokens"] == 4096
+        else:
+            # #129: the answer-only arm defers to chat_template_kwargs. The old
+            # top-level enable_thinking=true + thinking_budget=1 pair contradicted
+            # it, and budget-honoring endpoints ran the model thinking-ON
+            # truncated to one token, contaminating the no-thinking arm.
+            assert "enable_thinking" not in request
+            assert "thinking_budget" not in request
 
 
 def test_cli_native_thinking_controls_preserve_explicit_extra_body(monkeypatch):
