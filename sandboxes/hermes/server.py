@@ -298,8 +298,14 @@ def _thinking_extra_body(req: dict) -> dict:
     """Build HermesAgent's provider-specific request body.
 
     Thinking controls deliberately bypass _filter_generation: the pinned
-    framework consumes them as extra_body, not generation overrides.
+    framework consumes them as extra_body, not generation overrides. New
+    runners provide the complete model-specific fragment; keep the legacy
+    budget-based shape for older callers and Qwen's existing behavior.
     """
+    resolved = req.get("thinking_extra_body")
+    if isinstance(resolved, dict):
+        return dict(resolved)
+
     enabled = req.get("enable_thinking")
     sampling = req.get("sampling") or {}
     if not isinstance(enabled, bool):
@@ -328,7 +334,8 @@ def _translate_request(req: dict) -> dict:
 
     Runner sends:
       { scenario_id, scenario, model_endpoint, model_name, model_api_key,
-        sampling, enable_thinking, thinking_budget, preserve_reasoning_history }
+        sampling, enable_thinking, thinking_budget, thinking_extra_body,
+        preserve_reasoning_history }
 
     Upstream expects:
       { scenarioId, runId, model: {id, exposedModel, providerModel,

@@ -87,7 +87,7 @@ Each scenario's timeout is sized by precedence (highest wins):
 2. **Auto-scaling (default)** — `timeout = base × max(1, reference_tps / measured_tps) × thinking_multiplier`:
    - `base` = the pack's `default_max_seconds` metadata.
    - `reference_tps` = the pack's `timeout_reference_tps` (the decode rate `base` assumes; override with `--reference-tps`).
-   - `measured_tps` = a one-shot startup decode-TPS probe of the endpoint (sent with `enable_thinking=false`; skip it by passing `--measured-tps N`). The probe runs a reachability preflight (`GET /v1/models`, 5s, no retry) and **fails fast** — it never hangs a run against a dead or blackholed endpoint.
+   - `measured_tps` = a one-shot startup decode-TPS probe of the endpoint (reasoning is clamped with the resolved model-specific control; skip it by passing `--measured-tps N`). The probe runs a reachability preflight (`GET /v1/models`, 5s, no retry) and **fails fast** — it never hangs a run against a dead or blackholed endpoint.
    - `thinking_multiplier` = `thinking_max_tokens / nominal_max_tokens`, applied only when thinking is enabled and the budget exceeds the nominal output. Prevents thinking-on runs from spuriously timing out (#54).
    - `max(1, …)` means a faster rig never shrinks the budget below `base`. The result deliberately **over-budgets** — a timeout is a ceiling, not a target.
 3. **Static default** — the pack's `default_max_seconds`, when no `reference_tps` is set or the probe is unavailable.
@@ -179,6 +179,10 @@ benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-
 
 # force answer-only mode for every pack, ignoring pack defaults
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --no-thinking
+
+# effort-based model/provider: off sends none; on sends high
+benchlocal-cli run --quick --endpoint http://localhost:8020 --model inkling \
+  --enable-thinking --reasoning-effort high
 
 # pass vendor-specific request body fields
 benchlocal-cli run --quick --endpoint http://localhost:8020 --model qwen3.6-27b-autoround --extra-body '{"foo":"bar"}'
@@ -277,11 +281,25 @@ Leave `--retry-on-timeout` **off** for cloud — a timeout means the token budge
 
 **What to compare.** The **deterministic** packs (`toolcall-15`, `instructfollow-15`, `structoutput-15`, `dataextract-15`, `reasonmath-15`) are the cleanest apples-to-apples — single-shot, verifier-graded, no Docker. The **sandboxed/agentic** packs run a *local* Docker agent loop that calls your endpoint over the network, so they also need the sandbox images built (`bash tools/build-sandboxes.sh` from a checkout) and are less validated over a remote endpoint — land the deterministic set first.
 
-**Reasoning state — match it explicitly.** Each pack carries `default_thinking` metadata, and benchlocal-cli signals it with `chat_template_kwargs.enable_thinking` (see [Reasoning models](#reasoning-models)). Most managed endpoints ignore that vLLM-side field, so use the provider's native controls when available. The `cli-40` and `hermesagent-20` adapters also send Qwen-compatible `enable_thinking` and `thinking_budget` fields automatically; for thinking-only endpoints, the off arm is represented as enabled with a one-token thinking budget. Other packs may still require `--extra-body` for provider-specific controls. For a fair local-vs-cloud comparison, run both `--no-thinking` and `--enable-thinking` arms and verify the saved request payloads. An unexpected p95 spike on thinking-on packs usually means the endpoint reasoned longer than intended.
+**Reasoning state — match it explicitly.** Each pack carries `default_thinking` metadata, while the request key is model/provider-specific (see [Reasoning models](#reasoning-models)). For a managed endpoint that does not expose its live template, pass `--reasoning-effort VALUE` when that is the provider's control, or opt into the tiny behavioral detector with `--probe-thinking-control`. For a fair local-vs-cloud comparison, run both `--no-thinking` and `--enable-thinking` arms and inspect the saved request payloads. An unexpected p95 spike on thinking-on packs usually means the endpoint reasoned longer than intended.
 
 ## Reasoning models
 
-`benchlocal-cli` uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, `hermesagent-20`, and every `--reasoning-packs` pack run with `chat_template_kwargs.enable_thinking=true`; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack. Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `16384`) and the request uses the recommended thinking sampler (`temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`) instead of the deterministic pack's greedy sampler. Override it with `--thinking-sampler '{"temperature":0.7,"top_p":0.9}'`, override individual sampling keys with `--temperature`/`--top-p`/`--top-k`/`--min-p`, or use `--sampling-from-server` to omit sampler params entirely. HumanEval+ and LiveCodeBench also carry 16K scenario budgets so thinking-on code runs do not measure a 4K truncation failure; hardest LCB items may still exceed 16K, so compare against `--no-thinking` for budget-runaway diagnostics. Use `--extra-body` to pass any other OpenAI-compatible server extension fields. Saved JSON records `thinking_enabled` per pack plus the run-level `thinking_mode`.
+`benchlocal-cli` uses each pack's `default_thinking` metadata by default. Reasoning-rewarding packs such as `reasonmath-15`, `bugfind-15`, `instructfollow-15`, `hermesagent-20`, and every `--reasoning-packs` pack run thinking-on; execution/format packs such as `toolcall-15`, `structoutput-15`, `dataextract-15`, and `cli-40` run answer-only. Use `--enable-thinking` to force thinking on for every pack, or `--no-thinking` to force it off for every pack.
+
+The runner resolves the request switch once per model:
+
+| Endpoint/template | Control |
+|---|---|
+| `GET /props` template mentions `enable_thinking` | `chat_template_kwargs.enable_thinking` (compatibility default) |
+| Template mentions only `reasoning_effort` | top-level `reasoning_effort` plus a `chat_template_kwargs` copy for llama.cpp |
+| Template mentions both | `enable_thinking` wins, preserving existing request behavior |
+| No `/props` (vLLM/SGLang/managed endpoint) | compatibility default, or opt-in `--probe-thinking-control` |
+| Explicit `--reasoning-effort VALUE` | effort control without probing |
+
+The behavioral probe sends up to two real 24-token inference requests, so it is deliberately opt-in; it first checks endpoint reachability and never classifies an unreachable server as “no switch.” Accepted effort values are `none|minimal|low|medium|high|xhigh|max` or a float from `0.0` to `0.99`. Effort is guidance, not a token budget: the off arm sends `none`, the on arm sends the requested value, and `--thinking-max-tokens` remains the separate output ceiling. Provider effort labels are not necessarily comparable.
+
+Whenever thinking is enabled for a pack, request `max_tokens` is raised to `--thinking-max-tokens` (default `16384`) and the request uses the recommended thinking sampler (`temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`) instead of the deterministic pack's greedy sampler. Override it with `--thinking-sampler '{"temperature":0.7,"top_p":0.9}'`, override individual sampling keys with `--temperature`/`--top-p`/`--top-k`/`--min-p`, or use `--sampling-from-server` to omit sampler params entirely. HumanEval+ and LiveCodeBench also carry 16K scenario budgets so thinking-on code runs do not measure a 4K truncation failure; hardest LCB items may still exceed 16K, so compare against `--no-thinking` for budget-runaway diagnostics. `--extra-body` remains the escape hatch for controls the detector does not know. Saved JSON records `thinking_enabled` per pack and adds `thinking_control`/`reasoning_effort` when the run uses the non-default effort path.
 
 In multi-turn CLI and Hermes agent loops, captured assistant reasoning stays in the saved result for inspection, but prior `reasoning`, `reasoning_content`, `reasoning_details`, and `codex_reasoning_items` fields are stripped from the next outgoing request by default. This avoids replaying provider-private or stale reasoning state. Use `--preserve-reasoning-history` only when an endpoint explicitly requires that history for signed or encrypted reasoning continuity.
 

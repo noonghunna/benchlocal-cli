@@ -458,6 +458,7 @@ class SandboxClient:
         sampling: dict | None = None,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
+        thinking_extra_body: dict | None = None,
         preserve_reasoning_history: bool | None = None,
     ) -> dict:
         """Initialize a sandbox-owned multi-turn scenario state.
@@ -483,6 +484,8 @@ class SandboxClient:
             payload["enable_thinking"] = enable_thinking
         if thinking_budget is not None:
             payload["thinking_budget"] = thinking_budget
+        if thinking_extra_body is not None:
+            payload["thinking_extra_body"] = dict(thinking_extra_body)
         if preserve_reasoning_history is not None:
             payload["preserve_reasoning_history"] = preserve_reasoning_history
         return self._post("/verify-start", payload)

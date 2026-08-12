@@ -1024,6 +1024,71 @@ def test_runner_uses_hermes_verify_start_early_out_and_passes_endpoint(
     assert nested_trace.get("hermes_agent_source") == "host-mount"
 
 
+def test_runner_passes_effort_control_to_hermes_owned_model_calls():
+    runner = Runner(
+        endpoint="http://10.0.0.5:8001",
+        model="inkling",
+        enable_sandboxed_packs=True,
+        thinking_enabled=False,
+        reasoning_effort="high",
+    )
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["hermesagent-20"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenario = {
+        "id": "HA-01",
+        "pack_id": "hermesagent-20",
+        "messages": [{"role": "user", "content": "remember CockroachDB"}],
+        "raw_scenario": {"kind": "memory_replace_contradiction"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert fake.start_kwargs["enable_thinking"] is False
+    assert fake.start_kwargs["thinking_extra_body"] == {
+        "chat_template_kwargs": {"reasoning_effort": "none"},
+        "reasoning_effort": "none",
+    }
+
+
+def test_runner_passes_effort_control_to_aider_owned_model_calls():
+    runner = Runner(
+        endpoint="http://10.0.0.5:8001",
+        model="inkling",
+        enable_sandboxed_packs=True,
+        thinking_enabled=True,
+        reasoning_effort=0.8,
+    )
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["aider-polyglot-30"] = fake
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 60,
+        "sampling_defaults": {"max_tokens": 256, "temperature": 0.0},
+    }
+    scenario = {
+        "id": "aider-polyglot-30-batch",
+        "pack_id": "aider-polyglot-30",
+        "messages": [{"role": "user", "content": "fix the project"}],
+        "raw_scenario": {"kind": "aider-polyglot-batch"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+
+    run = runner.run_scenario(meta, scenario)
+
+    assert run.result.passed is True
+    assert fake.start_kwargs["thinking_extra_body"] == {
+        "chat_template_kwargs": {"reasoning_effort": 0.8},
+        "reasoning_effort": 0.8,
+    }
+
+
 def test_runner_propagates_hermes_failure_mode_from_verify_start():
     runner = Runner(endpoint="http://localhost:8001", model="fake", enable_sandboxed_packs=True)
     fake = FakeHermesEarlyOutSandbox(

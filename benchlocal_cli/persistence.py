@@ -260,6 +260,8 @@ def _build_result(
         totals={"passed": passed, "total": total, "score": passed / total if total else 0.0},
         thinking_enabled=bool(thinking_override),
         thinking_mode=str(config.get("thinking_mode") or "pack-defaults"),
+        thinking_control=str(config.get("thinking_control") or "enable_thinking"),
+        reasoning_effort=config.get("reasoning_effort"),
         warnings=warnings or [],
         sampling_overrides=config.get("sampling_overrides"),
         sampling_source=config.get("sampling_source"),
@@ -339,6 +341,8 @@ def _infer_config(data: dict, source: Path) -> dict:
         "repeat": repeat,
         "thinking_override": thinking_override,
         "thinking_mode": thinking_mode,
+        "thinking_control": data.get("thinking_control") or "enable_thinking",
+        "reasoning_effort": data.get("reasoning_effort"),
         "sampling_overrides": data.get("sampling_overrides"),
         "sampling_source": data.get("sampling_source"),
         "server_defaults": data.get("server_defaults"),
@@ -453,6 +457,8 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     config = dict(state.config)
     config["runner_version"] = new_result.runner_version
     config["server_defaults"] = new_result.server_defaults
+    config["thinking_control"] = new_result.thinking_control
+    config["reasoning_effort"] = new_result.reasoning_effort
     previous_warnings = [
         warning
         for warning in state.previous_result.get("warnings") or []
