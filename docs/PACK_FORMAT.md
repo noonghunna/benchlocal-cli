@@ -56,6 +56,7 @@ Field reference:
 | `supports_sandboxed_only` | no | bool | `true` for BugFind/HermesAgent/CLI/HumanEval+/LCB/Aider; runner skips with warning unless `--enable-sandboxed-packs` |
 | `safety_policy` | no | object / null | Optional benchmark-intent metadata for packs with safety/refusal scenarios. `mode: "implicit_benchmark_local"` means the pack uses terse task-local instructions and scores operational restraint under existing workspace/tool rules; it is not an explicit policy-following test. |
 | `suite` | no | string | Logical suite label used by mode selectors; e.g. `reasoning` groups packs for `--reasoning`. |
+| `subset` | no | object | For sampled packs: `{default, full, selection}` — the shipped row count, the upstream pool size at port time, and the selection rule. ⚠️ `full` is a snapshot of upstream at port time, not a reliable extension ceiling; see [REASONING_PACKS.md](./REASONING_PACKS.md). |
 | `requires_dataset_access` | no | bool | `true` for gated datasets. Runner returns a skipped `PackResult` with `status: dataset-unavailable` instead of failing the run. |
 | `dataset_access_note` | no | string | Human-readable skip/warning text surfaced when `requires_dataset_access` prevents materializing a pack. |
 | `ported_at` | yes | ISO date | When we ported this pack |

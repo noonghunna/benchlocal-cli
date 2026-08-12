@@ -154,6 +154,7 @@ docs/
 ├── HERMES_V073_AB.md           # forensic notes from the Hermes A/B run
 ├── INTEGRATION.md              # how club-3090 (or other repos) consume this CLI
 ├── PACK_FORMAT.md              # JSONL schema each pack file follows
+├── REASONING_PACKS.md          # humaneval-plus-30 / lcb-v6-30 provenance, drift, extension convention
 ├── SANDBOX_PROTOCOL.md         # HTTP protocol the sandboxed packs implement
 └── VENDOR_SYNC.md              # how to bump vendored upstream pins
 ```
