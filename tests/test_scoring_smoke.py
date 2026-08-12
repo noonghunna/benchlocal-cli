@@ -232,6 +232,26 @@ def test_reason_math_accepts_audited_equivalent_answers_but_keeps_rm13_strict():
     )
     assert reason_math.score_scenario(rm04, rm04_response).passed
 
+    # Issue #125: models naturally produce combined "no valid order + inconsistent"
+    # forms (observed from deepseek-v4-flash, both thinking arms). The scorer lowercases
+    # both sides, so casing is matched case-insensitively; period variants are listed
+    # explicitly, matching the existing accepted-answers style.
+    for combined in (
+        "ANSWER: No valid order; the constraints are inconsistent",
+        "ANSWER: No valid order; the constraints are inconsistent.",
+        "ANSWER: No solution; the constraints are inconsistent",
+        "ANSWER: No solution; the constraints are inconsistent.",
+    ):
+        assert reason_math.score_scenario(rm04, _response(combined)).passed, combined
+
+    # A forced invalid arrangement must still fail.
+    assert (
+        reason_math.score_scenario(
+            rm04, _response("ANSWER: red, blue, green, yellow, white")
+        ).failure_mode
+        == "wrong_answer"
+    )
+
     rm06 = _pack_record("reasonmath-15.jsonl", "RM-06")
     rm06_response = _response(
         "p(c_1) = 1/4\n"
