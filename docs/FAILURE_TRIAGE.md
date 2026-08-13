@@ -59,3 +59,12 @@ packs exist to measure.
   the proof is the prompt-text/design-description analysis in step 4.
 - Fixing a model miss by widening the verifier. That turns the pack into
   a different test and silently re-baselines every historical score.
+
+## Worked example
+
+[PROMPT_VERIFIER_AUDIT.md](./PROMPT_VERIFIER_AUDIT.md) (2026-08-12) is
+the reference application of this policy: every pack audited against its
+verifier, anchored on a real model's identical-at-temp-0 failures, with
+zero verifier bugs surviving the bar and the two surviving prompt gaps
+(SO-07, dataextract field types) routed to prompt clarification rather
+than verifier loosening.
