@@ -9,9 +9,10 @@ deepseek-v4-flash 8-pack runs of 2026-08-11
 using identical-at-temp-0 failures in both thinking arms as the review
 flag.
 
-**Headline: zero verifier bugs found. Two known prompt gaps re-confirmed
-(SO-07 wrapper, dataextract hidden field types). One documented class of
-lenient local grading. Every anchored failure re-audited as a model miss
+**Headline: zero verifier bugs found. The two known prompt gaps (SO-07
+wrapper, dataextract hidden field types) were re-confirmed and FIXED the
+same day (both packs bumped to v1.1.0). One documented class of lenient
+local grading remains. Every anchored failure re-audited as a model miss
 or a model safety/capability miss.**
 
 ## Per-pack verdicts
@@ -46,9 +47,15 @@ or a model safety/capability miss.**
 
 | # | Item | Class | Status |
 |---|---|---|---|
-| 1 | DataExtract field-type declarations (all 15 prompts; the 6 contradicting expected values above prove the need) | prompt gap | Recorded in #123's closure; pack-wide change + bump + re-baseline if ever taken |
-| 2 | SO-07 `user` wrapper clarification | prompt gap | Recorded in #124's closure; same treatment |
+| 1 | DataExtract field-type declarations (all 15 prompts; the 6 contradicting expected values above prove the need) | prompt gap | **Fixed in v1.1.0** — all 15 prompts declare `Fields and JSON types:`; guarded by `tests/test_pack_prompt_clarity.py` |
+| 2 | SO-07 `user` wrapper clarification | prompt gap | **Fixed in v1.1.0** — the prompt now names both top-level keys; same guard file |
 | 3 | Local-mode lenience (7 SO + 7 IF scenarios pass on shape only) | known deferral | Documented in `EXTRACTOR_NOTES.md`; not unfair — inflates, never penalizes |
+
+**Re-baseline note (v1.1.0, 2026-08-12):** runs scored against dataextract
+or structoutput after this change are not directly comparable to v1.0.x
+history (deepseek-v4-flash and earlier arms were scored on v1.0.x). The
+fixes only remove unfair deductions, so v1.1.0 scores should be ≥ the
+v1.0.x equivalents.
 
 No verifier loosening is recommended anywhere: every anchored failure
 survives the triage bar as a model-side miss, and the two prompt gaps

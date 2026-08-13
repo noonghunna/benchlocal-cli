@@ -198,7 +198,7 @@ const SCENARIO_SPECS: ScenarioSpec[] = [
     title: "Nested JSON with Arrays and Nulls",
     category: "C",
     description: "Deeply nested JSON with arrays of objects and required null values.",
-    userMessage: 'Generate a JSON object representing an API response for a user profile. The user has: id 42, username "j_doe", email null (not verified yet), roles array with "editor" and "viewer", address object with street "123 Main St", city "Springfield", state "IL", zip "62704", and phone_numbers array containing two objects: one with type "mobile", number "+1-555-0123", primary true, and one with type "work", number null, primary false. Include a metadata object with last_login "2026-03-15T10:30:00Z" and login_count 847.',
+    userMessage: 'Generate a JSON object representing an API response for a user profile. The response must have two top-level keys: user (an object containing all user fields listed below) and metadata (an object). The user has: id 42, username "j_doe", email null (not verified yet), roles array with "editor" and "viewer", address object with street "123 Main St", city "Springfield", state "IL", zip "62704", and phone_numbers array containing two objects: one with type "mobile", number "+1-555-0123", primary true, and one with type "work", number null, primary false. Include a metadata object with last_login "2026-03-15T10:30:00Z" and login_count 847.',
     successCase: "Keeps the full nested structure and preserves types, especially nulls and strings.",
     failureCase: "Turns nulls into strings, changes scalar types, or drops nested keys."
   },

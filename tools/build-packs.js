@@ -21,7 +21,7 @@ const PACKS = {
   "ToolCall-15": { file: "toolcall-15.jsonl", verifier: "tool_call", sandbox: false, thinking: "off", timeoutReferenceTps: 100 },
   "InstructFollow-15": { file: "instructfollow-15.jsonl", verifier: "instruct_follow", sandbox: false, thinking: "on", timeoutReferenceTps: 100 },
   "StructOutput-15": { file: "structoutput-15.jsonl", verifier: "struct_output", sandbox: false, thinking: "off", timeoutReferenceTps: 100 },
-  "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on", timeoutReferenceTps: 100 },
+  "ReasonMath-15": { file: "reasonmath-15.jsonl", verifier: "reason_math", sandbox: false, thinking: "on", timeoutReferenceTps: 100, samplingMaxTokens: 16384, timeoutBaselineTokens: 1024 },
   "DataExtract-15": { file: "dataextract-15.jsonl", verifier: "data_extract", sandbox: false, thinking: "off", timeoutReferenceTps: 100 },
   "BugFind-15": { file: "bugfind-15.jsonl", verifier: "_stub", sandbox: true, thinking: "on", timeoutReferenceTps: 100 },
   "HermesAgent-20": { file: "hermesagent-20.jsonl", verifier: "_stub", sandbox: true, thinking: "on", thinkingSampler: { temperature: 0 }, timeoutPerCaseDefault: 300, timeoutReferenceTps: 100, safetyPolicy: true },
@@ -51,6 +51,9 @@ function packMeta(packName, scenarioCount) {
   const sync = syncInfo(packName);
   const config = PACKS[packName];
   const sampling = Object.assign({ top_p: 1, max_tokens: 1024 }, camelToSnake(pack.samplingDefaults || {}));
+  if (config.samplingMaxTokens) {
+    sampling.max_tokens = config.samplingMaxTokens;
+  }
   sampling.chat_template_kwargs = Object.assign(
     { enable_thinking: false },
     sampling.chat_template_kwargs || {}
@@ -83,6 +86,9 @@ function packMeta(packName, scenarioCount) {
   }
   if (config.timeoutReferenceTps) {
     meta.timeout_reference_tps = config.timeoutReferenceTps;
+  }
+  if (config.timeoutBaselineTokens) {
+    meta.timeout_baseline_tokens = config.timeoutBaselineTokens;
   }
   if (config.safetyPolicy) {
     meta.safety_policy = SAFETY_POLICY_INTENT;
@@ -343,6 +349,12 @@ const RM_ACCEPTED_ANSWER_OVERRIDES = {
   "RM-04": [
     "ANSWER: the given constraints are inconsistent",
     "ANSWER: given constraints are inconsistent",
+    // #132: prefix+unit combinations observed in the wild (kept here, not
+    // just in the generated JSONL, so regeneration cannot lose them).
+    "ANSWER: No valid order; the constraints are inconsistent",
+    "ANSWER: No valid order; the constraints are inconsistent.",
+    "ANSWER: No solution; the constraints are inconsistent",
+    "ANSWER: No solution; the constraints are inconsistent.",
   ],
   "RM-06": [
     "ANSWER: switch = 3/4; stay = 1/4",
