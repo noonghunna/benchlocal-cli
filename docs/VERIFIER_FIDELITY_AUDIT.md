@@ -2,6 +2,8 @@
 
 This audit compares the in-process Python scorers in `benchlocal_cli/scoring/` with the vendored upstream TypeScript verifier sources under `vendor/*/lib/benchmark.ts` plus the StructOutput sandbox verifier in `vendor/StructOutput-15/verification/core.mjs`.
 
+> If you landed here because a run failed and you suspect the verifier, read [FAILURE_TRIAGE.md](./FAILURE_TRIAGE.md) first — most `verifier_fail`s are model misses, and that doc carries the burden-of-proof policy for escalation.
+
 ## Scope
 
 In scope: `tool_call.py`, `reason_math.py`, `instruct_follow.py`, `struct_output.py`, and `data_extract.py`.

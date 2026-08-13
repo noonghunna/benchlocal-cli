@@ -38,4 +38,5 @@ benchlocal-cli run --full --enable-sandboxed-packs --endpoint http://localhost:8
 - Keep Python runtime dependencies minimal: `httpx` and `jsonschema` only.
 - Treat `vendor/` as the source of truth for pack content.
 - Document lossy callback-to-assert translations in `docs/EXTRACTOR_NOTES.md`.
+- Classify failed scenarios per `docs/FAILURE_TRIAGE.md` before calling anything a pack or runner bug — the default label is a model miss.
 - Sandbox-backed packs keep `_stub` in JSONL as the runner dispatch marker; do not hand-edit generated pack files to point at container internals.

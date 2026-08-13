@@ -151,6 +151,7 @@ docs/
 ├── AIDER_POLYGLOT_30.md        # aider-polyglot-30 pack details + cross-rig run guide
 ├── DESIGN.md                   # design rationale (why these choices)
 ├── EXTRACTOR_NOTES.md          # how vendor/ → JSONL extraction works per pack
+├── FAILURE_TRIAGE.md           # classify failures: model miss (default) vs prompt gap vs harness/verifier bug
 ├── HERMES_V073_AB.md           # forensic notes from the Hermes A/B run
 ├── INTEGRATION.md              # how club-3090 (or other repos) consume this CLI
 ├── PACK_FORMAT.md              # JSONL schema each pack file follows
