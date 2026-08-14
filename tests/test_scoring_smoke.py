@@ -194,9 +194,9 @@ def test_data_extract_pass_and_fail():
 _OBJ_SCENARIO = {"id": "DE-X", "expected": {"name": "Ada", "city": "London"}}
 
 
-def test_shape_mismatch_still_fails_but_scores_the_content():
+def test_shape_mismatch_scores_the_content_not_zero():
+    """Whether or not the shape is enforced, the SCORE must describe the extraction."""
     res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
-    assert not res.passed, "an array where an object was requested is a real compliance miss"
     assert res.verifier_trace["upstream_style_score"] == 100, "the extraction was perfect — say so"
     assert res.verifier_trace["correct_fields"] == 2
     assert res.verifier_trace["scored_after_shape_realign"] is True
@@ -226,18 +226,68 @@ def test_correct_shape_and_content_still_passes():
 
 
 def test_shape_realign_is_symmetric_for_a_bare_object():
-    """The mirror case: an array of one was requested, a bare object came back."""
-    scenario = {"id": "DE-07", "expected": [{"name": "Ada", "city": "London"}]}
+    """The mirror case: an array of one was requested, a bare object came back.
+
+    Modelled on DE-07, which DOES declare its shape in the prompt — so here the mismatch
+    is enforced and the scenario fails, while the score still reports the content.
+    """
+    scenario = {"id": "DE-07", "declares_top_level_shape": True,
+                "expected": [{"name": "Ada", "city": "London"}]}
     res = data_extract.score_scenario(scenario, _response('{"name":"Ada","city":"London"}'))
     assert not res.passed
     assert res.verifier_trace["upstream_style_score"] == 100
 
 
-def test_shape_compliance_is_binding_not_merely_incidental():
-    """Guard the trap in the naive fix: realigning WITHOUT making shape binding would
-    silently start passing non-compliant answers, since `passed` keyed on score alone."""
-    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
+def test_shape_compliance_is_binding_when_the_prompt_declared_it():
+    """Guard the trap in the naive realign: without shape binding, a declared-shape
+    scenario would silently start passing non-compliant answers, since `passed` keyed
+    on score alone."""
+    scenario = {**_OBJ_SCENARIO, "declares_top_level_shape": True}
+    res = data_extract.score_scenario(scenario, _response('[{"name":"Ada","city":"London"}]'))
     assert res.verifier_trace["upstream_style_score"] >= 85 and not res.passed
+    assert res.verifier_trace["top_level_shape_enforced"] is True
+
+
+# --- shape is enforced only where the PROMPT asked for one ---
+#
+# 14 of 15 dataextract-15 prompts never state whether to return an object or an array,
+# and the shared system rules say "Output ONLY the JSON object or JSON array" — which
+# permits both. Failing a model there penalises an uncommunicated requirement, the mirror
+# of what the #136 triage policy forbids in the other direction.
+
+
+def test_undeclared_shape_does_not_fail_a_correct_extraction():
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
+    assert res.passed, "no prompt asked for an object, so the wrapper cannot be the failure"
+    assert res.verifier_trace["top_level_shape_enforced"] is False
+
+
+def test_undeclared_shape_is_still_REPORTED():
+    """Non-binding is not invisible — the note must survive so the habit stays diagnosable."""
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
+    assert any(n.startswith("top-level shape mismatch") for n in res.verifier_trace["compliance_notes"])
+
+
+def test_undeclared_shape_does_not_rescue_bad_content():
+    """Forgiving the wrapper must not forgive the extraction."""
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"Paris"}]'))
+    assert not res.passed
+    assert res.verifier_trace["upstream_style_score"] == 50
+
+
+def test_de07_is_the_only_declared_scenario_and_its_prompt_backs_the_claim():
+    """The flag is a claim ABOUT THE PROMPT — keep it honest. If a scenario asserts it
+    declares a shape, the prompt must actually say so, and the declared shape must match
+    what `expected` is. Inference from prompt text is NOT viable (a regex scored 6/15
+    with all six false positives), which is exactly why the flag is hand-set and guarded."""
+    path = Path(__file__).resolve().parents[1] / "benchlocal_cli" / "packs" / "dataextract-15.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    declared = [r for r in rows if r.get("declares_top_level_shape")]
+    assert [r["id"] for r in declared] == ["DE-07"]
+    for r in declared:
+        user = " ".join(m["content"] for m in r["messages"] if m["role"] == "user").lower()
+        assert "as an array" in user or "single json object" in user, f"{r['id']} claims a declaration its prompt does not make"
+        assert isinstance(r["expected"], list), f"{r['id']} declares an array but expects an object"
 
 
 

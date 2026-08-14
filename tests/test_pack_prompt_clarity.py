@@ -100,5 +100,15 @@ def test_so07_prompt_names_the_user_wrapper():
 
 
 def test_prompt_clarity_fixes_ship_with_bumped_versions():
-    assert _meta("dataextract-15.jsonl")["version"] == "1.1.0"
-    assert _meta("structoutput-15.jsonl")["version"] == "1.1.0"
+    """The v1.1.0 clarity fixes must stay shipped under a bumped version.
+
+    Asserted as a floor, not equality: dataextract-15 moved to 1.2.0 when top-level
+    shape enforcement became conditional on the prompt declaring a shape (a
+    verdict-changing semantics change, so it needed its own bump). A later bump must
+    not red this guard — what it protects is that the clarity fixes were versioned.
+    """
+    def _ver(pack):
+        return tuple(int(part) for part in _meta(pack)["version"].split("."))
+
+    assert _ver("dataextract-15.jsonl") >= (1, 1, 0)
+    assert _ver("structoutput-15.jsonl") >= (1, 1, 0)

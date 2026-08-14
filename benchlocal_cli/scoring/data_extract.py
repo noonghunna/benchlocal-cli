@@ -9,12 +9,18 @@ from typing import Any
 from benchlocal_cli.scoring.common import content, get_path, parse_json_text, result
 from benchlocal_cli.types import ScenarioResult
 
-# A top-level shape mismatch is BINDING (see `_score_expected`): an object requested
-# but an array returned breaks every downstream consumer doing `result["field"]`.
+# A top-level shape mismatch is binding ONLY where the scenario declares its shape in
+# the prompt (`declares_top_level_shape: true`). See `_shape_is_enforced`.
+#
 # The other compliance notes (extra / missing top-level fields) stay informational —
 # missing fields are already penalised by the field walker, and extra fields do not
 # break consumption.
 _SHAPE_MISMATCH_PREFIX = "top-level shape mismatch"
+
+# The pack field a scenario sets to assert "my prompt tells the model what top-level
+# shape to return". It is a claim about the PROMPT, not a verifier policy knob — the
+# policy (enforce iff declared) lives in `_shape_is_enforced`.
+_SHAPE_DECLARED_KEY = "declares_top_level_shape"
 
 _ARRAY_OBJECT_ANCHORS = {
     "DE-02.items": "name",
@@ -226,22 +232,51 @@ def _realign_for_scoring(expected: Any, actual: Any) -> tuple[Any, bool]:
     return actual, False
 
 
+def _shape_is_enforced(scenario: dict) -> bool:
+    """Fail a scenario for its top-level shape only if the prompt actually asked for one.
+
+    14 of the 15 dataextract-15 prompts end at the field list and never state whether the
+    answer should be a JSON object or an array of them. The shared system rules say
+    "Output ONLY the JSON object or JSON array" — which PERMITS both. Failing a model for
+    picking the wrong one there penalises a requirement that was never communicated.
+
+    That is the mirror of the #136 triage policy: escalating a failure to "verifier bug"
+    requires naming the prompt text that compelled the model's answer, so enforcing a
+    requirement should equally require prompt text that states it. Only DE-07 ("Extract as
+    an array of person objects.") does.
+
+    Deliberately keyed on an explicit pack field rather than inferred from the prompt.
+    Inference was tried and is not viable: a regex over these prompts scored 6/15 as
+    "declares a shape" and ALL SIX were false positives — nested field specs
+    (`items: array of {...}`) and the phrase "per person" occurring in the source text
+    being extracted from.
+
+    The shape mismatch is still always REPORTED in `compliance_notes` — it just doesn't
+    fail the scenario unless declared.
+    """
+    return bool(scenario.get(_SHAPE_DECLARED_KEY, False))
+
+
 def _score_expected(scenario: dict, data: Any, expected: Any) -> ScenarioResult:
     # Compliance is judged on what the model ACTUALLY returned, never the realigned form.
     compliance = _compliance_notes(expected, data)
     scored, realigned = _realign_for_scoring(expected, data)
     correct, total, notes = _compare_value(expected, scored, str(scenario.get("id", "unknown")), "")
     score = round((correct / total) * 100) if total else 0
+    enforced = _shape_is_enforced(scenario)
     shape_ok = not any(note.startswith(_SHAPE_MISMATCH_PREFIX) for note in compliance)
-    passed = score >= 85 and shape_ok
+    passed = score >= 85 and (shape_ok or not enforced)
     trace = {
         "upstream_style_score": score,
         "correct_fields": correct,
         "total_fields": total,
-        "status_threshold": "pass >= 85 and top-level shape matches",
+        "status_threshold": (
+            "pass >= 85 and top-level shape matches" if enforced else "pass >= 85"
+        ),
         "compliance_notes": compliance,
         "comparison_notes": notes,
         "scored_after_shape_realign": realigned,
+        "top_level_shape_enforced": enforced,
     }
     note_text = " | ".join([*compliance, *notes])
     return ScenarioResult(
