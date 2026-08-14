@@ -183,6 +183,63 @@ def test_data_extract_pass_and_fail():
     assert data_extract.score_scenario(scenario, _response('{"email":"b@example.com"}')).failure_mode == "verifier_fail"
 
 
+# --- top-level shape: the verdict is binding, the SCORE must describe the content ---
+#
+# Regression guard for the reporting defect found 2026-08-14 while triaging a
+# Qwen3.8-27B run: 8 of 15 dataextract scenarios reported "0/N atomic fields correct
+# (0%)" on extractions that were byte-perfect apart from being wrapped in a 1-element
+# array. The verdict (fail) was right; the 0% was a false statement about the content,
+# and it masked three genuine content regressions in the same run.
+
+_OBJ_SCENARIO = {"id": "DE-X", "expected": {"name": "Ada", "city": "London"}}
+
+
+def test_shape_mismatch_still_fails_but_scores_the_content():
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
+    assert not res.passed, "an array where an object was requested is a real compliance miss"
+    assert res.verifier_trace["upstream_style_score"] == 100, "the extraction was perfect — say so"
+    assert res.verifier_trace["correct_fields"] == 2
+    assert res.verifier_trace["scored_after_shape_realign"] is True
+    assert any(n.startswith("top-level shape mismatch") for n in res.verifier_trace["compliance_notes"])
+
+
+def test_shape_mismatch_does_not_mask_content_errors():
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"Paris"}]'))
+    assert not res.passed
+    assert res.verifier_trace["upstream_style_score"] == 50, "wrapped AND wrong must read as 50%, not 0%"
+
+
+def test_over_extraction_is_not_treated_as_a_wrapper():
+    """Two objects where one was requested is a content miss, not a formatting one."""
+    res = data_extract.score_scenario({"id": "DE-X", "expected": {"name": "Ada"}},
+                                      _response('[{"name":"Ada"},{"name":"Grace"}]'))
+    assert not res.passed
+    assert res.verifier_trace["upstream_style_score"] == 0
+    assert res.verifier_trace["scored_after_shape_realign"] is False
+
+
+def test_correct_shape_and_content_still_passes():
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('{"name":"Ada","city":"London"}'))
+    assert res.passed
+    assert res.verifier_trace["upstream_style_score"] == 100
+    assert res.verifier_trace["scored_after_shape_realign"] is False
+
+
+def test_shape_realign_is_symmetric_for_a_bare_object():
+    """The mirror case: an array of one was requested, a bare object came back."""
+    scenario = {"id": "DE-07", "expected": [{"name": "Ada", "city": "London"}]}
+    res = data_extract.score_scenario(scenario, _response('{"name":"Ada","city":"London"}'))
+    assert not res.passed
+    assert res.verifier_trace["upstream_style_score"] == 100
+
+
+def test_shape_compliance_is_binding_not_merely_incidental():
+    """Guard the trap in the naive fix: realigning WITHOUT making shape binding would
+    silently start passing non-compliant answers, since `passed` keyed on score alone."""
+    res = data_extract.score_scenario(_OBJ_SCENARIO, _response('[{"name":"Ada","city":"London"}]'))
+    assert res.verifier_trace["upstream_style_score"] >= 85 and not res.passed
+
+
 
 def _pack_record(pack: str, scenario_id: str) -> dict:
     path = Path(__file__).resolve().parents[1] / "benchlocal_cli" / "packs" / pack
