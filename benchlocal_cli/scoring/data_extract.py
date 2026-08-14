@@ -9,6 +9,13 @@ from typing import Any
 from benchlocal_cli.scoring.common import content, get_path, parse_json_text, result
 from benchlocal_cli.types import ScenarioResult
 
+# A top-level shape mismatch is BINDING (see `_score_expected`): an object requested
+# but an array returned breaks every downstream consumer doing `result["field"]`.
+# The other compliance notes (extra / missing top-level fields) stay informational —
+# missing fields are already penalised by the field walker, and extra fields do not
+# break consumption.
+_SHAPE_MISMATCH_PREFIX = "top-level shape mismatch"
+
 _ARRAY_OBJECT_ANCHORS = {
     "DE-02.items": "name",
     "DE-07.$root": "name",
@@ -175,7 +182,7 @@ def _compliance_notes(expected: Any, actual: Any) -> list[str]:
     expected_shape = _top_level_shape(expected)
     actual_shape = _top_level_shape(actual)
     if expected_shape != actual_shape:
-        notes.append(f"top-level shape mismatch: expected {expected_shape}, received {actual_shape}")
+        notes.append(f"{_SHAPE_MISMATCH_PREFIX}: expected {expected_shape}, received {actual_shape}")
 
     if isinstance(expected, dict) and isinstance(actual, dict):
         expected_keys = set(expected)
@@ -189,18 +196,52 @@ def _compliance_notes(expected: Any, actual: Any) -> list[str]:
     return notes
 
 
+def _realign_for_scoring(expected: Any, actual: Any) -> tuple[Any, bool]:
+    """Align a singleton container with the expected top-level shape, for SCORING only.
+
+    A model that answers `[{...}]` where an object was requested has made a real
+    compliance error, and `_score_expected` still fails it for that. But the field
+    walker bails before reading the payload (`_compare_object` returns
+    `0, len(expected)` the moment `actual` is not a dict), so the reported score was
+    `0/N atomic fields correct (0%)` even when every extracted value was byte-perfect.
+    That number is a false statement about the extraction, and it hides genuine
+    content regressions behind the shape error — a run can look like a total
+    extraction failure when the model is wrapping an otherwise-correct answer.
+
+    Realigning here lets the score describe the CONTENT. The shape verdict is carried
+    separately by `_compliance_notes` and is binding, so no scenario's pass/fail
+    changes — only its reported percentage becomes honest.
+
+    Only exact singletons are realigned. Two objects where one was requested is
+    over-extraction (a genuine content miss, e.g. dataextract-15 DE-04 returning both
+    meetings from a thread) and is deliberately left to score as-is. Nested shape
+    mismatches are also left alone: this runs once, at the top level.
+    """
+    if isinstance(expected, dict) and isinstance(actual, list):
+        if len(actual) == 1 and isinstance(actual[0], dict):
+            return actual[0], True
+    if isinstance(expected, list) and isinstance(actual, dict):
+        if len(expected) == 1:
+            return [actual], True
+    return actual, False
+
+
 def _score_expected(scenario: dict, data: Any, expected: Any) -> ScenarioResult:
-    correct, total, notes = _compare_value(expected, data, str(scenario.get("id", "unknown")), "")
-    score = round((correct / total) * 100) if total else 0
+    # Compliance is judged on what the model ACTUALLY returned, never the realigned form.
     compliance = _compliance_notes(expected, data)
-    passed = score >= 85
+    scored, realigned = _realign_for_scoring(expected, data)
+    correct, total, notes = _compare_value(expected, scored, str(scenario.get("id", "unknown")), "")
+    score = round((correct / total) * 100) if total else 0
+    shape_ok = not any(note.startswith(_SHAPE_MISMATCH_PREFIX) for note in compliance)
+    passed = score >= 85 and shape_ok
     trace = {
         "upstream_style_score": score,
         "correct_fields": correct,
         "total_fields": total,
-        "status_threshold": "pass >= 85",
+        "status_threshold": "pass >= 85 and top-level shape matches",
         "compliance_notes": compliance,
         "comparison_notes": notes,
+        "scored_after_shape_realign": realigned,
     }
     note_text = " | ".join([*compliance, *notes])
     return ScenarioResult(
