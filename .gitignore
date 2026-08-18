@@ -49,6 +49,10 @@ Thumbs.db
 results/
 *.results.json
 .last-run/
+# Default sandbox-log root the runner creates itself (cli.py: "benchlocal-runs"
+# / <timestamp> / sandbox-logs). Untracked but unignored until 2026-08-18, so it
+# sat in `git status` inviting a `git add -A` to commit run output.
+benchlocal-runs/
 
 # Generated sandbox Docker build-context copies of vendored verifier runtimes.
 sandboxes/*/verification/
