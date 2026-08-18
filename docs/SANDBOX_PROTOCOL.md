@@ -191,7 +191,22 @@ The v0.7.1 CLI sandbox keeps the HTTP verifier on the normal mapped port so the 
 - timeout is capped at 10s
 - stdout/stderr are truncated to 64 KiB
 
-Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment with scripting languages available, not a shell-builtins-only benchmark. The local `SandboxClient` uses HTTP over a host-mapped port (Unix-domain sockets plus Docker `--network none` would be tighter; documented parity gap rather than a silent claim of full isolation).
+Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment with scripting languages available, not a shell-builtins-only benchmark.
+
+### Transport and isolation (#108)
+
+`SandboxConfig.network_isolated` is enforced, not advisory. It selects the transport:
+
+| `network_isolated` | Packs | `docker run` | Transport |
+| --- | --- | --- | --- |
+| `True` | `cli-40`, `humaneval-plus-30`, `lcb-v6-30` | `--network none`, no `-p` | `docker exec` → container loopback `127.0.0.1:9000` |
+| `False` | `bugfind-15`, `hermesagent-20`, `aider-polyglot-30` | `-p <host_port>:9000` | `httpx` → `127.0.0.1:<host_port>` |
+
+Isolated containers have no interface but `lo`: no route, no DNS, no egress. Verified by probing from inside a running container, not by reading the argv — see `test_isolated_sandbox_container_really_has_no_network`.
+
+The published port is dropped for isolated packs because Docker **silently discards `-p` on a container with no network** (`NetworkSettings.Ports` comes back empty), so publishing one would put a claim in the argv that the daemon ignores. `docker exec` enters the container's network namespace and reaches the still-listening server over its own loopback, which needs no network of any kind — so isolation costs nothing at the protocol level. This closes the parity gap this document previously recorded; note that the Unix-domain-socket alternative does *not* work on Docker Desktop for macOS (bind-mounted sockets are not connectable across the VM boundary), whereas the `docker exec` transport is portable.
+
+`hermesagent-20` and `aider-polyglot-30` are `False` because they call out to the runner's model endpoint from inside the container. Isolation and that call-out are mutually exclusive: `_build_docker_run_argv` raises `ValueError` if a pack ever declares `network_isolated=True` while also needing `--add-host host.docker.internal:host-gateway`.
 
 This mirrors the deterministic-pack `ScenarioResult` taxonomy — verifiers in sandbox containers produce the same shape as in-process verifiers, so the runner can treat them uniformly.
 

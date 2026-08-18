@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from benchlocal_cli.runner import Runner
@@ -914,6 +916,107 @@ def test_hermes_docker_argv_keeps_non_loopback_env_gated(monkeypatch):
     assert "host.docker.internal:host-gateway" not in argv
 
 
+# ---------------------------------------------------------------------------
+# #108: network_isolated must actually isolate.
+#
+# The registry declared `network_isolated=True` for three packs while the argv
+# builder emitted no --network flag at all, so the property was decorative.
+# These tests fail if the flag is ever dropped again.
+# ---------------------------------------------------------------------------
+
+_ISOLATED_PACKS = ["cli-40", "humaneval-plus-30", "lcb-v6-30"]
+_OPEN_PACKS = ["bugfind-15", "hermesagent-20", "aider-polyglot-30"]
+
+
+@pytest.mark.parametrize("pack_id", _ISOLATED_PACKS)
+def test_isolated_pack_docker_argv_uses_network_none(pack_id):
+    """A pack declaring network_isolated=True must get `--network none`."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    config = config_for_pack(pack_id)
+    assert config.network_isolated is True, f"{pack_id} should declare isolation"
+
+    argv = SandboxClient(config)._build_docker_run_argv("test-name", None)
+
+    assert "--network" in argv, f"{pack_id} lost its --network flag"
+    assert argv[argv.index("--network") + 1] == "none"
+
+
+@pytest.mark.parametrize("pack_id", _ISOLATED_PACKS)
+def test_isolated_pack_publishes_no_port(pack_id):
+    """Docker silently discards `-p` on a `--network none` container, so
+    publishing one would put a lie in the argv. Isolated packs are driven over
+    container loopback via `docker exec` instead."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    argv = SandboxClient(config_for_pack(pack_id))._build_docker_run_argv("test-name", None)
+
+    assert "-p" not in argv
+    assert "9000" not in " ".join(argv)
+
+
+@pytest.mark.parametrize("pack_id", _ISOLATED_PACKS)
+def test_isolated_pack_never_gets_host_gateway(pack_id):
+    """host.docker.internal routing would hand an 'isolated' container a route
+    to the host. It must never appear on an isolated pack, loopback endpoint
+    or not."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack(pack_id), model_endpoint="http://localhost:9999/v1")
+    argv = client._build_docker_run_argv("test-name", None)
+
+    assert "--add-host" not in argv
+    assert "host-gateway" not in " ".join(argv)
+
+
+@pytest.mark.parametrize("pack_id", _OPEN_PACKS)
+def test_open_pack_keeps_published_port_and_no_network_flag(pack_id):
+    """Packs that legitimately need the network are unchanged: published port,
+    no --network flag. aider/hermes call out to the model endpoint; bugfind
+    keeps the port transport."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    config = config_for_pack(pack_id)
+    assert config.network_isolated is False
+
+    argv = SandboxClient(config)._build_docker_run_argv("test-name", None)
+
+    assert "--network" not in argv
+    assert "-p" in argv
+    assert f"{config.host_port}:9000" in argv
+
+
+def test_isolation_and_host_gateway_are_mutually_exclusive():
+    """Declaring isolation on a pack that needs host.docker.internal is a
+    contradiction — the builder refuses instead of silently dropping one."""
+    import dataclasses
+
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    contradictory = dataclasses.replace(
+        config_for_pack("aider-polyglot-30"), network_isolated=True
+    )
+    client = SandboxClient(contradictory, model_endpoint="http://127.0.0.1:9999/v1")
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        client._build_docker_run_argv("test-name", None)
+
+
+def test_aider_host_gateway_is_gated_on_loopback_endpoint():
+    """#108: aider took --add-host unconditionally. It is needed only for the
+    loopback endpoints resolve_endpoint_for_container() actually rewrites; for
+    a LAN/tailnet endpoint it was vestigial."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    config = config_for_pack("aider-polyglot-30")
+
+    loopback = SandboxClient(config, model_endpoint="http://127.0.0.1:9999/v1")
+    assert "--add-host" in loopback._build_docker_run_argv("n", None)
+
+    tailnet = SandboxClient(config, model_endpoint="http://100.71.129.2:8080/v1")
+    assert "--add-host" not in tailnet._build_docker_run_argv("n", None)
+
+
 def test_runner_rewrites_hermes_loopback_endpoint_without_env(monkeypatch):
     monkeypatch.delenv("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST", raising=False)
     runner = Runner(
@@ -1657,3 +1760,64 @@ def test_cli_native_thinking_controls_preserve_explicit_extra_body(monkeypatch):
     assert run.result.passed is True
     assert CapturingHTTPClient.requests[0]["enable_thinking"] is False
     assert CapturingHTTPClient.requests[0]["thinking_budget"] == 17
+
+
+# ---------------------------------------------------------------------------
+# #108: real containment. The argv assertions above prove the flag is emitted;
+# this proves the flag does what it claims. Skipped unless Docker and the
+# cli-40 image are actually present.
+# ---------------------------------------------------------------------------
+
+
+def _docker_image_available(image: str) -> bool:
+    try:
+        return subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            timeout=20,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@pytest.mark.skipif(
+    not _docker_image_available("benchlocal-sandbox-cli:latest"),
+    reason="needs Docker + benchlocal-sandbox-cli:latest",
+)
+def test_isolated_sandbox_container_really_has_no_network():
+    """Start the real cli-40 sandbox and observe, from inside the container,
+    that it cannot reach the network — while the verifier API still answers
+    over the docker-exec transport."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    client = SandboxClient(config_for_pack("cli-40"))
+    client.start(ready_timeout_s=60)
+    try:
+        container_id = client._container_id
+        assert container_id
+
+        mode = subprocess.run(
+            ["docker", "inspect", container_id, "--format",
+             "{{.HostConfig.NetworkMode}}|{{len .NetworkSettings.Ports}}"],
+            capture_output=True, text=True, timeout=20,
+        ).stdout.strip()
+        assert mode == "none|0", f"expected an unnetworked container, got {mode!r}"
+
+        # The verifier API still answers — isolation did not cost us the transport.
+        status, _ = client._exec_http("/health", None, timeout_s=10)
+        assert status == 200
+
+        # ...and the container genuinely cannot get out.
+        probe = subprocess.run(
+            ["docker", "exec", container_id, "python3", "-c",
+             "import socket\n"
+             "try:\n"
+             "    socket.create_connection(('1.1.1.1', 443), timeout=5)\n"
+             "    print('REACHED')\n"
+             "except OSError as exc:\n"
+             "    print('BLOCKED', type(exc).__name__)\n"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert "BLOCKED" in probe.stdout, f"container reached the network: {probe.stdout!r}"
+    finally:
+        client.stop()
