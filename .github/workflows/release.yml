@@ -18,6 +18,30 @@ jobs:
           fetch-depth: 0  # full history for git-cliff
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---- (0) Refuse a tag that disagrees with the declared version --------
+      # v0.9.9 was tagged straight onto a merge commit with pyproject still at
+      # 0.9.8, so the release shipped self-reporting 0.9.8. __version__ is
+      # stamped into every results file as `runner_version`, which made those
+      # runs indistinguishable from real v0.9.8 runs -- across a release that
+      # changed the timeout clock and hermes pinning (#105). Fail loudly here
+      # rather than publish a mislabelled artifact.
+      - name: Verify tag matches pyproject version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          proj="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' pyproject.toml | head -1)"
+          if [ -z "$proj" ]; then
+            echo "::error::could not read version from pyproject.toml"
+            exit 1
+          fi
+          if [ "$tag" != "$proj" ]; then
+            echo "::error::tag v${tag} does not match pyproject.toml version ${proj}"
+            echo "Bump pyproject.toml and commit it BEFORE tagging."
+            echo "benchlocal_cli.__version__ derives from pyproject, so those two"
+            echo "cannot drift -- but the tag can, and that is what this checks."
+            exit 1
+          fi
+          echo "tag v${tag} matches pyproject.toml version ${proj}"
+
       # ---- (1) Generate the GitHub Release body (latest only, no header) ----
       - name: Generate release notes (latest only)
         id: cliff-release
