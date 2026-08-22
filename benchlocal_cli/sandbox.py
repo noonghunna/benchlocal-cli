@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -21,7 +22,13 @@ class SandboxConfig:
     pack_id: str           # e.g. "bugfind-15"
     image_name: str        # e.g. "benchlocal-sandbox-bugfind:latest"
     host_port: int         # e.g. 9001
-    network_isolated: bool # True for cli (untrusted exec); False for bugfind + hermes
+    # #108: ENFORCED, not decorative. True → `docker run --network none` (no
+    # interfaces but loopback: no egress, no DNS) and NO published port, since
+    # Docker silently discards `-p` on a container with no network. Isolated
+    # packs are driven over container loopback via `docker exec` instead — see
+    # `SandboxClient._exec_http`. False → published-port HTTP, and the pack may
+    # legitimately call out (aider/hermes reach the host model endpoint).
+    network_isolated: bool # True for cli + code-reasoning (untrusted exec)
     multi_turn: bool       # True for cli + hermes; False for bugfind
     # Optional host directories bind-mounted into the container.
     # Tuple of (host_path, container_path) entries — bound read-only.
@@ -120,6 +127,47 @@ SANDBOX_REGISTRY = {
         run_mount_env=(("BENCHLOCAL_AIDER_KEEP_JOBDIRS", "1"),),
     ),
 }
+
+
+# #108: the only packs that legitimately call out of the container. Both reach
+# the runner's host-side model endpoint, so neither can be network-isolated —
+# `_build_docker_run_argv` raises if a pack is ever listed here AND declares
+# network_isolated=True.
+_HOST_GATEWAY_PACKS = ("aider-polyglot-30", "hermesagent-20")
+
+# #108: in-container HTTP client used to drive network-isolated sandboxes.
+# They run with `--network none`, so there is no published port to talk to —
+# but the pack's server is still listening on the container's own loopback.
+# Deliberately stdlib-only: every sandbox image is Python-based, and the point
+# of an isolated container is that it cannot fetch anything extra.
+# Reads the request body from stdin (avoids argv size limits on big scenarios)
+# and writes a {"status", "body"} JSON envelope to stdout.
+_EXEC_HTTP_CLIENT = r"""
+import json, sys, urllib.error, urllib.request
+
+path = sys.argv[1]
+timeout = float(sys.argv[2])
+body = sys.stdin.buffer.read()
+url = "http://127.0.0.1:9000" + path
+if body:
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+else:
+    req = urllib.request.Request(url, method="GET")
+try:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        out = {"status": resp.status, "body": resp.read().decode("utf-8", "replace")}
+except urllib.error.HTTPError as exc:
+    out = {"status": exc.code, "body": exc.read().decode("utf-8", "replace")}
+except Exception as exc:
+    out = {"status": 0, "body": "", "error": "%s: %s" % (type(exc).__name__, exc)}
+sys.stdout.write(json.dumps(out))
+"""
+
+# Headroom for `docker exec` process spawn on top of the in-container HTTP
+# timeout, so the outer subprocess kill never fires before the inner one.
+_EXEC_TRANSPORT_OVERHEAD_S = 30.0
 
 
 _LOOPBACK_ENDPOINT_RE = re.compile(
@@ -332,7 +380,15 @@ class SandboxClient:
     def _build_docker_run_argv(self, name: str, run_dir: str | None) -> list[str]:
         """Assemble the `docker run` argv. Pure (no side effects beyond reading
         config/env) so it can be unit-tested. `run_dir` is the host path to
-        bind-mount writable at `config.run_output_dir` (#6); None disables it."""
+        bind-mount writable at `config.run_output_dir` (#6); None disables it.
+
+        #108: `network_isolated` is honoured here. Isolated packs get
+        `--network none` and NO `-p` — Docker silently drops port bindings on a
+        container with no network (verified: NetworkSettings.Ports comes back
+        empty), so publishing one would be a lie in the argv. The runner talks
+        to those packs through `docker exec` over container loopback instead,
+        which needs no network of any kind. See `_exec_http`.
+        """
         cmd = [
             "docker",
             "run",
@@ -340,9 +396,36 @@ class SandboxClient:
             "-d",
             "--name",
             name,
-            "-p",
-            f"{self.config.host_port}:9000",
         ]
+        # v0.9.0: agentic sandboxes may need to call back to the runner's
+        # host-side model endpoint. On Linux, host.docker.internal only
+        # resolves with this --add-host flag. Both callers-out need it exactly
+        # when the endpoint is loopback — that is precisely the case
+        # resolve_endpoint_for_container() rewrites to host.docker.internal.
+        # #108: aider took this flag unconditionally, which was vestigial for
+        # the common non-loopback case (tailnet/LAN model endpoint); it is now
+        # gated on the same condition Hermes already used. The env var stays as
+        # the escape hatch for non-loopback hosts where service-name
+        # deployments are ambiguous, scoped to the packs that actually call out.
+        needs_host_gateway = self.config.pack_id in _HOST_GATEWAY_PACKS and (
+            endpoint_is_loopback(self.model_endpoint)
+            or os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1"
+        )
+        if self.config.network_isolated:
+            # Containment and host-gateway routing are mutually exclusive by
+            # construction: a container that can resolve and reach the host is
+            # not isolated. Refuse rather than silently dropping one of them.
+            if needs_host_gateway:
+                raise ValueError(
+                    f"pack {self.config.pack_id} declares network_isolated=True but also "
+                    f"needs host.docker.internal routing to reach model endpoint "
+                    f"{self.model_endpoint!r}. These are mutually exclusive — a sandbox "
+                    f"that can reach the host's model endpoint is not isolated. Set "
+                    f"network_isolated=False for this pack (and say why in the registry)."
+                )
+            cmd.extend(["--network", "none"])
+        else:
+            cmd.extend(["-p", f"{self.config.host_port}:9000"])
         # Optional bind-mounts (Hermes maps hermes-agent install + uv python tree).
         for host_path, container_path in self.config.host_mounts:
             cmd.extend(["-v", f"{host_path}:{container_path}:ro"])
@@ -356,19 +439,66 @@ class SandboxClient:
             cmd.extend(["-v", f"{run_dir}:{self.config.run_output_dir}"])
             for key, value in self.config.run_mount_env:
                 cmd.extend(["-e", f"{key}={value}"])
-        # v0.9.0: agentic sandboxes may need to call back to the runner's
-        # host-side model endpoint. On Linux, host.docker.internal only
-        # resolves with this --add-host flag. Aider always uses the rewrite;
-        # Hermes auto-enables it for loopback endpoints and keeps the env gate
-        # for non-loopback hosts where service-name deployments are ambiguous.
-        if (
-            self.config.pack_id == "aider-polyglot-30"
-            or (self.config.pack_id == "hermesagent-20" and endpoint_is_loopback(self.model_endpoint))
-            or os.environ.get("BENCHLOCAL_HERMES_RESOLVE_LOCALHOST") == "1"
-        ):
+        if needs_host_gateway:
             cmd.extend(["--add-host", "host.docker.internal:host-gateway"])
         cmd.append(self.config.image_name)
         return cmd
+
+    def _exec_http(
+        self, path: str, payload: dict | None, *, timeout_s: float
+    ) -> tuple[int, str]:
+        """Drive a `--network none` sandbox over `docker exec` + container loopback.
+
+        #108: isolated packs have no published port, but their HTTP server is
+        still listening on the container's own 127.0.0.1:9000. `docker exec`
+        enters the container's network namespace, so this reaches the verifier
+        without granting the container a single byte of egress.
+
+        Returns (status_code, body_text). Raises RuntimeError on transport
+        failure (container gone, exec refused, malformed envelope).
+        """
+        if not self._container_id:
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} is not running (no container id)"
+            )
+        stdin = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        argv = [
+            "docker", "exec", "-i", self._container_id,
+            "python3", "-c", _EXEC_HTTP_CLIENT, path, str(timeout_s),
+        ]
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin,
+                capture_output=True,
+                timeout=timeout_s + _EXEC_TRANSPORT_OVERHEAD_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} exec transport timed out on {path}"
+            ) from exc
+        except OSError as exc:  # includes FileNotFoundError (docker not installed)
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} exec transport failed on {path}: {exc}"
+            ) from exc
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} exec transport failed on {path} "
+                f"(exit {proc.returncode}): {stderr}"
+            )
+        try:
+            envelope = json.loads(proc.stdout.decode("utf-8", "replace"))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} exec transport returned non-JSON on {path}"
+            ) from exc
+        if envelope.get("error"):
+            raise RuntimeError(
+                f"sandbox {self.config.pack_id} exec transport error on {path}: "
+                f"{envelope['error']}"
+            )
+        return int(envelope.get("status", 0)), str(envelope.get("body", ""))
 
     def start(self, *, ready_timeout_s: float = 30.0, run_dir: str | None = None) -> None:
         """Start the container; block until /health returns 200 or ready_timeout_s expires.
@@ -391,11 +521,17 @@ class SandboxClient:
         last_error = ""
         while time.monotonic() < deadline:
             try:
-                response = httpx.get(f"http://127.0.0.1:{self.config.host_port}/health", timeout=1.0)
-                if response.status_code == 200:
+                if self.config.network_isolated:
+                    # #108: no published port on an isolated container.
+                    status, _ = self._exec_http("/health", None, timeout_s=1.0)
+                else:
+                    status = httpx.get(
+                        f"http://127.0.0.1:{self.config.host_port}/health", timeout=1.0
+                    ).status_code
+                if status == 200:
                     return
-                last_error = f"HTTP {response.status_code}"
-            except httpx.HTTPError as exc:
+                last_error = f"HTTP {status}"
+            except (httpx.HTTPError, RuntimeError, OSError) as exc:
                 last_error = str(exc)
             time.sleep(0.25)
         self.stop()
@@ -518,13 +654,28 @@ class SandboxClient:
         # Callers can override per-call (e.g., /verify-turn might be shorter
         # than /verify-start for the same pack).
         timeout = timeout_s if timeout_s is not None else self.config.request_timeout_s
-        response = httpx.post(
-            f"http://127.0.0.1:{self.config.host_port}{path}",
-            json=payload,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
+        if self.config.network_isolated:
+            # #108: isolated packs have no published port — go through the
+            # container's own loopback via `docker exec`.
+            status, body = self._exec_http(path, payload, timeout_s=timeout)
+            if status != 200:
+                raise RuntimeError(
+                    f"sandbox {self.config.pack_id} returned HTTP {status} for {path}"
+                )
+            try:
+                data = json.loads(body)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"sandbox {self.config.pack_id} returned non-JSON for {path}"
+                ) from exc
+        else:
+            response = httpx.post(
+                f"http://127.0.0.1:{self.config.host_port}{path}",
+                json=payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError(f"sandbox {self.config.pack_id} returned non-object JSON")
         return data

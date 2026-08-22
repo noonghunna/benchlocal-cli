@@ -145,6 +145,21 @@ toolchains). On rigs with <30 GB free, run
   + simplest grading). Models that are stronger on `diff` or `udiff`
   formats will under-perform here. Override via
   `raw_scenario.default_edit_format` if needed.
-- **Tests run in-image**: a model-emitted edit could in principle
-  exfiltrate via the unit tests, but the image is `--rm` and exercises
-  are network-isolated by default.
+- **Tests run in-image, and this pack's network is NOT isolated**: a
+  model-emitted edit could in principle exfiltrate via the unit tests. The
+  image is `--rm`, but that is the only containment *for this pack* — do not
+  read it as network containment. `sandbox.py` sets
+  `network_isolated=False,  # aider needs to call out to model_endpoint`, and
+  that is a real requirement rather than an oversight: the exercise loop drives
+  `aider` against the runner's model endpoint from inside the container, so the
+  container must be able to reach it. The runner now honours `network_isolated`
+  — packs declaring `True` (`cli-40`, `humaneval-plus-30`, `lcb-v6-30`) run
+  under `--network none` — but aider is deliberately not one of them, and the
+  two are mutually exclusive by construction: `sandbox.py` raises if a pack
+  declares isolation while also needing
+  `--add-host host.docker.internal:host-gateway`. That flag is still added for
+  this pack, now only when the model endpoint is a loopback address (the case
+  `resolve_endpoint_for_container()` rewrites); for a LAN endpoint it was
+  vestigial and is no longer emitted. Treat exercise code here as running with
+  full outbound network access, and do not point this pack at untrusted
+  exercises or an untrusted model.
