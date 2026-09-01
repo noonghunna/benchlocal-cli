@@ -223,7 +223,8 @@ The output JSON includes everything needed to re-run a scenario for debugging:
 - raw scenario JSONL line
 - raw response
 
-Storing the JSON enables `--previous-result PATH --emit-delta` for regression-tracking.
+Storing the JSON enables `--previous-result PATH`, which emits the regression delta
+automatically on the next run.
 
 ## Failure mode handling
 
