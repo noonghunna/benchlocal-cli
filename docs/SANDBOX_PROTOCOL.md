@@ -139,10 +139,15 @@ fields and also carries provider-native `enable_thinking` and
 for both arms; the off arm uses `thinking_budget: 1`, while the on arm uses
 the configured thinking-token budget. Explicit `--extra-body` values win.
 
-Each runner-owned model turn is capped by `--model-turn-timeout` (300 seconds
-by default), independently of the larger scenario timeout. The vendored direct
-CLI adapter applies the same default cap and forwards all four generation
-controls when invoked through `/run-scenario`.
+Each runner-owned model turn follows the speed/token-scaled scenario timeout by
+default. `--model-turn-timeout N` installs a literal per-call cap (and `0`
+disables that explicit cap); use it when an operator needs a hard watchdog. Hermes
+passes the same automatic budget to its sandbox-owned agent loop;
+`BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` remains a literal override. Direct
+`/run-scenario` callers must provide their own `model_turn_timeout_seconds` when
+they need a value other than the adapter standalone default.
+The Hermes HTTP request timeout includes headroom beyond the inner subprocess
+watchdog so the sandbox can return its timeout diagnostic.
 
 ## Hermes-specific: v0.7.3 model-endpoint passthrough
 

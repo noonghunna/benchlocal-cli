@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -53,7 +54,9 @@ class SandboxConfig:
 # it (never lower it below this default). request_timeout_s tracks the inner
 # cap plus headroom so the outer HTTP read doesn't fire before the inner kill.
 _AIDER_DEFAULT_BATCH_TIMEOUT_S = 3600.0
-_AIDER_REQUEST_TIMEOUT_HEADROOM_S = 300.0
+# Keep the outer HTTP read alive long enough for the sandbox-owned watchdog to
+# fire and return its diagnostic payload first.
+_REQUEST_TIMEOUT_HEADROOM_S = 300.0
 
 
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
@@ -580,7 +583,7 @@ def config_for_pack(
     host_mounts: tuple[tuple[str, str], ...] = config.host_mounts
     env: tuple[tuple[str, str], ...] = config.env
     request_timeout_s = config.request_timeout_s
-    if pack_id != "aider-polyglot-30" and batch_timeout_s and batch_timeout_s > request_timeout_s:
+    if pack_id not in ("aider-polyglot-30", "hermesagent-20") and batch_timeout_s and batch_timeout_s > request_timeout_s:
         request_timeout_s = float(batch_timeout_s)
 
     if pack_id == "aider-polyglot-30":
@@ -599,15 +602,34 @@ def config_for_pack(
         if batch_timeout_s and batch_timeout_s > inner:
             inner = float(batch_timeout_s)
         env = env + (("AIDER_BENCHMARK_TIMEOUT_S", str(int(inner))),)
-        request_timeout_s = inner + _AIDER_REQUEST_TIMEOUT_HEADROOM_S
+        request_timeout_s = inner + _REQUEST_TIMEOUT_HEADROOM_S
 
     if pack_id == "hermesagent-20":
-        # Per-scenario subprocess wall-clock cap inside the container. Default
-        # to 300s (5 min) — long enough for legitimate multi-turn agent loops
-        # but short enough that a stuck scenario doesn't burn the whole bench.
-        # Override via BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner.
-        sub_timeout = os.environ.get("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "300")
+        # Per-scenario subprocess wall-clock cap inside the container. When the
+        # runner has an automatically scaled budget, carry that budget through so
+        # slow rigs do not get truncated by the historical 300s default. An
+        # explicit environment override remains literal and wins.
+        sub_timeout_override = os.environ.get("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S")
+        if sub_timeout_override is None:
+            sub_timeout_s = max(300.0, float(batch_timeout_s or 0.0))
+            sub_timeout = str(math.ceil(sub_timeout_s))
+        else:
+            sub_timeout = sub_timeout_override
         env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", sub_timeout),)
+        # Keep the outer request alive beyond whichever budget governs the
+        # sandbox: the scaled scenario budget or a larger literal override.
+        effective_timeout_s = max(300.0, float(batch_timeout_s or 0.0))
+        if sub_timeout_override is not None:
+            try:
+                effective_timeout_s = max(effective_timeout_s, float(sub_timeout_override))
+            except ValueError:
+                # The Hermes runtime fails loudly for an invalid override; the
+                # registry timeout remains the only useful outer bound here.
+                pass
+        request_timeout_s = max(
+            config.request_timeout_s,
+            math.ceil(effective_timeout_s) + _REQUEST_TIMEOUT_HEADROOM_S,
+        )
         # Hermes-agent v0.13+ enforces a 64K context-window minimum on the
         # served model. Models at smaller windows (Gemma 4 at 32K) fail this
         # check even though scenarios fit in <8K tokens. Inject the override

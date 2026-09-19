@@ -94,7 +94,7 @@ Each scenario's timeout is sized by precedence (highest wins):
 
 The automatic or static result is then capped by `--timeout-ceiling-s N` (env `BENCHLOCAL_TIMEOUT_CEILING_S`) when set. A pack may provide the same guard as `timeout_ceiling_s` metadata; the CLI/environment value wins, and `--timeout-ceiling-s 0` explicitly disables a pack ceiling. The exact `--timeout-per-case` override is never capped.
 
-Runner-owned model calls in sandboxed packs have a second, independent watchdog: `--model-turn-timeout N` (default `300` seconds; env `BENCHLOCAL_MODEL_TURN_TIMEOUT`). It caps one endpoint call even when speed/thinking scaling gives the scenario a much larger overall budget. Pass `0` to disable the cap. Sandbox-owned agent processes retain their own subprocess watchdogs.
+Runner-owned model calls in sandboxed packs use the same speed/token-scaled scenario budget by default. Set `--model-turn-timeout N` (or env `BENCHLOCAL_MODEL_TURN_TIMEOUT`) to install a literal per-call watchdog; pass `0` to disable that explicit cap. Hermes' sandbox-owned agent loop also inherits the scaled budget; `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` remains an explicit literal override. This avoids truncating slow rigs at a fixed wall-clock value while preserving operator hard bounds.
 
 A **request timeout is not retried** by the transport retry loop (a timeout means the request budget was genuinely hit); connection errors and HTTP 5xx still are. `--retry-on-timeout` (default off) restores the old transport behavior. Scenario-level timeout/runaway retries are separately controlled by `--retry-runaways`.
 

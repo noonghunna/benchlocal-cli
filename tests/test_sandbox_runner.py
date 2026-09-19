@@ -1216,6 +1216,57 @@ def test_config_for_pack_hermes_populates_bind_mounts(monkeypatch, tmp_path):
     assert "HERMES_AGENT_PYTHON" not in env_keys
 
 
+def test_config_for_pack_hermes_scales_subprocess_timeout(monkeypatch):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.delenv("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", raising=False)
+    config = sandbox_module.config_for_pack("hermesagent-20", batch_timeout_s=1800.25)
+
+    assert dict(config.env)["HERMES_SUBPROCESS_TIMEOUT_S"] == "1801"
+    # The HTTP read must outlive the rounded inner watchdog so Hermes can
+    # return its timeout diagnostic instead of being cut off by the client.
+    assert config.request_timeout_s == 2101.0
+
+
+def test_hermes_runtime_uses_configured_subprocess_timeout():
+    from pathlib import Path
+
+    runtime = (Path(__file__).parents[1] / "vendor/HermesAgent-20/verification/hermes-runtime.mjs").read_text()
+
+    assert "HERMES_SUBPROCESS_TIMEOUT_S" in runtime
+    assert runtime.count("timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS") == 2
+    assert "timeoutMs: 10 * 60 * 1000" not in runtime
+
+
+def test_config_for_pack_hermes_rounds_inner_timeout_before_headroom():
+    from benchlocal_cli import sandbox as sandbox_module
+
+    config = sandbox_module.config_for_pack("hermesagent-20", batch_timeout_s=899.9)
+
+    assert dict(config.env)["HERMES_SUBPROCESS_TIMEOUT_S"] == "900"
+    assert config.request_timeout_s == 1200.0
+
+
+def test_config_for_pack_hermes_subprocess_override_wins(monkeypatch):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.setenv("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "42")
+    config = sandbox_module.config_for_pack("hermesagent-20", batch_timeout_s=1800)
+
+    assert dict(config.env)["HERMES_SUBPROCESS_TIMEOUT_S"] == "42"
+    assert config.request_timeout_s == 2100.0
+
+
+def test_config_for_pack_hermes_large_override_extends_request_timeout(monkeypatch):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.setenv("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "4000.2")
+    config = sandbox_module.config_for_pack("hermesagent-20", batch_timeout_s=1800)
+
+    assert dict(config.env)["HERMES_SUBPROCESS_TIMEOUT_S"] == "4000.2"
+    assert config.request_timeout_s == 4301.0
+
+
 def test_config_for_pack_hermes_adds_venv_python_mount(monkeypatch, tmp_path):
     """When the host install has a venv with a uv-managed python, both the
     install dir AND the uv python tree are bind-mounted, and HERMES_AGENT_PYTHON
@@ -1474,7 +1525,7 @@ def _cli_multiturn_fixture() -> tuple[dict, dict]:
     )
 
 
-def test_sandbox_model_turn_timeout_caps_thinking_scaled_requests(monkeypatch):
+def test_sandbox_model_turn_timeout_follows_thinking_scaled_requests(monkeypatch):
     import benchlocal_cli.runner as runner_module
 
     FakeHTTPClient.calls = 0
@@ -1495,17 +1546,37 @@ def test_sandbox_model_turn_timeout_caps_thinking_scaled_requests(monkeypatch):
 
     assert run.result.passed is True
     assert runner._timeout_budget_for_scenario(meta, scenario) == 960
-    assert FakeHTTPClient.timeouts == [300, 300]
+    # The default watchdog follows the scaled scenario budget instead of
+    # truncating the request at the historical 300-second cap.
+    assert FakeHTTPClient.timeouts == [960, 960]
 
 
-def test_sandbox_model_turn_timeout_caps_large_budget_and_is_configurable():
+def test_sandbox_model_timeout_uses_scaled_scenario_budget():
+    runner = Runner(
+        endpoint="http://localhost:9999",
+        model="fake",
+        measured_tps=50,
+    )
+    meta = {
+        "supports_sandboxed_only": True,
+        "default_max_seconds": 300,
+        "timeout_reference_tps": 100,
+    }
+
+    scenario_timeout = runner._timeout_budget_for_scenario(meta, {})
+
+    assert scenario_timeout == 600
+    assert runner._model_request_timeout(meta, scenario_timeout) == 600
+
+
+def test_sandbox_model_turn_timeout_defaults_to_scenario_budget_and_is_configurable():
     sandbox_meta = {"supports_sandboxed_only": True}
     ordinary_meta: dict = {}
 
     assert (
         Runner(endpoint="http://localhost:9999", model="fake")
         ._model_request_timeout(sandbox_meta, 4800)
-        == 300
+        == 4800
     )
     assert (
         Runner(endpoint="http://localhost:9999", model="fake", model_turn_timeout=120)

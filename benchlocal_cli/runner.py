@@ -508,7 +508,7 @@ class Runner:
         model: str,
         timeout_per_case: float | None = None,
         timeout_ceiling_s: float | None = None,
-        model_turn_timeout: float | None = 300.0,
+        model_turn_timeout: float | None = None,
         measured_tps: float | None = None,
         reference_tps: float | None = None,
         timeout_scale_down: bool = False,
@@ -773,9 +773,9 @@ class Runner:
             if not meta.get("supports_sandboxed_only") or pack_id in self._sandbox_clients:
                 continue
             try:
-                # #3: pass the per-case budget through so the aider batch
-                # (one /verify-start spanning all 30 exercises) honors a raised
-                # --timeout-per-case on slow rigs instead of the default cap.
+                # Pass the auto-scaled per-case budget through so sandbox-owned
+                # loops (Aider/Hermes) honor slow-rig timing instead of a fixed
+                # historical cap.
                 client = SandboxClient(
                     config_for_pack(
                         pack_id,
@@ -848,7 +848,12 @@ class Runner:
         return self._scale_timeout_budget(float(value), meta)
 
     def _model_request_timeout(self, meta: dict, scenario_timeout: float) -> float:
-        """Bound one runner-owned sandbox model call without shrinking the scenario budget."""
+        """Bound one runner-owned sandbox model call.
+
+        When no explicit model-turn timeout is configured, the scenario budget
+        is already the speed/token-scaled budget and is used directly. An
+        explicit positive value remains a literal watchdog override.
+        """
         if not meta.get("supports_sandboxed_only") or self.model_turn_timeout is None:
             return scenario_timeout
         return min(scenario_timeout, self.model_turn_timeout)

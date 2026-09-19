@@ -7,6 +7,22 @@ import { HERMES_PINNED_COMMIT } from "./manifest.mjs";
 const HERMES_SOURCE_DIR = "/opt/hermes-agent";
 const HERMES_VENV_DIR = "/opt/hermes-venv";
 const AGENT_RUNNER_PATH = "/opt/verification/agent-runner.py";
+const DEFAULT_HERMES_SUBPROCESS_TIMEOUT_MS = 10 * 60 * 1000;
+
+function hermesSubprocessTimeoutMs() {
+  const raw = process.env.HERMES_SUBPROCESS_TIMEOUT_S;
+  if (raw === undefined) {
+    return DEFAULT_HERMES_SUBPROCESS_TIMEOUT_MS;
+  }
+
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new Error(`HERMES_SUBPROCESS_TIMEOUT_S must be a non-negative number, got ${raw}`);
+  }
+  return Math.ceil(seconds * 1000);
+}
+
+const HERMES_SUBPROCESS_TIMEOUT_MS = hermesSubprocessTimeoutMs();
 
 function getVenvBinaryPath(venvDir, name) {
   return path.join(venvDir, "bin", name);
@@ -312,7 +328,7 @@ export async function executeHermesQuietQuery(request) {
       HERMES_SESSION_SOURCE: "benchlocal-hermesagent-20"
     },
     signal: request.signal,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS
   });
 
   await writeFile(stdoutPath, result.stdout, "utf8");
@@ -396,7 +412,7 @@ export async function executeHermesAgentRun(request) {
       HERMES_SESSION_SOURCE: "benchlocal-hermesagent-20"
     },
     signal: request.signal,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS
   });
 
   await writeFile(stdoutPath, result.stdout, "utf8");

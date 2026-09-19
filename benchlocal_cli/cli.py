@@ -147,9 +147,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--model-turn-timeout",
         type=float,
-        default=_env_float("BENCHLOCAL_MODEL_TURN_TIMEOUT", 300.0),
-        help="maximum seconds for one runner-owned sandbox model call; 0 disables "
-             "(default: 300; env BENCHLOCAL_MODEL_TURN_TIMEOUT)",
+        default=_env_optional_float("BENCHLOCAL_MODEL_TURN_TIMEOUT"),
+        help="maximum seconds for one runner-owned sandbox model call; when unset, "
+             "use the speed/token-scaled scenario budget; 0 disables "
+             "(env BENCHLOCAL_MODEL_TURN_TIMEOUT)",
     )
     run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
     run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")
@@ -1057,8 +1058,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.thinking_sampler = json.dumps(config["thinking_sampler"])
             args.measured_tps = args.measured_tps or config.get("measured_tps")
             args.reference_tps = args.reference_tps or config.get("reference_tps")
-            args.model_turn_timeout = float(
-                config.get("model_turn_timeout", args.model_turn_timeout)
+            restored_model_turn_timeout = config.get(
+                "model_turn_timeout", args.model_turn_timeout
+            )
+            args.model_turn_timeout = (
+                None
+                if restored_model_turn_timeout is None
+                else float(restored_model_turn_timeout)
             )
             args.timeout_per_case = args.timeout_per_case or config.get("timeout_per_case")
             args.timeout_ceiling_s = (
