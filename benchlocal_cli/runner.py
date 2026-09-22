@@ -241,6 +241,20 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _duration_between(started_at: str | None, finished_at: str | None) -> float | None:
+    """#146: wall-clock seconds between two ISO-8601 stamps (`Z` or offset).
+
+    None when either stamp is missing or unparseable, so a hand-built or
+    pre-#146 result simply carries no duration rather than a wrong one.
+    """
+    try:
+        start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+        return max(0.0, (end - start).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
 def _pack_path(pack_id: str):
     return resources.files("benchlocal_cli").joinpath("packs", f"{pack_id}.jsonl")
 
@@ -788,6 +802,7 @@ class Runner:
             self._start_sandboxes(pack_ids, warnings)
             pack_results: list[PackResult] = []
             for pack_id in pack_ids:
+                pack_started = time.perf_counter()
                 pack_result = self.run_pack(
                     pack_id,
                     repeat=repeat,
@@ -795,6 +810,10 @@ class Runner:
                     scenario_ids=selection.get(pack_id) if selection is not None else None,
                     completed_repeats=(completed_repeats or {}).get(pack_id),
                 )
+                # #146: wall clock around the whole pack — inline retries,
+                # verification and inter-scenario overhead included, none of
+                # which the per-scenario latency percentiles see.
+                pack_result.duration_s = time.perf_counter() - pack_started
                 pack_results.append(pack_result)
                 if self._on_pack_complete is not None:
                     self._on_pack_complete(pack_result)
@@ -851,6 +870,7 @@ class Runner:
                     else None
                 ),
                 warnings=warnings,
+                duration_s=_duration_between(started_at, finished_at),
                 thinking_validity=thinking_validity,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,

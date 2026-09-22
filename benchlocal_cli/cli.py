@@ -506,6 +506,73 @@ def _compute_partial_totals(packs: list) -> dict:
     return {"passed": passed, "total": total, "score": (passed / total if total else 0.0)}
 
 
+def _format_duration(seconds: float) -> str:
+    """#146: compact wall clock — `1h02m11s`, `12m30s`, `4.2s`."""
+    total = max(0.0, float(seconds))
+    if total >= 3600:
+        hours, rest = divmod(round(total), 3600)
+        minutes, secs = divmod(rest, 60)
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if total >= 60:
+        minutes, secs = divmod(round(total), 60)
+        return f"{minutes}m{secs:02d}s"
+    return f"{total:.1f}s"
+
+
+def _pack_time_split(pack: PackResult) -> tuple[float, float]:
+    """(attempt-1 latency sum, nested inline-retry latency sum) for a pack."""
+    latency = 0.0
+    retries = 0.0
+    for run in pack.scenarios:
+        latency += float(run.result.latency_seconds or 0.0)
+        for attempt in run.retry_attempts:
+            if isinstance(attempt, dict):
+                retries += float(attempt.get("latency_seconds") or 0.0)
+    return latency, retries
+
+
+def _wall_clock_lines(result: RunResult) -> list[str]:
+    """#146: where the run's wall clock went, or nothing.
+
+    p50/p95 are per-scenario latency and do not add up to elapsed time: they
+    exclude inline retries, sandbox build/boot/teardown, verification calls
+    and inter-scenario overhead. This block puts the elapsed time next to
+    those pieces so the expensive pack is visible. Returns [] when the result
+    carries no `duration_s` (pre-#146 JSON, hand-built results), which is
+    what keeps the default markdown byte-stable.
+    """
+    if result.duration_s is None:
+        return []
+    packs = [pack for pack in result.packs if not pack.skipped]
+    latency = 0.0
+    retries = 0.0
+    for pack in packs:
+        pack_latency, pack_retries = _pack_time_split(pack)
+        latency += pack_latency
+        retries += pack_retries
+    measured = [pack for pack in packs if pack.duration_s is not None]
+    overhead = max(0.0, float(result.duration_s) - latency - retries)
+    parts = []
+    if measured:
+        parts.append(f"packs {_format_duration(sum(float(p.duration_s) for p in measured))}")
+    parts.append(f"scenario latency {_format_duration(latency)}")
+    if retries:
+        parts.append(f"retries {_format_duration(retries)}")
+    parts.append(
+        f"overhead {_format_duration(overhead)} (sandbox setup/teardown, verification, inter-scenario)"
+    )
+    lines = ["", f"Wall clock: {_format_duration(float(result.duration_s))} — {', '.join(parts)}"]
+    for pack in measured:
+        pack_latency, pack_retries = _pack_time_split(pack)
+        pack_overhead = max(0.0, float(pack.duration_s) - pack_latency - pack_retries)
+        detail = f"latency {_format_duration(pack_latency)}"
+        if pack_retries:
+            detail += f", retries {_format_duration(pack_retries)}"
+        detail += f", overhead {_format_duration(pack_overhead)}"
+        lines.append(f"- {pack.pack_id}: {_format_duration(float(pack.duration_s))} ({detail})")
+    return lines
+
+
 def _thinking_label(result: RunResult) -> str:
     if result.thinking_mode == "force-on":
         return "on"
@@ -791,6 +858,9 @@ def _markdown(result: RunResult) -> str:
         lines.append("")
         lines.append("Failure breakdown:")
         lines.extend(f"- {failure}" for failure in failures)
+    # #146: wall-clock block. ADDITIVE and emitted only when the result carries
+    # a duration, so the default markdown for pre-#146 results is unchanged.
+    lines.extend(_wall_clock_lines(result))
     if result.warnings:
         lines.append("")
         lines.append("Warnings:")

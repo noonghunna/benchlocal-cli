@@ -115,6 +115,11 @@ class PackResult:
     warnings: list[str] = field(default_factory=list)
     thinking_enabled: bool = False
     variance: dict[str, float | int | None] | None = None
+    # #146: wall-clock seconds for the whole pack as it ran — inline retries,
+    # verification calls and inter-scenario overhead included, which the
+    # per-scenario latency percentiles never see. None when not measured
+    # (hand-built results, pre-#146 JSON, a pack that ran in another session).
+    duration_s: float | None = None
     # Present only for a selected subset. scenario_count is the selected count;
     # this records the pack's complete catalog size for honest human rendering.
     catalog_scenario_count: int | None = None
@@ -141,6 +146,8 @@ class PackResult:
             "variance": self.variance,
             "scenarios": [scenario.to_dict() for scenario in self.scenarios],
         }
+        if self.duration_s is not None:
+            out["duration_s"] = self.duration_s
         if self.catalog_scenario_count is not None:
             out["catalog_scenario_count"] = self.catalog_scenario_count
         if self.pass_at_k is not None:
@@ -172,6 +179,11 @@ class RunResult:
     # the check didn't run (synthetic traffic); the invalidity travels with the
     # data instead of living only in a terminal someone scrolled past.
     thinking_validity: dict | None = None
+    # #146: wall-clock seconds from started_at to finished_at. Derived from
+    # the two stamps on every path (live run, journal rebuild, resume — where
+    # it spans the sessions and the gap between them). None only when a stamp
+    # is missing, which keeps pre-#146 JSON and hand-built results unchanged.
+    duration_s: float | None = None
     # v0.8: populated when `--previous-result PATH` was passed to the run.
     # None means delta wasn't computed (the default; preserves saved-JSON
     # back-compat with v0.7.x readers per Codex review #9).
@@ -224,6 +236,8 @@ class RunResult:
             out["thinking_control"] = self.thinking_control
         if self.reasoning_effort is not None:
             out["reasoning_effort"] = self.reasoning_effort
+        if self.duration_s is not None:
+            out["duration_s"] = self.duration_s
         if self.thinking_validity:
             out["thinking_validity"] = self.thinking_validity
         if self.delta is not None:

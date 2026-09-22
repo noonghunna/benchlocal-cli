@@ -362,6 +362,21 @@ The source must be a pass@1 result; a prior `--repeat N` artifact already contai
 
 The endpoint, model, thinking mode, and recorded sampling overrides are inherited when available; current credentials still come from the CLI or environment. Pack-set flags such as `--pack` intersect with the generated failed-scenario selection. Human output keeps the baseline pass@1 score first and labels retry totals as `RETRY SAMPLE`; JSON remains an honest partial-selection artifact and adds top-level `retry_failed` consistency metadata. `0/N` is `systematic`; any passing retry is `flaky` because the baseline arm failed. This diagnostic cannot use `--exit-on-regression` and cannot overwrite its `--previous-result`.
 
+## Where the time went
+
+The number in each pack line is `p50` — median per-scenario latency — and the markdown table adds `p95`. Neither adds up to elapsed time: per-scenario latency excludes inline retries (a `verifier_fail` can run three times and only one attempt is summarised), sandbox build/boot/teardown, verification calls, and inter-scenario overhead. A pack whose `p50` is 38 s can still own most of a four-hour run. So every run now records its wall clock (#146):
+
+- `packs[].duration_s` — wall clock around the whole pack as it ran, retries and verification included; `duration_s` at the top level — `started_at` to `finished_at` (for a resumed run this spans the sessions and the time between them; the per-pack figure is the sum of the sessions that ran part of the pack).
+- After the `Failure breakdown:` block the markdown adds one line for the run and one per pack, splitting each into the parts the percentiles do and do not see:
+
+  ```
+  Wall clock: 3h58m42s — packs 3h55m10s, scenario latency 2h01m03s, retries 12m30s, overhead 1h41m33s (sandbox setup/teardown, verification, inter-scenario)
+  - cli-40: 1h40m02s (latency 1h02m11s, retries 8m00s, overhead 29m51s)
+  - hermesagent-20: 1h22m40s (latency 1h20m03s, overhead 2m37s)
+  ```
+
+  The pack table and the `TOTAL` row are unchanged — their bytes are pinned by downstream parsers — and the block is omitted for results that carry no duration (pre-#146 JSON), so existing output is byte-identical. `overhead` is exactly the retry/sandbox/verify cost that was invisible before; at the run level it also includes sandbox start/stop and the gaps between packs. Use it with `--budget-from-timeout` (#145) to check that `N scenarios × derived budget` fits the time you have.
+
 ## Inspecting failures
 
 The `Failure breakdown:` block above is the quickest read — `failure_mode` + full detail per failed scenario, printed at the end of every run. For deeper forensics, any run with `--save-json` (which `quality-test.sh` sets) records per-scenario tokens, latency, and the full verifier trace; the `inspect` subcommand reads it back:
