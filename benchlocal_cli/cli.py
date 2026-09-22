@@ -557,6 +557,68 @@ def _scenario_progress(run: ScenarioRun, index: int, total: int) -> None:
     print(_scenario_progress_text(run, index, total), file=sys.stderr, flush=True)
 
 
+def _token_lines(result: RunResult) -> list[str]:
+    """#147: where the run's tokens went, or nothing.
+
+    Sums the already-persisted per-scenario counts (tier 1) and the tier-2
+    prompt/total/reasoning counts where the endpoint reported them. Rows
+    without a count are reported as missing — hermesagent-20's agent calls
+    the model from inside its container, so the runner never sees those
+    responses — instead of being read as zero. Returns [] when the result
+    carries no rollup (pre-#147 JSON, hand-built results), which is what
+    keeps the default markdown byte-stable.
+    """
+    totals = result.tokens
+    if not isinstance(totals, dict):
+        return []
+
+    def _n(value: object) -> str:
+        return f"{int(value or 0):,}"
+
+    head = (
+        f"Tokens: {_n(totals.get('completion'))} completion across "
+        f"{int(totals.get('counted') or 0)} / {int(totals.get('total') or 0)} scored rows"
+    )
+    missing = int(totals.get("missing") or 0)
+    if missing:
+        gaps = [
+            f"{pack.pack_id} {int(pack.tokens.get('missing') or 0)}"
+            for pack in result.packs
+            if isinstance(pack.tokens, dict) and int(pack.tokens.get("missing") or 0)
+        ]
+        head += f" ({missing} without a count: {', '.join(gaps)})" if gaps else f" ({missing} without a count)"
+    parts = [head]
+    if int(totals.get("retries") or 0):
+        parts.append(f"retries {_n(totals['retries'])}")
+    if isinstance(totals.get("reasoning"), int):
+        parts.append(f"reasoning {_n(totals['reasoning'])}")
+    if isinstance(totals.get("prompt"), int):
+        parts.append(f"prompt {_n(totals['prompt'])}")
+    if isinstance(totals.get("endpoint_reported_total"), int):
+        parts.append(
+            f"endpoint-reported total {_n(totals['endpoint_reported_total'])} "
+            f"(every request, including probes and retries)"
+        )
+    lines = ["", "; ".join(parts)]
+    for pack in result.packs:
+        summary = pack.tokens
+        if pack.skipped or not isinstance(summary, dict):
+            continue
+        cell = f"- {pack.pack_id}: {_n(summary.get('completion'))} completion"
+        counted = int(summary.get("counted") or 0)
+        total = int(summary.get("total") or 0)
+        if counted != total:
+            cell += f" ({counted} / {total} with a count)"
+        if int(summary.get("retries") or 0):
+            cell += f", retries {_n(summary['retries'])}"
+        if isinstance(summary.get("reasoning"), int):
+            cell += f", reasoning {_n(summary['reasoning'])}"
+        if isinstance(summary.get("prompt"), int):
+            cell += f", prompt {_n(summary['prompt'])}"
+        lines.append(cell)
+    return lines
+
+
 def _compute_partial_totals(packs: list) -> dict:
     """Compute totals for a partial run (incremental JSON save, #23)."""
     total = sum(p.total for p in packs)
@@ -966,6 +1028,11 @@ def _markdown(result: RunResult) -> str:
         lines.append("")
         lines.append("Warnings:")
         lines.extend(f"- {warning}" for warning in result.warnings)
+    # #147: token block. ADDITIVE and emitted only when the result carries a
+    # rollup, so the default markdown for pre-#147 results is unchanged. It
+    # closes the report (after Warnings) so it cannot collide with the blocks
+    # other changes add after the TOTAL row or before Warnings.
+    lines.extend(_token_lines(result))
     return "\n".join(lines)
 
 

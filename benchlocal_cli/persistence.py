@@ -17,6 +17,8 @@ from benchlocal_cli.runner import (
     _duration_between,
     _latency,
     _pass_at_k_summary,
+    _pack_tokens,
+    _combine_tokens,
     _repeat_variance,
     _utc_now,
     load_pack,
@@ -176,6 +178,7 @@ def _aggregate_pack(
                 duration_s=duration_s,
                 catalog_scenario_count=catalog_scenario_count,
                 pass_at_k=_pass_at_k_summary(runs, configured_k),
+                tokens=_pack_tokens(runs),
                 diagnostics=pack_diagnostics(runs),
                 runaway=runaway_summary(runs),
             )
@@ -198,9 +201,22 @@ def _aggregate_pack(
         duration_s=duration_s,
         catalog_scenario_count=catalog_scenario_count,
         pass_at_k=_pass_at_k_summary(runs, configured_k),
+        tokens=_pack_tokens(runs),
         diagnostics=pack_diagnostics(runs),
         runaway=runaway_summary(runs),
     )
+
+
+def _tokens_with_counter(packs: list[PackResult], config: dict) -> dict | None:
+    """#147: the per-pack rollups summed, plus the spend guard's counter when a
+    session recorded one (`merge_resume` sums the sessions' counters into the
+    config; a journal-only rebuild has none, and says so by omitting the key)."""
+    combined = _combine_tokens(pack.tokens for pack in packs)
+    counter = config.get("endpoint_reported_total")
+    if isinstance(counter, int) and not isinstance(counter, bool):
+        combined = combined or {"completion": 0, "retries": 0, "counted": 0, "missing": 0, "total": 0}
+        combined["endpoint_reported_total"] = counter
+    return combined
 
 
 def _unique_warnings(*groups: list[str] | None) -> list[str]:
@@ -295,6 +311,7 @@ def _build_result(
         duration_s=_duration_between(started_at, finished_at),
         thinking_validity=thinking_validity or None,
         sampling_overrides=config.get("sampling_overrides"),
+        tokens=_tokens_with_counter(packs, config),
         sampling_source=config.get("sampling_source"),
         server_defaults=config.get("server_defaults"),
         token_budget=config.get("token_budget"),
@@ -496,6 +513,18 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     config["server_defaults"] = new_result.server_defaults
     config["thinking_control"] = new_result.thinking_control
     config["reasoning_effort"] = new_result.reasoning_effort
+    # #147: the spend counter is per session; sum the ones that were recorded
+    # (a session that died before writing its final JSON leaves no counter).
+    counters = [
+        value
+        for value in (
+            (state.previous_result.get("tokens") or {}).get("endpoint_reported_total"),
+            (new_result.tokens or {}).get("endpoint_reported_total"),
+        )
+        if isinstance(value, int) and not isinstance(value, bool)
+    ]
+    if counters:
+        config["endpoint_reported_total"] = sum(counters)
     previous_warnings = [
         warning
         for warning in state.previous_result.get("warnings") or []

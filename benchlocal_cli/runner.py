@@ -526,6 +526,39 @@ def _negative_control_response(text: str) -> dict:
     }
 
 
+# #147: the `usage` block of one completion, as the four counts a run reports.
+_USAGE_FIELDS = ("tokens_completion", "tokens_prompt", "tokens_total", "tokens_reasoning")
+
+
+def _usage_counts(raw_response: dict | None) -> dict[str, int | None]:
+    """Read `usage` from one response: completion / prompt / total, plus
+    `completion_tokens_details.reasoning_tokens` where the endpoint splits
+    reasoning out (OpenAI-style cloud endpoints; llama.cpp reasons inline so
+    it reports none). Missing or non-integer values are None, never 0."""
+    usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
+    if not isinstance(usage, dict):
+        return dict.fromkeys(_USAGE_FIELDS)
+
+    def _int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    details = usage.get("completion_tokens_details")
+    reasoning = _int(details.get("reasoning_tokens")) if isinstance(details, dict) else None
+    return {
+        "tokens_completion": _int(usage.get("completion_tokens")),
+        "tokens_prompt": _int(usage.get("prompt_tokens")),
+        "tokens_total": _int(usage.get("total_tokens")),
+        "tokens_reasoning": reasoning,
+    }
+
+
+def _add_usage(total: dict[str, int | None], raw_response: dict | None) -> None:
+    """Accumulate one turn's counts into a multi-turn total (None + n = n)."""
+    for key, value in _usage_counts(raw_response).items():
+        if value is not None:
+            total[key] = (total.get(key) or 0) + value
+
+
 def _endpoint_base(endpoint: str) -> str:
     """Strip supported OpenAI endpoint suffixes to the serving base URL."""
     base = endpoint.rstrip("/")
@@ -708,6 +741,91 @@ def _pass_at_k_summary(
         "retried_scenarios": sum(1 for run in counted if run.attempt_count > 1),
         "retry_attempts": sum(max(0, run.attempt_count - 1) for run in counted),
     }
+
+
+def _pack_tokens(runs: list) -> dict | None:
+    """#147: token usage for a pack, from fields that are already persisted.
+
+    `completion` sums attempt-1 `tokens_completion` over the rows the score
+    counts (`verifier_not_implemented` excluded), so it lines up with
+    `passed / total`; `retries` sums the nested inline-retry attempts, which
+    cost tokens too but are not attempt 1. `counted` / `missing` say how many
+    scored rows carried a count — a pack whose agent calls the model from
+    inside its container (hermesagent-20) reports none, and that gap is
+    reported rather than silently read as zero. `prompt`, `total_tokens` and
+    `reasoning` (tier 2) are present only when at least one row has them.
+    Accepts ScenarioRun objects or their saved-JSON dicts. None when the
+    pack has no counted rows.
+    """
+
+    def _field(run: object, key: str) -> object:
+        if isinstance(run, dict):
+            result = run.get("result")
+            if isinstance(result, dict) and key in result:
+                return result.get(key)
+            return run.get(key)
+        result = getattr(run, "result", None)
+        return getattr(result, key, None) if result is not None else getattr(run, key, None)
+
+    def _int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    completion = 0
+    counted = 0
+    total = 0
+    retries = 0
+    tier2: dict[str, int | None] = {"prompt": None, "total_tokens": None, "reasoning": None}
+    for run in runs:
+        if _field(run, "failure_mode") == "verifier_not_implemented":
+            continue
+        total += 1
+        value = _int(_field(run, "tokens_completion"))
+        if value is not None:
+            completion += value
+            counted += 1
+        for key, field in (("prompt", "tokens_prompt"), ("total_tokens", "tokens_total"), ("reasoning", "tokens_reasoning")):
+            extra = _int(_field(run, field))
+            if extra is not None:
+                tier2[key] = (tier2[key] or 0) + extra
+        attempts = run.get("retry_attempts") if isinstance(run, dict) else getattr(run, "retry_attempts", None)
+        for attempt in attempts or []:
+            if isinstance(attempt, dict):
+                retry_value = _int(attempt.get("tokens_completion"))
+                if retry_value is None and isinstance(attempt.get("result"), dict):
+                    retry_value = _int(attempt["result"].get("tokens_completion"))
+                if retry_value is not None:
+                    retries += retry_value
+    if not total:
+        return None
+    summary: dict = {
+        "completion": completion,
+        "retries": retries,
+        "counted": counted,
+        "missing": total - counted,
+        "total": total,
+    }
+    for key, value in tier2.items():
+        if value is not None:
+            summary[key] = value
+    return summary
+
+
+def _combine_tokens(summaries) -> dict | None:
+    """#147: sum per-pack token rollups into the run-level one."""
+    present = [summary for summary in summaries if isinstance(summary, dict)]
+    if not present:
+        return None
+    combined: dict = {
+        key: sum(int(summary.get(key) or 0) for summary in present)
+        for key in ("completion", "retries", "counted", "missing", "total")
+    }
+    for key in ("prompt", "total_tokens", "reasoning"):
+        values = [summary[key] for summary in present if isinstance(summary.get(key), int)]
+        if values:
+            combined[key] = sum(values)
+    # `total` is the row count; the endpoint's summed usage.total_tokens is
+    # `total_tokens`, so the two cannot be confused.
+    return combined
 
 
 def _combine_pass_at_k(packs: list[PackResult]) -> dict[str, float | int] | None:
@@ -1005,6 +1123,7 @@ class Runner:
                 duration_s=_duration_between(started_at, finished_at),
                 thinking_validity=thinking_validity,
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
+                tokens=self._run_tokens(pack_results),
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
                 token_budget=self._token_budget_report,
@@ -1017,6 +1136,21 @@ class Runner:
             self._stop_sandboxes()
             signal.signal(signal.SIGINT, old_sigint)
             signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _run_tokens(self, pack_results: list[PackResult]) -> dict | None:
+        """#147: the per-pack rollups summed, plus the spend guard's counter.
+
+        `tokens_used` sums `usage.total_tokens` over EVERY request the runner
+        made — probes, transport retries, inline retries, multi-turn turns —
+        and until now surfaced only in the exception when --max-total-tokens
+        tripped. On a successful run it is the closest thing to the bill.
+        """
+        combined = _combine_tokens(pack.tokens for pack in pack_results)
+        if combined is None and not self.tokens_used:
+            return None
+        combined = combined or {"completion": 0, "retries": 0, "counted": 0, "missing": 0, "total": 0}
+        combined["endpoint_reported_total"] = int(self.tokens_used)
+        return combined
 
     def _props_chat_template(self) -> str | None:
         """Return llama.cpp's live chat template, or None when unavailable."""
@@ -2095,6 +2229,7 @@ class Runner:
                     thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
                     catalog_scenario_count=selected_catalog_count,
                     variance=_repeat_variance(runs, repeat),
+                    tokens=_pack_tokens(runs),
                     pass_at_k=_pass_at_k_summary(
                         runs,
                         self._configured_pass_at_k(meta, repeat),
@@ -2119,6 +2254,7 @@ class Runner:
             thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
             catalog_scenario_count=selected_catalog_count,
             variance=_repeat_variance(runs, repeat),
+            tokens=_pack_tokens(runs),
             pass_at_k=_pass_at_k_summary(
                 runs,
                 self._configured_pass_at_k(meta, repeat),
@@ -2232,11 +2368,7 @@ class Runner:
             module = importlib.import_module(f"benchlocal_cli.scoring.{module_name}")
             result = module.score_scenario(scenario, raw_response)
         latency = time.perf_counter() - started if scenario["id"] in self.mock_responses else latency
-        tokens = None
-        usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
-        if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
-            tokens = usage["completion_tokens"]
-        result = replace(result, latency_seconds=latency, tokens_completion=tokens)
+        result = replace(result, latency_seconds=latency, **_usage_counts(raw_response))  # #147
         result = self._reclassify_if_truncated(result, raw_response)  # #61
         result = self._inject_transient_trace(result, transient_trace)
         if sandboxed_path:
@@ -2519,6 +2651,7 @@ class Runner:
         assistant_messages: list[dict] = []
         tool_calls: list[dict] = []
         tokens_total = 0
+        usage_sum: dict[str, int | None] = {}  # #147: prompt/total/reasoning across turns
         state_id: str | None = None
         ended = False
 
@@ -2683,6 +2816,7 @@ class Runner:
                 token_count = self._completion_tokens(raw_response)
                 if token_count is not None:
                     tokens_total += token_count
+                _add_usage(usage_sum, raw_response)
 
                 assistant_message = self._message_from_response(raw_response)
                 assistant_messages.append(assistant_message)
@@ -2746,6 +2880,9 @@ class Runner:
             result,
             latency_seconds=latency,
             tokens_completion=tokens_total if tokens_total else None,
+            tokens_prompt=usage_sum.get("tokens_prompt"),
+            tokens_total=usage_sum.get("tokens_total"),
+            tokens_reasoning=usage_sum.get("tokens_reasoning"),
             verifier_trace=verifier_trace,
         )
         result = self._inject_transient_trace(result, transient_trace)
