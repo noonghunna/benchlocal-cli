@@ -116,6 +116,13 @@ _CONTENT_FAILURE_MODES = frozenset({
     "wrong_structure",
 })
 
+# A multi-turn episode that stops at a turn cut off by the token cap is graded
+# on the state its completed turns left behind. A failure there is the cap's
+# doing, so it is relabelled `token_limit` like #61 does for single turns —
+# including the cli sandbox's "agent loop ended before success", which is only
+# true because the harness ended the loop at the truncated turn.
+_TRUNCATED_TURN_RECLASSIFY_MODES = _CONTENT_FAILURE_MODES | {"agent_loop_exhausted"}
+
 # Inline failure-only retries (#111) deliberately distinguish model verdicts
 # from harness failures and expensive runaway behavior.
 DEFAULT_INLINE_RETRY_ATTEMPTS = 3
@@ -2623,6 +2630,14 @@ class Runner:
         return {"role": "assistant", "content": ""}
 
     @staticmethod
+    def _finish_reason(raw_response: dict | None) -> str | None:
+        choices = raw_response.get("choices") if isinstance(raw_response, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            return reason if isinstance(reason, str) else None
+        return None
+
+    @staticmethod
     def _completion_tokens(raw_response: dict | None) -> int | None:
         usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
         if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
@@ -2654,6 +2669,7 @@ class Runner:
         usage_sum: dict[str, int | None] = {}  # #147: prompt/total/reasoning across turns
         state_id: str | None = None
         ended = False
+        truncated_turn: int | None = None
 
         try:
             start_kwargs: dict = {}
@@ -2823,6 +2839,25 @@ class Runner:
                 history.append(assistant_message)
                 tool_calls.extend(self._tool_calls_from_message(assistant_message))
 
+                if self._finish_reason(raw_response) == "length":
+                    # The turn was cut off at the token cap, so any tool call in
+                    # it is partial. Executing it is wrong, and sending it back
+                    # as history is worse: llama.cpp validates tool-call
+                    # arguments in incoming history and answers 500, which read
+                    # as the model's fault (#152). Stop here and grade what the
+                    # completed turns did, as a max-turns ending does.
+                    truncated_turn = _turn
+                    end_payload = sandbox_client.verify_multiturn_end(state_id)
+                    final_payload = end_payload
+                    ended = True
+                    result = ScenarioResult(
+                        scenario_id=scenario["id"],
+                        passed=bool(end_payload.get("passed")),
+                        failure_mode=end_payload.get("failure_mode", "verifier_fail"),
+                        detail=str(end_payload.get("detail", "")),
+                    )
+                    break
+
                 turn_payload = sandbox_client.verify_multiturn_turn(state_id, raw_response)
                 action = turn_payload.get("action")
                 if action == "verify-final":
@@ -2862,6 +2897,20 @@ class Runner:
 
             if result is None:
                 result = ScenarioResult(scenario["id"], False, "server_error", "multi-turn loop exited without result")
+            if (
+                truncated_turn is not None
+                and not result.passed
+                and result.failure_mode in _TRUNCATED_TURN_RECLASSIFY_MODES
+            ):
+                result = replace(
+                    result,
+                    failure_mode="token_limit",
+                    detail=(
+                        f"turn {truncated_turn} truncated at token limit (finish_reason=length); "
+                        f"episode stopped there and graded; underlying verdict was "
+                        f"{result.failure_mode}: {result.detail}"
+                    ),
+                )
         finally:
             if state_id and not ended:
                 with suppress(Exception):
@@ -2876,6 +2925,8 @@ class Runner:
                 k: v for k, v in final_payload.items()
                 if k not in ("passed", "failure_mode", "detail", "action")
             } or None
+        if truncated_turn is not None:
+            verifier_trace = {**(verifier_trace or {}), "truncated_turn": truncated_turn}
         result = replace(
             result,
             latency_seconds=latency,
