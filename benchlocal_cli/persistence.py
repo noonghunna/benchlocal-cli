@@ -8,7 +8,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 from benchlocal_cli import __version__
-from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.runner import (
     DEFAULT_INLINE_RETRY_ATTEMPTS,
@@ -174,6 +174,7 @@ def _aggregate_pack(
                 catalog_scenario_count=catalog_scenario_count,
                 pass_at_k=_pass_at_k_summary(runs, configured_k),
                 diagnostics=pack_diagnostics(runs),
+                runaway=runaway_summary(runs),
             )
 
     passed = sum(1 for run in counted if run.result.passed)
@@ -194,6 +195,7 @@ def _aggregate_pack(
         catalog_scenario_count=catalog_scenario_count,
         pass_at_k=_pass_at_k_summary(runs, configured_k),
         diagnostics=pack_diagnostics(runs),
+        runaway=runaway_summary(runs),
     )
 
 
@@ -290,6 +292,7 @@ def _build_result(
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
         repeat=repeat,
+        runaway=combine_runaway(pack.runaway for pack in packs),
     )
     retry_context = config.get("retry_failed")
     if retry_context is not None:
