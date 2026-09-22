@@ -18,11 +18,17 @@ from importlib import resources
 import httpx
 
 from benchlocal_cli import __version__
-from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
-from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
+from benchlocal_cli.types import (
+    RUNAWAY_FAILURE_MODES,
+    PackResult,
+    RunResult,
+    ScenarioResult,
+    ScenarioRun,
+)
 
 
 class _SpendGuardExceeded(BaseException):
@@ -119,11 +125,9 @@ _INFRA_FAILURE_MODES = frozenset({
     "model_endpoint_unreachable",
     "result_json_malformed",
 })
-_RUNAWAY_FAILURE_MODES = frozenset({
-    "token_limit",
-    "timeout",
-    "agent_runner_timeout",
-})
+# #148: the taxonomy itself now lives in types.py so the summary/JSON rollup
+# shares it; this alias keeps the runner's historical name.
+_RUNAWAY_FAILURE_MODES = RUNAWAY_FAILURE_MODES
 
 _REASONING_HISTORY_FIELDS = frozenset({
     "reasoning",
@@ -868,6 +872,7 @@ class Runner:
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
                 repeat=repeat,
+                runaway=combine_runaway(pack.runaway for pack in pack_results),
             )
         finally:
             self._stop_sandboxes()
@@ -1662,6 +1667,7 @@ class Runner:
                         self._configured_pass_at_k(meta, repeat),
                     ),
                     diagnostics=pack_diagnostics(runs),
+                    runaway=runaway_summary(runs),
                 )
 
         passed = sum(1 for run in counted if run.result.passed)
@@ -1685,6 +1691,7 @@ class Runner:
                 self._configured_pass_at_k(meta, repeat),
             ),
             diagnostics=pack_diagnostics(runs),
+            runaway=runaway_summary(runs),
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:

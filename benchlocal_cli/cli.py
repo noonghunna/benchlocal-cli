@@ -540,6 +540,41 @@ def _thinking_label(result: RunResult) -> str:
     return "pack-defaults"
 
 
+def _runaway_modes_text(summary: dict) -> str:
+    modes = summary.get("modes") or {}
+    parts = [f"{mode} {int(value)}" for mode, value in modes.items() if int(value or 0) > 0]
+    return ", ".join(parts) or "none"
+
+
+def _runaway_lines(result: RunResult) -> list[str]:
+    """#148: the run-level runaway caveat, or nothing.
+
+    `verifier_fail` is the model answering and being wrong; `token_limit` /
+    `timeout` / `agent_runner_timeout` are the model never finishing. Both are
+    fails and the score is untouched — but a run whose losses are budget
+    artifacts must say so. Returns [] whenever the count is zero (or the result
+    predates the rollup), which is what keeps the default markdown byte-stable.
+    """
+    summary = result.runaway
+    if not summary or int(summary.get("count") or 0) <= 0:
+        return []
+    lines = [
+        "",
+        f"Runaway: {int(summary['count'])} / {int(summary.get('total') or 0)} scenarios "
+        f"never finished ({_runaway_modes_text(summary)}) — still counted as failures, "
+        f"but they are budget artifacts, not capability misses.",
+    ]
+    for pack in result.packs:
+        pack_summary = pack.runaway
+        if not pack_summary or int(pack_summary.get("count") or 0) <= 0:
+            continue
+        lines.append(
+            f"- {pack.pack_id}: {int(pack_summary['count'])} / "
+            f"{int(pack_summary.get('total') or 0)} ({_runaway_modes_text(pack_summary)})"
+        )
+    return lines
+
+
 def _markdown(result: RunResult) -> str:
     thinking = _thinking_label(result)
     # v0.8: delta column rendered ONLY when --previous-result was actually
@@ -728,6 +763,10 @@ def _markdown(result: RunResult) -> str:
             lines.append("")
             lines.append("Delta warnings:")
             lines.extend(f"- {w}" for w in d["warnings"])
+    # #148: runaway caveat. ADDITIVE and emitted only when the count is non-zero,
+    # in the style of the `Retry diagnostic:` block above, so the default
+    # markdown stays byte-stable for pinned downstream parsers.
+    lines.extend(_runaway_lines(result))
     if retry_diagnostic is not None:
         lines.extend(
             [

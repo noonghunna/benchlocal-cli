@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from benchlocal_cli.diagnostics import pack_diagnostics
+from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.runner import Runner, _utc_now, load_pack
 from benchlocal_cli.sandbox import SANDBOX_REGISTRY, SandboxClient, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source
@@ -96,6 +96,13 @@ def _recompute_pack(pack: dict) -> None:
         pack["diagnostics"] = diagnostics
     else:
         pack.pop("diagnostics", None)
+    # #148: a rescore can move a row into or out of `token_limit` (#61), so the
+    # runaway rollup is recomputed alongside the score it annotates.
+    runaway = runaway_summary(scenarios)
+    if runaway is not None:
+        pack["runaway"] = runaway
+    else:
+        pack.pop("runaway", None)
 
 
 def _recompute_totals(data: dict) -> None:
@@ -103,6 +110,11 @@ def _recompute_totals(data: dict) -> None:
     total = sum(int(pack.get("total") or 0) for pack in packs)
     passed = sum(int(pack.get("passed") or 0) for pack in packs)
     data["totals"] = {"passed": passed, "total": total, "score": passed / total if total else 0.0}
+    runaway = combine_runaway(pack.get("runaway") for pack in packs)
+    if runaway is not None:
+        data["runaway"] = runaway
+    else:
+        data.pop("runaway", None)
 
 
 def _sandbox_client_for_pack(pack_id: str, image_tag: str) -> SandboxClient:

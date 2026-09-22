@@ -26,6 +26,18 @@ FailureMode = Literal[
     "verifier_not_implemented",
 ]
 
+# Failure modes where the model never produced an answer: the request or the
+# in-sandbox agent episode ran out of budget. A runaway is still a FAIL — the
+# score is untouched — but it is a harness/budget artifact, not evidence about
+# the model's capability, so the runner keeps it out of inline retries by
+# default (#111) and the summary reports it separately (#148). Lives here, next
+# to FailureMode, so runner / persistence / rescore / cli share one definition.
+RUNAWAY_FAILURE_MODES = frozenset({
+    "token_limit",
+    "timeout",
+    "agent_runner_timeout",
+})
+
 
 @dataclass
 class ScenarioResult:
@@ -123,6 +135,12 @@ class PackResult:
     # Additive pack-level telemetry over every recorded completion, including
     # successful finish_reason=length responses and nested retries/turns.
     diagnostics: dict | None = None
+    # #148: additive rollup of the attempt-1 rows that never finished
+    # (`RUNAWAY_FAILURE_MODES`): {"count", "total", "rate", "modes": {...}}.
+    # Counted over the same rows as passed/total, so count/total is directly
+    # comparable to the score. Score arithmetic is untouched — a runaway is
+    # still a fail; this only makes the budget artifacts visible.
+    runaway: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -147,6 +165,8 @@ class PackResult:
             out["pass_at_k"] = self.pass_at_k
         if self.diagnostics is not None:
             out["diagnostics"] = self.diagnostics
+        if self.runaway is not None:
+            out["runaway"] = self.runaway
         return out
 
 
@@ -199,6 +219,9 @@ class RunResult:
     pass_at_k: dict[str, float | int] | None = None
     # Whole-benchmark repeat count. Always at least 1; additive for schema-v1 readers.
     repeat: int = 1
+    # #148: run-level sum of the per-pack `runaway` rollups; None when no pack
+    # produced one (e.g. hand-built or pre-#148 results).
+    runaway: dict | None = None
 
     def to_dict(self) -> dict:
         total = int(self.totals.get("total") or 0)
@@ -240,4 +263,6 @@ class RunResult:
             out["retry_failed"] = self.retry_failed
         if self.pass_at_k is not None:
             out["pass_at_k"] = self.pass_at_k
+        if self.runaway is not None:
+            out["runaway"] = self.runaway
         return out

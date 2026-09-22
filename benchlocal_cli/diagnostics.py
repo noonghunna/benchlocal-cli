@@ -6,6 +6,13 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from benchlocal_cli.types import RUNAWAY_FAILURE_MODES
+
+# #148: display/serialisation order for the runaway modes — the issue's own
+# order, most common first. Any mode added to RUNAWAY_FAILURE_MODES later
+# without a slot here is appended alphabetically rather than dropped.
+_RUNAWAY_MODE_ORDER: tuple[str, ...] = ("token_limit", "timeout", "agent_runner_timeout")
+
 
 def _get(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
@@ -94,3 +101,63 @@ def pack_diagnostics(runs: Iterable[Any]) -> dict[str, Any] | None:
             "response_fields": _sorted_counts(response_fields),
         }
     return diagnostics or None
+
+
+def _runaway_modes() -> list[str]:
+    ordered = [mode for mode in _RUNAWAY_MODE_ORDER if mode in RUNAWAY_FAILURE_MODES]
+    ordered.extend(sorted(RUNAWAY_FAILURE_MODES - set(ordered)))
+    return ordered
+
+
+def runaway_summary(runs: Iterable[Any]) -> dict[str, Any] | None:
+    """#148: count the attempt-1 rows that never produced an answer.
+
+    `verifier_fail` means the model answered and was wrong; `token_limit` /
+    `timeout` / `agent_runner_timeout` mean it never finished. Both score as a
+    fail — this does NOT touch the arithmetic — but a run whose losses are
+    budget artifacts should say so where a human reads it.
+
+    Counts exactly the rows the score counts: the top-level (attempt-1) result
+    of each run, `verifier_not_implemented` excluded, so `count / total` is
+    directly comparable to `passed / total`. Nested inline retries are ignored
+    on purpose: pass@1 is charged for attempt 1, and so is this. For a
+    single-scoreboard pack (aider) the rows are batches, not exercises, so
+    `total` there is the batch count rather than the pack's `total`.
+
+    Accepts ScenarioRun objects or their saved-JSON dicts. None when there are
+    no counted rows (skipped / stubbed pack).
+    """
+    modes = dict.fromkeys(_runaway_modes(), 0)
+    total = 0
+    for run in runs:
+        failure_mode = _result_value(run, "failure_mode")
+        if failure_mode == "verifier_not_implemented":
+            continue
+        total += 1
+        if bool(_result_value(run, "passed", False)):
+            continue
+        if failure_mode in modes:
+            modes[str(failure_mode)] += 1
+    if not total:
+        return None
+    count = sum(modes.values())
+    return {"count": count, "total": total, "rate": count / total, "modes": modes}
+
+
+def combine_runaway(summaries: Iterable[Mapping[str, Any] | None]) -> dict[str, Any] | None:
+    """#148: sum per-pack runaway rollups into the run-level one."""
+    present = [summary for summary in summaries if isinstance(summary, Mapping)]
+    if not present:
+        return None
+    modes = dict.fromkeys(_runaway_modes(), 0)
+    for summary in present:
+        for mode, value in (summary.get("modes") or {}).items():
+            modes[str(mode)] = modes.get(str(mode), 0) + int(value or 0)
+    count = sum(int(summary.get("count") or 0) for summary in present)
+    total = sum(int(summary.get("total") or 0) for summary in present)
+    return {
+        "count": count,
+        "total": total,
+        "rate": count / total if total else 0.0,
+        "modes": modes,
+    }
