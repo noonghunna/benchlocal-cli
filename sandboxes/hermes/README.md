@@ -107,7 +107,7 @@ Container env:
 |---|---|---|
 | `HERMES_AGENT_PATH` | Where the install lives inside the container | `/opt/hermes-agent` |
 | `HERMES_JOB_ROOT` | Per-scenario job dirs (cleaned after each scenario) | `/tmp/hermes-runs` |
-| `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap per scenario. Set by the runner: `max(300, --timeout-per-case)`, or `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` verbatim (#149) | `300` (5min) |
+| `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap per scenario, enforced by the agent watchdog in `hermes-runtime.mjs` (previously a fixed 600 s that clamped larger caps). The proxy's read to upstream waits this cap + 180 s so the watchdog's result arrives first. Set by the runner: `max(300, --timeout-per-case)`, or `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` verbatim (#149) | `300` (5min) |
 | `BENCHLOCAL_HERMES_AGENT_COMMIT` | Override the commit reported in `/health` | git-detected at runtime |
 | `HERMES_PINNED_COMMIT` | Build-time commit (set by Dockerfile) | manifest.mjs default |
 

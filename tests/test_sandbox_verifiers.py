@@ -421,6 +421,110 @@ def test_hermes_verify_start_fails_fast_on_unreachable_endpoint(monkeypatch, tmp
     assert "model endpoint unreachable from sandbox" in out["detail"]
     assert out["trace"]["model_endpoint_reachable"]["ok"] is False
 
+
+class _FakeUpstreamResponse:
+    def __init__(self, status_code: int, body: dict):
+        self.status_code = status_code
+        self.text = json.dumps(body)
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+def _hermes_server_ready_for_upstream(monkeypatch, tmp_path, post):
+    server = _hermes_server()
+    install = tmp_path / "fake-hermes"
+    install.mkdir()
+    (install / "run_agent.py").write_text("# stub")
+    monkeypatch.setattr(server, "HERMES_AGENT_PATH", install)
+    monkeypatch.setattr(server, "_upstream_node_ready", lambda: True)
+    monkeypatch.setattr(
+        server, "_detect_model_endpoint_reachable", lambda endpoint, api_key=None: {"ok": True}
+    )
+    monkeypatch.setattr(server.httpx, "post", post)
+    return server
+
+
+_HA01_REQUEST = {
+    "scenario_id": "HA-01",
+    "scenario": {"id": "HA-01", "messages": []},
+    "model_endpoint": "http://host:9999",
+    "model_name": "fake",
+}
+
+
+def test_hermes_proxy_read_outlasts_the_episode_cap(monkeypatch, tmp_path):
+    """The episode cap is enforced by Node's agent watchdog, so the proxy's read
+    must wait longer than the cap — otherwise the proxy cuts the request off at
+    the same instant and Node's own timeout result is lost — and must still
+    answer before the runner's outer /verify-start read gives up."""
+    from benchlocal_cli import sandbox as sandbox_module
+
+    monkeypatch.setenv("HERMES_SUBPROCESS_TIMEOUT_S", "900")
+    seen: dict = {}
+
+    def post(url, json=None, timeout=None):
+        seen["timeout"] = timeout
+        return _FakeUpstreamResponse(200, {"status": "pass", "score": 100})
+
+    server = _hermes_server_ready_for_upstream(monkeypatch, tmp_path, post)
+    server._verify_start_via_upstream(dict(_HA01_REQUEST))
+
+    assert server.SUBPROCESS_TIMEOUT_S == 900
+    assert seen["timeout"] == 900 + server.UPSTREAM_READ_HEADROOM_S
+    assert 0 < server.UPSTREAM_READ_HEADROOM_S < sandbox_module._HERMES_REQUEST_TIMEOUT_HEADROOM_S
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            {"error": "Command timed out after 900000ms: /opt/hermes-venv/bin/hermes chat -Q"},
+            "agent_runner_timeout",
+        ),
+        ({"error": "Unknown verifier error."}, "agent_runner_crashed"),
+    ],
+)
+def test_hermes_proxy_classifies_node_watchdog_500_as_timeout(monkeypatch, tmp_path, body, expected):
+    """A scenario that does not catch the agent's rejection surfaces Node's
+    watchdog as a 500. That is the episode cap firing, not a crash."""
+    server = _hermes_server_ready_for_upstream(
+        monkeypatch, tmp_path, lambda *_a, **_k: _FakeUpstreamResponse(500, body)
+    )
+
+    out = server._verify_start_via_upstream(dict(_HA01_REQUEST))
+
+    assert out["passed"] is False
+    assert out["failure_mode"] == expected
+
+
+def test_hermes_runtime_agent_watchdog_reads_the_episode_cap():
+    """The agent watchdog was a fixed 10 minutes, silently clamping any
+    HERMES_SUBPROCESS_TIMEOUT_S above 600 s. Both agent spawns must use it."""
+    runtime = (ROOT / "vendor/HermesAgent-20/verification/hermes-runtime.mjs").read_text()
+    assert "timeoutMs: 10 * 60 * 1000" not in runtime
+    assert runtime.count("timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS") == 2
+
+    script = """
+import { hermesSubprocessTimeoutMs as f } from "./vendor/HermesAgent-20/verification/hermes-runtime.mjs";
+const out = {};
+for (const [k, v] of Object.entries({unset: undefined, blank: "", cap900: "900", frac: "899.9"})) {
+  out[k] = f(v === undefined ? {} : {HERMES_SUBPROCESS_TIMEOUT_S: v});
+}
+out.rejects = ["0", "-5", "abc"].map((v) => { try { f({HERMES_SUBPROCESS_TIMEOUT_S: v}); return false; } catch { return true; } });
+console.log(JSON.stringify(out));
+"""
+    result = _run_hermes_core(script)
+    # Unset or blank keeps the historical default rather than disabling the
+    # watchdog (Number("") is 0, and a 0 timeout means "no timeout").
+    assert result["unset"] == 600_000
+    assert result["blank"] == 600_000
+    assert result["cap900"] == 900_000
+    assert result["frac"] == 899_900
+    assert result["rejects"] == [True, True, True]
+
+
 def test_hermes_ha11_final_state_passes_without_patch_trace():
     script = 'import { scoreSkillPatchOutcome } from "./vendor/HermesAgent-20/verification/core.mjs";\nconst finalSkill = [\n  "---",\n  "name: deployment-registry",\n  "description: Deployment registry notes.",\n  "---",\n  "",\n  "## Procedure",\n  "Push images to ghcr.io/acme/app before deployment.",\n  "Then update ghcr.io/acme/worker manifests.",\n  "",\n  "## Verification",\n  "Confirm the GHCR references are reachable.",\n  ""\n].join("\\n");\nconst noTrace = scoreSkillPatchOutcome(finalSkill, { toolEvents: [] });\nconst destructive = scoreSkillPatchOutcome(finalSkill, {\n  toolEvents: [{ phase: "start", name: "skill_manage", args: { action: "edit" } }]\n});\nconsole.log(JSON.stringify({ noTrace, destructive }));'
     proc = subprocess.run(

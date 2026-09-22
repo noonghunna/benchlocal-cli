@@ -72,6 +72,22 @@ HERMES_AGENT_PATH = Path(os.environ.get("HERMES_AGENT_PATH", "/opt/hermes-agent"
 # from the runner.
 SUBPROCESS_TIMEOUT_S = float(os.environ.get("HERMES_SUBPROCESS_TIMEOUT_S", "300"))
 
+# The episode cap itself is enforced INSIDE upstream Node: hermes-runtime.mjs
+# kills the agent subprocess at HERMES_SUBPROCESS_TIMEOUT_S (it used to be a
+# fixed 600 s, which silently clamped every larger cap). This proxy's read
+# therefore waits the cap PLUS headroom, so Node's own timeout result — and the
+# grading that follows an agent that finished just under the cap (a Python
+# helper can take up to 120 s, pytest 60 s) — reaches us instead of being cut
+# off. Must stay below the runner's outer /verify-start headroom (300 s,
+# benchlocal_cli/sandbox.py) so this proxy still answers first.
+UPSTREAM_READ_HEADROOM_S = 180.0
+UPSTREAM_READ_TIMEOUT_S = SUBPROCESS_TIMEOUT_S + UPSTREAM_READ_HEADROOM_S
+
+# Node's runCommand rejects with this message when a watchdog fires. It reaches
+# us in a 200 result's note (scenarios that catch the rejection) or in a 500
+# body (scenarios that do not), and both mean the episode timed out.
+_NODE_WATCHDOG_MESSAGE = "Command timed out after"
+
 # Cap on upstream_raw size in saved JSON traces. Per Codex review #6:
 # preserve the full upstream result for v0.8 inspect tooling, but bound it
 # so result files don't balloon. 16KB per scenario × 20 scenarios = 320KB
@@ -574,7 +590,7 @@ def _verify_start_via_upstream(req: dict) -> dict:
         resp = httpx.post(
             f"{UPSTREAM_NODE_URL}/run-scenario",
             json=upstream_request,
-            timeout=SUBPROCESS_TIMEOUT_S,
+            timeout=UPSTREAM_READ_TIMEOUT_S,
         )
     except httpx.TimeoutException:
         elapsed = time.monotonic() - started
@@ -582,7 +598,10 @@ def _verify_start_via_upstream(req: dict) -> dict:
             "action": "verify-final",
             "passed": False,
             "failure_mode": "agent_runner_timeout",
-            "detail": f"{scenario_id}: upstream /run-scenario exceeded {SUBPROCESS_TIMEOUT_S:.0f}s",
+            "detail": (
+                f"{scenario_id}: upstream /run-scenario exceeded {UPSTREAM_READ_TIMEOUT_S:.0f}s "
+                f"(episode cap {SUBPROCESS_TIMEOUT_S:.0f}s + {UPSTREAM_READ_HEADROOM_S:.0f}s headroom)"
+            ),
             "trace": {
                 "schema_version": SCHEMA_VERSION,
                 "elapsed_s": elapsed,
@@ -611,7 +630,13 @@ def _verify_start_via_upstream(req: dict) -> dict:
         return {
             "action": "verify-final",
             "passed": False,
-            "failure_mode": "agent_runner_crashed",
+            # A scenario that does not catch the agent's rejection surfaces
+            # Node's watchdog as a 500; that is still the episode cap firing.
+            "failure_mode": (
+                "agent_runner_timeout"
+                if _NODE_WATCHDOG_MESSAGE in resp.text
+                else "agent_runner_crashed"
+            ),
             "detail": f"{scenario_id}: upstream returned HTTP {resp.status_code}: {resp.text[:200]}",
             "trace": {
                 "schema_version": SCHEMA_VERSION,
@@ -727,7 +752,7 @@ def main() -> None:
         f"[hermes-sandbox] listening on :{PORT} "
         f"(stage=v0.7.4, upstream={UPSTREAM_NODE_URL}, "
         f"hermes_agent_source={_hermes_agent_source()}, "
-        f"timeout={SUBPROCESS_TIMEOUT_S:.0f}s)\n"
+        f"episode_cap={SUBPROCESS_TIMEOUT_S:.0f}s, upstream_read={UPSTREAM_READ_TIMEOUT_S:.0f}s)\n"
     )
     try:
         server.serve_forever()
