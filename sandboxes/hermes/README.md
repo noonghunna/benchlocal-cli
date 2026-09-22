@@ -42,7 +42,7 @@ A valid install must contain `run_agent.py` and `hermes_state.py`.
 | `passed` | Upstream completed; required keywords matched; no destructive-action issues |
 | `wrong_answer` | Empty final response and no tool calls, or partial run with no answer |
 | `verifier_fail` | Upstream completed but final response lacks success-case keywords |
-| `agent_runner_timeout` | Upstream subprocess exceeded 15min (configurable via `HERMES_SUBPROCESS_TIMEOUT_S`) |
+| `agent_runner_timeout` | Upstream subprocess exceeded the episode cap (`HERMES_SUBPROCESS_TIMEOUT_S`, 300s by default; the runner raises it to an explicit `--timeout-per-case`) |
 | `agent_runner_crashed` | Upstream exited nonzero or didn't write `result.json` |
 | `result_json_malformed` | Upstream's result.json couldn't be parsed |
 | `model_endpoint_unreachable` | Upstream reported network error connecting to `model_endpoint` |
@@ -107,7 +107,7 @@ Container env:
 |---|---|---|
 | `HERMES_AGENT_PATH` | Where the install lives inside the container | `/opt/hermes-agent` |
 | `HERMES_JOB_ROOT` | Per-scenario job dirs (cleaned after each scenario) | `/tmp/hermes-runs` |
-| `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap | `900` (15min) |
+| `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap per scenario. Set by the runner: `max(300, --timeout-per-case)`, or `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` verbatim (#149) | `300` (5min) |
 | `BENCHLOCAL_HERMES_AGENT_COMMIT` | Override the commit reported in `/health` | git-detected at runtime |
 | `HERMES_PINNED_COMMIT` | Build-time commit (set by Dockerfile) | manifest.mjs default |
 

@@ -17,6 +17,30 @@ from benchlocal_cli.types import ScenarioResult
 
 
 @dataclass(frozen=True)
+class EpisodeCap:
+    """#149: the in-container wall clock that actually bounds an agent-owned
+    scenario (hermes) or batch (aider).
+
+    Those packs run their agent INSIDE the sandbox and make their own model
+    calls, so the runner-side clocks (`--timeout-per-case` = the runner's HTTP
+    read, `--model-turn-timeout` = one runner-owned model call) cannot govern
+    an episode by construction — only this cap does. `source` records which
+    knob set it so the runner can print the effective clocks at run start
+    instead of leaving the operator to discover the inert ones by reading
+    this file.
+    """
+    seconds: float
+    # "default" — the pack's built-in guard;
+    # "budget"  — floored by the per-case budget the runner passed
+    #             (`--timeout-per-case`, or for aider the scaled pack budget);
+    # "env"     — `override_env` was set and won verbatim.
+    source: str
+    env_name: str          # container-side env var that carries the cap
+    default_s: float       # the built-in guard, for the log line
+    override_env: str | None = None  # runner-side env that overrides it verbatim
+
+
+@dataclass(frozen=True)
 class SandboxConfig:
     """Static config per sandboxed pack."""
     pack_id: str           # e.g. "bugfind-15"
@@ -53,6 +77,9 @@ class SandboxConfig:
     # active (e.g. tell the aider sandbox to keep its job dirs rather than
     # rmtree-ing them so the mounted artifacts survive the verify call).
     run_mount_env: tuple[tuple[str, str], ...] = ()
+    # #149: resolved in-container episode/batch cap for agent-owned packs
+    # (hermes, aider); None for packs whose model calls the runner owns.
+    episode_cap: EpisodeCap | None = None
 
 
 # #3: aider batch timeout budget. The inner subprocess cap (server-side
@@ -61,6 +88,88 @@ class SandboxConfig:
 # cap plus headroom so the outer HTTP read doesn't fire before the inner kill.
 _AIDER_DEFAULT_BATCH_TIMEOUT_S = 3600.0
 _AIDER_REQUEST_TIMEOUT_HEADROOM_S = 300.0
+
+# #149: hermes per-scenario episode cap (container-side HERMES_SUBPROCESS_TIMEOUT_S).
+# 300s is a guard against a stuck scenario burning the whole bench, and it stays —
+# but it must not sit BELOW what the operator explicitly asked for. An explicit
+# `--timeout-per-case` therefore FLOORS it: it can raise the cap, never lower it.
+# Deliberately a floor and not `episode = turn x N`: an episode is an open-ended
+# number of turns, so a multiplier would make raising one timeout silently
+# multiply total bench wall-time. Only the EXPLICIT per-case value floors it —
+# the auto-scaled budget already carries the thinking-token multiplier (up to
+# 16x) that is calibrated for one runner-owned completion, not for an episode.
+# An explicit BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S still wins verbatim.
+_HERMES_DEFAULT_SUBPROCESS_TIMEOUT_S = 300.0
+_HERMES_SUBPROCESS_TIMEOUT_ENV = "BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S"
+# The outer /verify-start read must outlast the inner kill, or the runner
+# records a transport failure and moves on while the agent is still running in
+# the container. Same shape as the aider headroom above. With the 300s default
+# cap this keeps the historical 900s read timeout unchanged.
+_HERMES_REQUEST_TIMEOUT_HEADROOM_S = 300.0
+
+
+def resolve_episode_cap(
+    pack_id: str,
+    *,
+    batch_timeout_s: float | None = None,
+    timeout_per_case: float | None = None,
+    environ: dict[str, str] | None = None,
+) -> EpisodeCap | None:
+    """#149: resolve the in-container cap for an agent-owned pack, or None.
+
+    - aider-polyglot-30: `batch_timeout_s` (the per-case budget, explicit or
+      auto-scaled — #3) floors the 3600s batch default.
+    - hermesagent-20: an explicit `timeout_per_case` floors the 300s episode
+      default; BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S overrides both verbatim.
+    - anything else: None — the runner owns the model calls, so the runner-side
+      clocks apply directly.
+    """
+    env = os.environ if environ is None else environ
+    if pack_id == "aider-polyglot-30":
+        inner = _AIDER_DEFAULT_BATCH_TIMEOUT_S
+        source = "default"
+        if batch_timeout_s and float(batch_timeout_s) > inner:
+            inner = float(batch_timeout_s)
+            source = "budget"
+        return EpisodeCap(
+            seconds=inner,
+            source=source,
+            env_name="AIDER_BENCHMARK_TIMEOUT_S",
+            default_s=_AIDER_DEFAULT_BATCH_TIMEOUT_S,
+        )
+    if pack_id == "hermesagent-20":
+        override = env.get(_HERMES_SUBPROCESS_TIMEOUT_ENV)
+        if override is not None and override.strip() != "":
+            try:
+                seconds = float(override)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{_HERMES_SUBPROCESS_TIMEOUT_ENV} must be a number of seconds, got {override!r}"
+                ) from exc
+            if seconds <= 0:
+                raise ValueError(
+                    f"{_HERMES_SUBPROCESS_TIMEOUT_ENV} must be positive, got {override!r}"
+                )
+            return EpisodeCap(
+                seconds=seconds,
+                source="env",
+                env_name="HERMES_SUBPROCESS_TIMEOUT_S",
+                default_s=_HERMES_DEFAULT_SUBPROCESS_TIMEOUT_S,
+                override_env=_HERMES_SUBPROCESS_TIMEOUT_ENV,
+            )
+        inner = _HERMES_DEFAULT_SUBPROCESS_TIMEOUT_S
+        source = "default"
+        if timeout_per_case is not None and float(timeout_per_case) > inner:
+            inner = float(timeout_per_case)
+            source = "budget"
+        return EpisodeCap(
+            seconds=inner,
+            source=source,
+            env_name="HERMES_SUBPROCESS_TIMEOUT_S",
+            default_s=_HERMES_DEFAULT_SUBPROCESS_TIMEOUT_S,
+            override_env=_HERMES_SUBPROCESS_TIMEOUT_ENV,
+        )
+    return None
 
 
 # Default registry of sandbox configs (read by Runner when --enable-sandboxed-packs is set).
@@ -728,6 +837,7 @@ def config_for_pack(
     image_tag: str = "latest",
     *,
     batch_timeout_s: float | None = None,
+    timeout_per_case: float | None = None,
 ) -> SandboxConfig:
     config = SANDBOX_REGISTRY[pack_id]
     base = config.image_name.split(":", 1)[0]
@@ -736,8 +846,12 @@ def config_for_pack(
     request_timeout_s = config.request_timeout_s
     if pack_id != "aider-polyglot-30" and batch_timeout_s and batch_timeout_s > request_timeout_s:
         request_timeout_s = float(batch_timeout_s)
+    episode_cap = resolve_episode_cap(
+        pack_id, batch_timeout_s=batch_timeout_s, timeout_per_case=timeout_per_case
+    )
 
     if pack_id == "aider-polyglot-30":
+        assert episode_cap is not None
         # v0.9.0: parallelize aider's batch across N threads. Default 1 is
         # conservative for llama.cpp/ik_llama single-slot (-np 1) servers;
         # users with multi-slot endpoints can raise BENCHLOCAL_AIDER_THREADS.
@@ -749,19 +863,24 @@ def config_for_pack(
         # default. `--timeout-per-case` can only RAISE the inner subprocess
         # cap (never drop it below the default); request_timeout_s tracks it
         # with headroom so the outer HTTP read doesn't fire first.
-        inner = _AIDER_DEFAULT_BATCH_TIMEOUT_S
-        if batch_timeout_s and batch_timeout_s > inner:
-            inner = float(batch_timeout_s)
+        inner = episode_cap.seconds
         env = env + (("AIDER_BENCHMARK_TIMEOUT_S", str(int(inner))),)
         request_timeout_s = inner + _AIDER_REQUEST_TIMEOUT_HEADROOM_S
 
     if pack_id == "hermesagent-20":
+        assert episode_cap is not None
         # Per-scenario subprocess wall-clock cap inside the container. Default
         # to 300s (5 min) — long enough for legitimate multi-turn agent loops
         # but short enough that a stuck scenario doesn't burn the whole bench.
-        # Override via BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner.
-        sub_timeout = os.environ.get("BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S", "300")
-        env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", sub_timeout),)
+        # #149: an explicit --timeout-per-case floors it (see resolve_episode_cap);
+        # BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner overrides both.
+        env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", str(int(episode_cap.seconds))),)
+        # The outer /verify-start read must outlast the inner kill — otherwise a
+        # raised cap turns `agent_runner_timeout` into a runner-side transport
+        # error while the agent keeps running in the container.
+        request_timeout_s = max(
+            request_timeout_s, episode_cap.seconds + _HERMES_REQUEST_TIMEOUT_HEADROOM_S
+        )
         # Hermes-agent v0.13+ enforces a 64K context-window minimum on the
         # served model. Models at smaller windows (Gemma 4 at 32K) fail this
         # check even though scenarios fit in <8K tokens. Inject the override
@@ -805,6 +924,7 @@ def config_for_pack(
         request_timeout_s=request_timeout_s,
         run_output_dir=config.run_output_dir,
         run_mount_env=config.run_mount_env,
+        episode_cap=episode_cap,
     )
 
 
