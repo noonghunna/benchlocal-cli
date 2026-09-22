@@ -40,7 +40,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from benchlocal_cli import __version__
-from benchlocal_cli.runner import PACK_MODES, SANDBOX_MODES, Runner, _SpendGuardExceeded, _utc_now, list_packs, load_pack
+from benchlocal_cli.runner import (
+    DEFAULT_MODEL_TURN_TIMEOUT_S,
+    PACK_MODES,
+    SANDBOX_MODES,
+    Runner,
+    _SpendGuardExceeded,
+    _utc_now,
+    list_packs,
+    load_pack,
+)
 from benchlocal_cli.types import PackResult, RunResult, ScenarioRun
 
 
@@ -135,7 +144,15 @@ def _parser() -> argparse.ArgumentParser:
         help="junk content fed to every scenario under --negative-control "
              "(default: '(no answer)'; pass an empty string for the pure-empty control).",
     )
-    run.add_argument("--timeout-per-case", type=float, default=None, help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; agentic packs may use larger budgets)")
+    run.add_argument(
+        "--timeout-per-case",
+        type=float,
+        default=None,
+        help="per-scenario HTTP timeout override (default: pack metadata, usually 60s; "
+             "agentic packs may use larger budgets). Also floors the in-container episode "
+             "cap of the agent-owned packs (hermesagent-20: 300s default, aider-polyglot-30 "
+             "batch: 3600s default) — it can raise that cap, never lower it (#149)",
+    )
     run.add_argument(
         "--timeout-ceiling-s",
         type=float,
@@ -147,9 +164,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--model-turn-timeout",
         type=float,
-        default=_env_float("BENCHLOCAL_MODEL_TURN_TIMEOUT", 300.0),
+        default=_env_float("BENCHLOCAL_MODEL_TURN_TIMEOUT", DEFAULT_MODEL_TURN_TIMEOUT_S),
         help="maximum seconds for one runner-owned sandbox model call; 0 disables "
-             "(default: 300; env BENCHLOCAL_MODEL_TURN_TIMEOUT)",
+             "(default: 300; env BENCHLOCAL_MODEL_TURN_TIMEOUT). Does not reach "
+             "hermesagent-20 / aider-polyglot-30, whose agents make their own model "
+             "calls in-container — see --timeout-per-case",
     )
     run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
     run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")

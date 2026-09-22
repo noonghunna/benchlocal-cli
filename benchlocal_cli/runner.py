@@ -20,7 +20,7 @@ import httpx
 from benchlocal_cli import __version__
 from benchlocal_cli.diagnostics import pack_diagnostics
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
-from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, config_for_pack
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import PackResult, RunResult, ScenarioResult, ScenarioRun
 
@@ -87,6 +87,10 @@ DEFAULT_TIMEOUT_PER_CASE = 60.0
 # until #103, so raising a pack's emission budget silently shrank its clock.
 # Packs may override with `timeout_baseline_tokens` in their meta.
 DEFAULT_TIMEOUT_BASELINE_TOKENS = 1024
+# Default cap on one runner-owned sandbox model call (--model-turn-timeout).
+# Runner and CLI share this so the runner can tell when an operator changed it
+# on a pack it cannot reach (#149).
+DEFAULT_MODEL_TURN_TIMEOUT_S = 300.0
 
 # #61: content-verdict failure modes that a token-cap truncation should override.
 # A failure on any of these *while* finish_reason == "length" is confounded by
@@ -657,6 +661,12 @@ class Runner:
             if model_turn_timeout is None or float(model_turn_timeout) == 0
             else float(model_turn_timeout)
         )
+        # #149: remembered so the sandbox clock line can warn when this knob was
+        # set on a pack it cannot reach (hermes/aider make their own model calls).
+        self._model_turn_timeout_customised = (
+            model_turn_timeout is None
+            or float(model_turn_timeout) != DEFAULT_MODEL_TURN_TIMEOUT_S
+        )
         self.measured_tps_override = None if measured_tps is None else float(measured_tps)
         self.reference_tps_override = None if reference_tps is None else float(reference_tps)
         self.timeout_scale_down = bool(timeout_scale_down)
@@ -1020,6 +1030,10 @@ class Runner:
                         pack_id,
                         self.sandbox_image_tag,
                         batch_timeout_s=self._timeout_budget_for_meta(meta),
+                        # #149: only the EXPLICIT per-case value floors the
+                        # hermes episode cap — see resolve_episode_cap for why
+                        # the auto-scaled budget deliberately does not.
+                        timeout_per_case=self.timeout_per_case,
                     ),
                     model_endpoint=self.endpoint,
                 )
@@ -1032,6 +1046,7 @@ class Runner:
                 )
                 client.start(run_dir=run_dir)
                 self._sandbox_clients[pack_id] = client
+                self._announce_sandbox_clocks(pack_id, client.config, meta, warnings)
             except Exception as exc:
                 msg = (
                     f"skipping {pack_id}: sandbox unavailable ({exc}). "
@@ -1044,6 +1059,87 @@ class Runner:
                 )
                 warnings.append(msg)
                 print(f"⚠️  {msg}", file=sys.stderr, flush=True)
+
+    def _announce_sandbox_clocks(
+        self, pack_id: str, config: SandboxConfig, meta: dict, warnings: list[str]
+    ) -> None:
+        """#149: print the clocks that actually govern a sandboxed pack.
+
+        Three knobs exist and, for the agent-owned packs (hermes, aider), two
+        are inert: `--timeout-per-case` bounds the runner's HTTP read and
+        `--model-turn-timeout` bounds one runner-owned model call, but those
+        agents make their own model calls inside the container, so only the
+        in-container episode cap applies. A setting that is accepted and
+        ignored is indistinguishable from one that took effect — so say which
+        is which up front, and warn (persisted in the result) when an inert
+        knob was set.
+        """
+        budget = self._timeout_budget_for_meta(meta)
+        cap = getattr(config, "episode_cap", None)
+        if cap is None:
+            # Runner-owned model calls (cli-40, bugfind-15, code-reasoning):
+            # the per-case budget bounds each call and the turn watchdog trims it.
+            turn = (
+                "off"
+                if self.model_turn_timeout is None
+                else f"{self.model_turn_timeout:.0f}s"
+            )
+            print(
+                f"[runner] {pack_id} clocks: per-case {budget:.0f}s (runner-side HTTP), "
+                f"model-turn {turn}, verify http {config.request_timeout_s:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
+        unit = "batch" if pack_id == "aider-polyglot-30" else "episode"
+        explicit = self.timeout_per_case
+        if cap.source == "env":
+            origin = f"{cap.override_env}; default {cap.default_s:.0f}s"
+            if explicit is not None:
+                origin += f"; --timeout-per-case {explicit:.0f} not applied"
+        elif cap.source == "budget":
+            origin = (
+                f"floor from --timeout-per-case {explicit:.0f}"
+                if explicit is not None
+                else f"floor from auto-scaled per-case budget {budget:.0f}s"
+            )
+            origin += f"; default {cap.default_s:.0f}s"
+        else:
+            origin = "default; raise with --timeout-per-case"
+            if cap.override_env:
+                origin += f" or {cap.override_env}"
+            if explicit is None and budget > cap.seconds:
+                origin += f"; auto-scaled per-case budget {budget:.0f}s does not apply"
+        print(
+            f"[runner] {pack_id} clocks: {unit} {cap.seconds:.0f}s ({origin}), "
+            f"verify-start read {config.request_timeout_s:.0f}s, "
+            f"model-turn n/a (agent makes its own model calls in-container)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        inert: list[str] = []
+        if cap.source == "env" and explicit is not None and explicit > cap.seconds:
+            inert.append(
+                f"{pack_id}: {cap.override_env}={cap.seconds:.0f} overrides "
+                f"--timeout-per-case {explicit:.0f} for the {unit} cap — "
+                f"scenarios are cut at {cap.seconds:.0f}s"
+            )
+        if self._model_turn_timeout_customised:
+            value = (
+                "0 (disabled)"
+                if self.model_turn_timeout is None
+                else f"{self.model_turn_timeout:.0f}"
+            )
+            inert.append(
+                f"{pack_id}: --model-turn-timeout/BENCHLOCAL_MODEL_TURN_TIMEOUT={value} "
+                f"does not apply — the agent makes its own model calls in-container; "
+                f"the {unit} cap is {cap.seconds:.0f}s ({cap.env_name})"
+            )
+        for msg in inert:
+            warnings.append(msg)
+            print(f"⚠️  {msg}", file=sys.stderr, flush=True)
 
     def _inject_sandbox_log_file(self, result: ScenarioResult, pack_id: str | None) -> ScenarioResult:
         """v0.8.1: stamp `verifier_trace.sandbox_log_file` so `inspect --logs DIR`

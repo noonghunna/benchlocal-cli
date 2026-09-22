@@ -96,6 +96,14 @@ The automatic or static result is then capped by `--timeout-ceiling-s N` (env `B
 
 Runner-owned model calls in sandboxed packs have a second, independent watchdog: `--model-turn-timeout N` (default `300` seconds; env `BENCHLOCAL_MODEL_TURN_TIMEOUT`). It caps one endpoint call even when speed/thinking scaling gives the scenario a much larger overall budget. Pass `0` to disable the cap. Sandbox-owned agent processes retain their own subprocess watchdogs.
 
+**Agent-owned packs are bounded by an in-container clock, not by either of the runner's.** `hermesagent-20` and `aider-polyglot-30` run their agent *inside* the sandbox and it makes its own model calls, so `--timeout-per-case` (the runner's HTTP read) and `--model-turn-timeout` (one runner-owned call) cannot govern an episode by construction. What does: `HERMES_SUBPROCESS_TIMEOUT_S` (default `300` s per scenario) for hermes and `AIDER_BENCHMARK_TIMEOUT_S` (default `3600` s for the whole batch) for aider. An explicit `--timeout-per-case N` **floors** both caps — it can raise them, never lower them — and `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` still wins verbatim when set. It is a floor and not `turn × N` on purpose: an episode is an open-ended number of turns, and the 300 s guard exists so a stuck scenario cannot burn the whole bench; it just must not sit below what you asked for (#149). The runner prints the effective clocks for every sandboxed pack at start, e.g.
+
+```
+[runner] hermesagent-20 clocks: episode 900s (floor from --timeout-per-case 900; default 300s), verify-start read 1200s, model-turn n/a (agent makes its own model calls in-container)
+```
+
+and records a warning in the result when a runner-side knob was set on a pack it cannot reach. If hermes scenarios die at exactly `300.1s` with `agent_runner_timeout`, this is the clock to look at.
+
 A **request timeout is not retried** by the transport retry loop (a timeout means the request budget was genuinely hit); connection errors and HTTP 5xx still are. `--retry-on-timeout` (default off) restores the old transport behavior. Scenario-level timeout/runaway retries are separately controlled by `--retry-runaways`.
 
 ## Repo layout
