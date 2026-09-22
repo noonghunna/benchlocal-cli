@@ -6,7 +6,8 @@ grades them with deterministic validators that fill three axes (parseable,
 correctness, discipline, each 0-2); lib/benchmark.ts then scores
 ``round((p*0.4 + c*0.35 + d*0.25) / 2 * 100)`` and calls >= 85 a pass. These are
 line-for-line ports; parity with the vendored JavaScript is asserted by
-tests/test_upstream_verifier_parity.py.
+tests/test_upstream_verifier_parity.py. One deliberate deviation: SO-11 is judged
+against its prompt rather than one textual rendering (see _SO11_STEPS).
 
 The validators run their regexes on the normalized answer itself, NOT on the
 contents of a code fence: a fenced answer only earns discipline 1 here, and the
@@ -20,6 +21,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from benchlocal_cli.scoring import mermaid_flowchart
 from benchlocal_cli.scoring._js import DOT, S, js_round, normalize_line_endings, trim
 
 PASS_THRESHOLD = 85
@@ -174,27 +176,103 @@ def _xml(text: str) -> tuple[int, int, str]:
     return p, c, summary
 
 
-def _mermaid(text: str) -> tuple[int, int, str]:
-    parseable = re.match(r"flowchart TD", text) is not None and _has(r"-->", text)
-    correct = (
-        parseable
-        and all(
-            _has(p, text)
-            for p in (
-                r"User submits form",
-                r"System validates input",
-                r"Save to database",
-                r"Send confirmation email",
-                r"Show success page",
-                r"Show error message",
-            )
-        )
-        and (_has(r"Valid\?", text) or _has(r"Is input valid\?", text))
-        and (_has(r"C -- Yes -->", text) or _has(r"B -->\|Valid\|", text))
-        and (_has(r"C -- No -->", text) or _has(r"B -->\|Invalid\|", text))
-        and (_has(r"Return to form", text) or _has(r"G --> A", text) or _has(r"H --> A", text))
+# Deliberate deviation (#143): SO-11 judged against its prompt, not one rendering.
+# Prompt: "Generate a Mermaid flowchart for this process: User submits a form.
+# System validates the input. If valid, save to database and send confirmation
+# email, then show success page. If invalid, show error message and return to
+# form." Upstream accepts only `^flowchart TD` and edges spelled `C -- Yes -->`
+# or `B -->|Valid|` with those exact node ids, so `graph TD`, any other
+# direction, `C -->|Yes| D`, or a decision node named anything but C/B fails —
+# 0 of 76 distinct saved model answers passed it. This parses the diagram and
+# checks the process the prompt describes. Code fences stay unparseable exactly
+# as upstream: the system prompt forbids them.
+_SO11_STEPS = {
+    "submit": "user submits form",
+    "validate": "system validates input",
+    "save": "save to database",
+    "email": "send confirmation email",
+    "success": "show success page",
+    "error": "show error message",
+}
+_ARTICLES = {"a", "an", "the"}
+_RETURN_TO_FORM_RE = re.compile(r"\b(?:returns?|back) to form\b")
+
+
+def _phrase(label: str) -> str:
+    """Label as space-separated lowercase words, articles dropped."""
+    return " ".join(word for word in re.findall(r"[a-z0-9]+", label.lower()) if word not in _ARTICLES)
+
+
+def _mentions(label: str, phrase: str) -> bool:
+    return f" {phrase} " in f" {_phrase(label)} "
+
+
+def _branch_polarity(label: str) -> str | None:
+    """'yes'/'valid' edges are the valid branch, 'no'/'invalid'/'not ...' the invalid one."""
+    words = set(re.findall(r"[a-z]+", label.lower()))
+    if words & {"no", "invalid"} or "not" in words:
+        return "invalid"
+    if words & {"yes", "valid"}:
+        return "valid"
+    return None
+
+
+def _reach(chart: mermaid_flowchart.Flowchart, start: str, blocked: set[str]) -> set[str]:
+    """Nodes reachable from `start` along edges, never entering `blocked`."""
+    if start in blocked:
+        return set()
+    seen, frontier = {start}, [start]
+    while frontier:
+        node = frontier.pop()
+        for src, dst, _ in chart.edges:
+            if src == node and dst not in seen and dst not in blocked:
+                seen.add(dst)
+                frontier.append(dst)
+    return seen
+
+
+def _so11_process_ok(chart: mermaid_flowchart.Flowchart) -> bool:
+    step_nodes = {
+        step: {node for node in chart.nodes if _mentions(chart.label(node), phrase)}
+        for step, phrase in _SO11_STEPS.items()
+    }
+    edge_labels = [label for _, _, label in chart.edges]
+    if any(not nodes and not any(_mentions(label, _SO11_STEPS[step]) for label in edge_labels)
+           for step, nodes in step_nodes.items()):
+        return False  # every step of the process must appear
+    returns_by_text = any(
+        _RETURN_TO_FORM_RE.search(_phrase(text)) for text in [*map(chart.label, chart.nodes), *edge_labels]
     )
-    p, c = _graded(parseable, correct)
+    for decision in chart.nodes:
+        outgoing = [(dst, _branch_polarity(label)) for src, dst, label in chart.edges if src == decision]
+        valid_targets = [dst for dst, polarity in outgoing if polarity == "valid"]
+        invalid_targets = [dst for dst, polarity in outgoing if polarity == "invalid"]
+        if not valid_targets or not invalid_targets:
+            continue  # the decision is the node that branches both ways
+        # The input is validated before the decision is taken.
+        if not any(decision in _reach(chart, node, set()) for node in step_nodes["validate"]):
+            continue
+        for valid_target in valid_targets:
+            valid_reach = _reach(chart, valid_target, {decision})
+            if not all(step_nodes[step] & valid_reach for step in ("save", "email", "success")):
+                continue
+            for invalid_target in invalid_targets:
+                invalid_reach = _reach(chart, invalid_target, {decision})
+                if not step_nodes["error"] & invalid_reach:
+                    continue
+                if (step_nodes["save"] | step_nodes["email"] | step_nodes["success"]) & invalid_reach:
+                    continue  # invalid input must not be saved or confirmed
+                # "return to form": said in a label, or the invalid branch leads
+                # back to where the user submits the form.
+                if returns_by_text or step_nodes["submit"] & invalid_reach:
+                    return True
+    return False
+
+
+def _mermaid(text: str) -> tuple[int, int, str]:
+    chart = mermaid_flowchart.parse(text)
+    correct = chart is not None and _so11_process_ok(chart)
+    p, c = _graded(chart is not None, correct)
     summary = (
         "Mermaid flowchart captured the required branches."
         if correct
@@ -257,9 +335,7 @@ def _score_axes(axes: Axes) -> int:
     return js_round((weighted / 2) * 100)
 
 
-def _evaluator(scenario_id: str) -> Callable[[str], Evaluation]:
-    validator = _VALIDATORS[scenario_id]
-
+def _evaluator(validator: Callable[[str], tuple[int, int, str]]) -> Callable[[str], Evaluation]:
     def evaluate(answer: str) -> Evaluation:
         discipline, note = _discipline(answer)
         parseable, correctness, summary = validator(_normalize(answer))
@@ -270,4 +346,4 @@ def _evaluator(scenario_id: str) -> Callable[[str], Evaluation]:
     return evaluate
 
 
-EVALUATORS: dict[str, Callable[[str], Evaluation]] = {sid: _evaluator(sid) for sid in _VALIDATORS}
+EVALUATORS: dict[str, Callable[[str], Evaluation]] = {sid: _evaluator(v) for sid, v in _VALIDATORS.items()}

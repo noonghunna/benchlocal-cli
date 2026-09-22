@@ -5,7 +5,8 @@ their verifier was ``format_regex: .+`` and any non-empty answer passed. Upstrea
 grades them with deterministic constraint sets; these are line-for-line ports,
 kept faithful with the JS-semantics helpers in ``_js``. Parity with the vendored
 TypeScript is asserted by tests/test_upstream_verifier_parity.py, which runs the
-upstream code under node on the same answers.
+upstream code under node on the same answers. One deliberate deviation: IF-11's
+top-level label check is judged against the prompt (see _IF11_TOP_RE).
 
 Upstream scores a scenario as ``round(passed / total * 100)`` and calls it a pass
 at >= 85 (``statusForScore``). benchlocal is binary, so pass means exactly that.
@@ -206,8 +207,13 @@ def evaluate_if09(answer: str) -> Evaluation:
 
 
 _IF11_KEYWORDS = ["fiber", "water", "sleep", "greens", "protein", "fruit"]
-_IF11_TOP_RE = re.compile(rf"(I|II|III)\.{S}")
-_IF11_TOP_LABEL_RE = re.compile(r"(I|II|III)\.")
+# Deliberate deviation (#143): upstream's `^(I|II|III)\.\s` runs on trimmed
+# lines, so a label standing alone on its line ("I." then the sub-items) never
+# matches — and the prompt ("top-level items labeled I, II, III") never asks for
+# a period either. Accept the numeral alone on its line, with or without a
+# period, or followed by a period and a title. Text after a bare numeral is
+# still not a label ("I think ..."), so that form keeps needing the period.
+_IF11_TOP_RE = re.compile(rf"(I|II|III)(?:\.(?:{S}|\Z)|\Z)")
 _IF11_SUB_RE = re.compile(rf"[ab]\.{S}")
 _IF11_SUB_LABEL_RE = re.compile(r"([ab])\.")
 _IF11_SUB_PREFIX_RE = re.compile(rf"[ab]\.{S}*")
@@ -218,7 +224,7 @@ def evaluate_if11(answer: str) -> Evaluation:
     lines = _non_empty_lines(answer)
     sub_items = [line for line in lines if _IF11_SUB_RE.match(line)]
     lowered = "\n".join(sub_items).lower()
-    top_labels = [_IF11_TOP_LABEL_RE.match(line).group(1) for line in lines if _IF11_TOP_RE.match(line)]  # type: ignore[union-attr]
+    top_labels = [_IF11_TOP_RE.match(line).group(1) for line in lines if _IF11_TOP_RE.match(line)]  # type: ignore[union-attr]
     sub_labels = [match.group(1) for match in (_IF11_SUB_LABEL_RE.match(line) for line in lines) if match]
     return _constraint_set(
         [

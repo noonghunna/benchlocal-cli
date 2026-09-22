@@ -8,6 +8,11 @@ scenario — a reference answer, junk, single-constraint failures, and the edge
 cases where JS and Python semantics differ (BOM, NBSP, CRLF, U+2028, fullwidth
 digits, emoji first letters, ".03", "4.5.1") — plus real saved model answers.
 Each case records the score and status the vendored upstream graders produced.
+
+IF-11 and SO-11 deliberately deviate from upstream (see the audit doc): for them
+the corpus is a superset check — every answer upstream passes must still pass —
+and DEVIATION_CASES pin answers the prompt allows but upstream rejects (must now
+pass) and answers the prompt does not allow (must still fail).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ PORTED = {
     "instructfollow-15": ["IF-05", "IF-06", "IF-07", "IF-08", "IF-09", "IF-11", "IF-13"],
     "structoutput-15": ["SO-04", "SO-05", "SO-06", "SO-09", "SO-11", "SO-12", "SO-15"],
 }
+DEVIATED = {"IF-11", "SO-11"}
 VACUOUS_PATTERNS = {".+", ".*", "[\\s\\S]+", "[\\s\\S]*", "^.+$", "(?s).+"}
 
 
@@ -54,33 +60,143 @@ def test_corpus_covers_every_ported_scenario_with_controls():
         assert any(label.startswith("saved_") for label in labels), scenario_id
 
 
-@pytest.mark.parametrize("case", CORPUS, ids=_case_id)
+@pytest.mark.parametrize("case", [c for c in CORPUS if c["id"] not in DEVIATED], ids=_case_id)
 def test_port_matches_recorded_upstream_verdict(case):
     evaluation = _port(case["id"])(case["answer"])
     assert evaluation.score == case["upstream_score"]
     assert evaluation.passed == (case["upstream_status"] == "pass")
 
 
-def test_recorded_verdicts_match_live_upstream():
-    """Runs the vendored upstream graders under node on the whole corpus. Fails if
-    a vendor sync changed a verdict the Python port still encodes."""
+def _run_upstream(cases: list[dict]) -> list[dict]:
     node = shutil.which("node")
     assert node, "node is required: this is the test that runs upstream's own graders"
     proc = subprocess.run(
         [node, "--experimental-strip-types", "--no-warnings", "tests/upstream_parity_eval.mjs"],
-        input=json.dumps([{"id": case["id"], "answer": case["answer"]} for case in CORPUS]),
+        input=json.dumps([{"id": case["id"], "answer": case["answer"]} for case in cases]),
         cwd=ROOT,
         text=True,
         capture_output=True,
         check=True,
     )
-    live = json.loads(proc.stdout)
+    return json.loads(proc.stdout)
+
+
+def test_recorded_verdicts_match_live_upstream():
+    """Runs the vendored upstream graders under node on the whole corpus. Fails if
+    a vendor sync changed a verdict the Python port or the superset check relies on."""
+    live = _run_upstream(CORPUS)
     drifted = [
         (_case_id(case), (case["upstream_score"], case["upstream_status"]), (got["score"], got["status"]))
         for case, got in zip(CORPUS, live, strict=True)
         if (got["score"], got["status"]) != (case["upstream_score"], case["upstream_status"])
     ]
     assert not drifted
+
+
+# --- deliberate deviations: IF-11 and SO-11 ----------------------------------
+
+_IF11_OK = [("I", "a. Choose fiber often.", "b. Drink water daily."),
+            ("II", "a. Get sleep nightly.", "b. Add greens weekly."),
+            ("III", "a. Include protein daily.", "b. Enjoy fruit regularly.")]
+
+
+def _outline(top: str = "{n}.", sep: str = "\n", sub_indent: str = "", items=_IF11_OK) -> str:
+    return sep.join(
+        f"{top.format(n=n)}\n{sub_indent}{a}\n{sub_indent}{b}" for n, a, b in items
+    )
+
+
+_SO11_BASE = """flowchart TD
+    A[User submits form] --> B[System validates input]
+    B --> C{Valid?}
+    C -->|Yes| D[Save to database]
+    D --> E[Send confirmation email]
+    E --> F[Show success page]
+    C -->|No| G[Show error message]
+    G --> A"""
+
+# (id, label, answer, must_pass). must_pass=True rows are answers the prompt
+# allows that upstream rejects (asserted against live upstream below).
+DEVIATION_CASES = [
+    # IF-11 — prompt: "top-level items labeled I, II, III", each with sub-items a and b.
+    ("IF-11", "label_alone_with_period", _outline(), True),
+    ("IF-11", "label_alone_indented_subitems", _outline(sub_indent="   "), True),
+    ("IF-11", "label_alone_blank_line_between", _outline(sep="\n\n"), True),
+    ("IF-11", "bare_numeral_alone", _outline(top="{n}"), True),
+    ("IF-11", "bare_numeral_eat", _outline(top="{n}").replace("Add greens weekly.", "Eat greens weekly."), False),
+    ("IF-11", "bare_numeral_keyword_twice", _outline(top="{n}").replace("Enjoy fruit", "Enjoy fiber"), False),
+    ("IF-11", "label_alone_subitems_c_d", _outline().replace("\na. Get sleep", "\nc. Get sleep").replace("\nb. Add greens", "\nd. Add greens"), False),
+    ("IF-11", "label_alone_duplicate_numeral", _outline().replace("III.", "II."), False),
+    ("IF-11", "label_alone_long_subitem", _outline().replace("Drink water daily.", "Drink plenty of cold clean water daily at home."), False),
+    # A numeral followed by text needs the period: "I think ..." is not a label.
+    ("IF-11", "bare_numeral_then_title", _outline(top="{n} Section"), False),
+    # SO-11 — prompt: submit -> validate -> if valid save + email then success;
+    # if invalid error message and return to form. System prompt: no fences, no prose.
+    ("SO-11", "graph_header", _SO11_BASE.replace("flowchart TD", "graph TD"), True),
+    ("SO-11", "direction_lr", _SO11_BASE.replace("flowchart TD", "flowchart LR"), True),
+    ("SO-11", "graph_tb", _SO11_BASE.replace("flowchart TD", "graph TB"), True),
+    # Upstream accepts `-- Yes -->` only from a node literally named C.
+    ("SO-11", "text_edge_labels_other_id", _SO11_BASE.replace("C{", "V{").replace("C -->|Yes|", "V -- Yes -->").replace("C -->|No|", "V -- No -->"), True),
+    ("SO-11", "quoted_edge_labels", _SO11_BASE.replace("|Yes|", '|"Yes"|').replace("|No|", '|"No"|'), True),
+    ("SO-11", "validation_node_branches", """graph TD
+    A[User submits a form] --> B{System validates the input}
+    B -- Valid --> C[Save to database]
+    C --> D[Send confirmation email]
+    D --> E[Show success page]
+    B -- Invalid --> F[Show error message]
+    F --> A""", True),
+    ("SO-11", "named_ids_start_node", """graph TD
+    Start([Start]) --> Submit[User submits a form]
+    Submit --> Validate[System validates the input]
+    Validate --> Check{Is input valid?}
+    Check -->|Valid| Save[(Save to database)]
+    Save --> Email[Send confirmation email]
+    Email --> Done([Show success page])
+    Check -->|Invalid| Err[Show error message]
+    Err --> Start""", True),
+    ("SO-11", "merged_save_email_return_text", """flowchart TD
+    A[User submits a form] --> B[System validates the input]
+    B --> C{Valid?}
+    C -->|Yes| D[Save to database and send confirmation email]
+    D --> E[Show success page]
+    C -->|No| F[Show error message]
+    F --> G[Return to form]""", True),
+    ("SO-11", "semicolons_and_chain", "graph LR; A[User submits form] --> B[System validates input] --> C{Valid?}; "
+     "C -->|Yes| D[Save to database] --> E[Send confirmation email] --> F[Show success page]; "
+     "C -->|No| G[Show error message] --> A", True),
+    ("SO-11", "branches_swapped", _SO11_BASE.replace("|Yes|", "|TMP|").replace("|No|", "|Yes|").replace("|TMP|", "|No|"), False),
+    ("SO-11", "no_return_to_form", _SO11_BASE.replace("\n    G --> A", ""), False),
+    ("SO-11", "invalid_branch_saves", _SO11_BASE.replace("G --> A", "G --> D"), False),
+    ("SO-11", "missing_email_step", _SO11_BASE.replace("D --> E[Send confirmation email]\n    E --> F", "D --> F"), False),
+    ("SO-11", "missing_success_page", _SO11_BASE.replace("\n    E --> F[Show success page]", ""), False),
+    ("SO-11", "unlabelled_branches", _SO11_BASE.replace("-->|Yes|", "-->").replace("-->|No|", "-->"), False),
+    ("SO-11", "missing_validation_step", _SO11_BASE.replace("A[User submits form] --> B[System validates input]\n    B --> C", "A[User submits form] --> C"), False),
+    ("SO-11", "fenced", "```mermaid\n" + _SO11_BASE + "\n```", False),
+    ("SO-11", "prose_before", "Here is the flowchart:\n" + _SO11_BASE, False),
+    ("SO-11", "invalid_arrow_syntax", _SO11_BASE.replace("D --> E", "D => E"), False),
+]
+
+
+def _deviation_id(case: tuple) -> str:
+    return f"{case[0]}:{case[1]}"
+
+
+@pytest.mark.parametrize("case", [c for c in CORPUS if c["id"] in DEVIATED and c["upstream_status"] == "pass"], ids=_case_id)
+def test_deviation_passes_everything_upstream_passes(case):
+    assert _port(case["id"])(case["answer"]).passed
+
+
+@pytest.mark.parametrize("case", DEVIATION_CASES, ids=_deviation_id)
+def test_deviation_judges_the_prompt(case):
+    scenario_id, _label, answer, must_pass = case
+    assert _port(scenario_id)(answer).passed is must_pass
+
+
+def test_deviation_cases_that_now_pass_are_rejected_by_live_upstream():
+    """Proves each must-pass row is an answer upstream wrongly rejects, not a case
+    the deviation merely happens to agree with."""
+    rows = [{"id": sid, "answer": answer} for sid, _label, answer, must_pass in DEVIATION_CASES if must_pass]
+    assert all(result["status"] != "pass" for result in _run_upstream(rows))
 
 
 def _scenario(pack_id: str, scenario_id: str) -> dict:
