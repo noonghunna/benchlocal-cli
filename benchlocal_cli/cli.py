@@ -302,6 +302,25 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--stream",
+        action="store_true",
+        default=_env_bool("BENCHLOCAL_STREAM", False),
+        help=(
+            "stream runner-owned model calls and detect a stalled endpoint by the gap "
+            "since the last token instead of the whole budget (#157; default: off; "
+            "env BENCHLOCAL_STREAM)"
+        ),
+    )
+    run.add_argument(
+        "--stream-stall-timeout",
+        type=float,
+        default=_env_float("BENCHLOCAL_STREAM_STALL_TIMEOUT", 120.0),
+        help=(
+            "with --stream: seconds without a data event, after the first one, before "
+            "a request fails as `stall` (default: 120; env BENCHLOCAL_STREAM_STALL_TIMEOUT)"
+        ),
+    )
+    run.add_argument(
         "--sandbox-log-dir",
         help=(
             "capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
@@ -1353,6 +1372,11 @@ def main(argv: list[str] | None = None) -> int:
             args.model_turn_timeout = float(
                 config.get("model_turn_timeout", args.model_turn_timeout)
             )
+            # #157: only streamed runs record these keys.
+            args.stream = args.stream or bool(config.get("stream"))
+            args.stream_stall_timeout = float(
+                config.get("stream_stall_timeout", args.stream_stall_timeout)
+            )
             args.timeout_per_case = args.timeout_per_case or config.get("timeout_per_case")
             args.timeout_ceiling_s = (
                 args.timeout_ceiling_s
@@ -1675,6 +1699,11 @@ def main(argv: list[str] | None = None) -> int:
             # thinking-validity check; journal-recovered runs must too.
             "synthetic_traffic": bool(args.mock_responses_from_json or args.negative_control),
         }
+        if args.stream:
+            # #157: added only when streaming, so a non-streamed run's saved
+            # config stays byte-identical.
+            run_config["stream"] = True
+            run_config["stream_stall_timeout"] = float(args.stream_stall_timeout)
 
         journal_writer = None
         journal_path = None
@@ -1753,6 +1782,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             max_transient_retries=args.max_transient_retries,
             retry_on_timeout=args.retry_on_timeout,
+            stream=args.stream,
+            stream_stall_timeout=args.stream_stall_timeout,
             preserve_reasoning_history=args.preserve_reasoning_history,
             retry_failures=inline_retry_failures,
             retry_runaways=inline_retry_runaways,

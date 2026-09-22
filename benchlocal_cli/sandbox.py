@@ -107,6 +107,48 @@ _HERMES_SUBPROCESS_TIMEOUT_ENV = "BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S"
 # cap this keeps the historical 900s read timeout unchanged.
 _HERMES_REQUEST_TIMEOUT_HEADROOM_S = 300.0
 
+# #157: hermes-agent streams its model calls and ships its own stall detector
+# (HERMES_STREAM_STALE_TIMEOUT: no chunk for N s -> kill the connection and
+# retry) plus a stream read timeout (HERMES_STREAM_READ_TIMEOUT). OPT-IN: they
+# are passed into the container only when the operator sets the matching
+# BENCHLOCAL_HERMES_STREAM_* variable, verbatim; with nothing set no env is
+# injected and hermes behaves exactly as before. Caveats for operators, from
+# hermes' run_agent.py: for a local endpoint (how this harness points it) a
+# value EQUAL to hermes' own default (180 stale / 120 read) is read as "unset"
+# and the detector stays off; and against a dead endpoint each attempt is
+# bounded by the read timeout with ~6 attempts before hermes gives up, so under
+# the default 300 s episode cap they rarely fire first — they matter only with
+# a long cap.
+_HERMES_STREAM_ENV = (
+    # (runner env, container env)
+    ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "HERMES_STREAM_STALE_TIMEOUT"),
+    ("BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S", "HERMES_STREAM_READ_TIMEOUT"),
+)
+
+
+def hermes_stream_env(environ: dict[str, str] | None = None) -> tuple[tuple[str, str], ...]:
+    """#157: container env for hermes-agent's own stall detection — opt-in.
+
+    Only variables the operator set are passed, and verbatim. Unset or blank
+    injects nothing. A value must be a positive number of seconds: hermes
+    would read 0 as "kill every stream immediately", so it is rejected here
+    rather than handed through.
+    """
+    env = os.environ if environ is None else environ
+    out: list[tuple[str, str]] = []
+    for runner_env, container_env in _HERMES_STREAM_ENV:
+        raw = env.get(runner_env)
+        if raw is None or raw.strip() == "":
+            continue
+        try:
+            seconds = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{runner_env} must be a number of seconds, got {raw!r}") from exc
+        if not seconds > 0 or seconds == float("inf"):
+            raise ValueError(f"{runner_env} must be a positive number of seconds, got {raw!r}")
+        out.append((container_env, raw))
+    return tuple(out)
+
 
 def resolve_episode_cap(
     pack_id: str,
@@ -875,6 +917,7 @@ def config_for_pack(
         # #149: an explicit --timeout-per-case floors it (see resolve_episode_cap);
         # BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S on the runner overrides both.
         env = env + (("HERMES_SUBPROCESS_TIMEOUT_S", str(int(episode_cap.seconds))),)
+        env = env + hermes_stream_env()  # #157
         # The outer /verify-start read must outlast the inner kill — otherwise a
         # raised cap turns `agent_runner_timeout` into a runner-side transport
         # error while the agent keeps running in the container.

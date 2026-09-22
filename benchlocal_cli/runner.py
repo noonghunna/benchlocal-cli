@@ -22,6 +22,7 @@ from benchlocal_cli import __version__
 from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, config_for_pack
+from benchlocal_cli.streaming import StreamStall, post_chat_streaming
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import (
     RUNAWAY_FAILURE_MODES,
@@ -98,6 +99,11 @@ DEFAULT_TIMEOUT_BASELINE_TOKENS = 1024
 # Runner and CLI share this so the runner can tell when an operator changed it
 # on a pack it cannot reach (#149).
 DEFAULT_MODEL_TURN_TIMEOUT_S = 300.0
+# #157: with --stream, the longest gap between two data events before a request
+# is declared stalled. Deliberately generous — it must outlast any legitimate
+# pause mid-generation — because it only has to beat the total budget, which on
+# a thinking run can be many minutes.
+DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0
 
 # #61: content-verdict failure modes that a token-cap truncation should override.
 # A failure on any of these *while* finish_reason == "length" is confounded by
@@ -156,6 +162,11 @@ _ENGINE_MESSAGE_DETAIL_CHARS = 240
 _INFRA_FAILURE_MODES = frozenset({
     "http_error",
     "server_error",
+    # #157: a streamed request stopped producing events mid-stream. The
+    # endpoint's fault, not the model's — unlike `timeout`, which with
+    # streaming means the model was still producing tokens when the budget ran
+    # out (a runaway).
+    "stall",
     "agent_runner_crashed",
     "model_endpoint_unreachable",
     "result_json_malformed",
@@ -615,12 +626,47 @@ def _merge_transient_trace(existing: dict | None, new: dict | None) -> dict | No
         return existing
     if not existing:
         return dict(new)
+    merged: dict = {}
+    if any(key in trace for trace in (existing, new) for key in ("transient_retries", "transient_errors")):
+        merged["transient_retries"] = int(existing.get("transient_retries") or 0) + int(
+            new.get("transient_retries") or 0
+        )
+        merged["transient_errors"] = list(existing.get("transient_errors") or []) + list(
+            new.get("transient_errors") or []
+        )
+    stream = _merge_stream_trace(existing.get("stream"), new.get("stream"))
+    if stream is not None:
+        merged["stream"] = stream
+    return merged
+
+
+def _stream_trace(stats: dict) -> dict:
+    """#157: one streamed request's liveness stats, in the list form that merges."""
     return {
-        "transient_retries": int(existing.get("transient_retries") or 0)
-        + int(new.get("transient_retries") or 0),
-        "transient_errors": list(existing.get("transient_errors") or [])
-        + list(new.get("transient_errors") or []),
+        "requests": 1,
+        "first_chunk_s": [stats.get("first_chunk_s")],
+        "max_gap_s": [stats.get("max_gap_s")],
     }
+
+
+def _merge_stream_trace(a: dict | None, b: dict | None) -> dict | None:
+    if not a:
+        return dict(b) if b else None
+    if not b:
+        return dict(a)
+    return {
+        "requests": int(a.get("requests") or 0) + int(b.get("requests") or 0),
+        "first_chunk_s": list(a.get("first_chunk_s") or []) + list(b.get("first_chunk_s") or []),
+        "max_gap_s": list(a.get("max_gap_s") or []) + list(b.get("max_gap_s") or []),
+    }
+
+
+def _with_stream(trace: dict | None, stream: dict | None) -> dict | None:
+    if stream is None:
+        return trace
+    out = dict(trace or {})
+    out["stream"] = stream
+    return out
 
 
 def _engine_error_message(raw_response: dict | None) -> str:
@@ -884,6 +930,8 @@ class Runner:
         sandbox_log_dir: str | None = None,
         max_transient_retries: int = 3,
         retry_on_timeout: bool = False,
+        stream: bool = False,
+        stream_stall_timeout: float = DEFAULT_STREAM_STALL_TIMEOUT_S,
         preserve_reasoning_history: bool = False,
         retry_failures: int = DEFAULT_INLINE_RETRY_ATTEMPTS,
         retry_runaways: bool = False,
@@ -984,6 +1032,13 @@ class Runner:
         # failing fast on the first timeout. Connection errors / HTTP 5xx are
         # genuinely transient and keep retrying regardless of this flag.
         self.retry_on_timeout = bool(retry_on_timeout)
+        # #157: stream model calls so a stalled endpoint is caught by the gap
+        # since the last event, not by the total budget. Opt-in: off, the
+        # transport and every saved byte are unchanged.
+        self.stream = bool(stream)
+        if float(stream_stall_timeout) <= 0:
+            raise ValueError("stream_stall_timeout must be positive")
+        self.stream_stall_timeout = float(stream_stall_timeout)
         # Reasoning is output-only for the default OpenAI-compatible/Qwen/R1
         # path. Providers whose tool loops require signed/encrypted reasoning
         # continuity can opt back into replay explicitly.
@@ -2458,24 +2513,45 @@ class Runner:
                 time.sleep(wait)
         self._last_request_monotonic = time.monotonic()
 
+        stream: dict | None = None  # #157: liveness stats over every streamed attempt
         for attempt in range(1, max_attempts + 1):
             try:
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.post(_chat_url(self.endpoint), json=request, headers=self._request_headers)
+                if self.stream:
+                    response, stats = post_chat_streaming(
+                        _chat_url(self.endpoint),
+                        request,
+                        self._request_headers,
+                        timeout=timeout,
+                        stall_timeout=self.stream_stall_timeout,
+                        client_factory=httpx.Client,
+                    )
+                    stream = _merge_stream_trace(stream, _stream_trace(stats))
+                else:
+                    with httpx.Client(timeout=timeout) as client:
+                        response = client.post(_chat_url(self.endpoint), json=request, headers=self._request_headers)
+            except StreamStall as exc:
+                # #157: the endpoint went quiet mid-stream. Not retried here —
+                # like a timeout (#58), a retry against a server that just
+                # stopped answering costs another full allowance; the inline
+                # infra-retry policy decides whether the scenario reruns.
+                stream = _merge_stream_trace(stream, _stream_trace(exc.stats))
+                transient_errors.append(f"attempt {attempt}: StreamStall: {exc}")
+                trace = _with_stream(_transient_trace(transient_errors, attempt), stream) or {}
+                raise _TransientPostFailure("stall", str(exc), trace) from exc
             except httpx.TimeoutException as exc:
                 transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
                 # A timeout means the budget was genuinely exceeded — retrying just
                 # burns another full budget for the same outcome (#58). Fail fast
                 # unless explicitly configured to retry timeouts.
                 if attempt >= max_attempts or not self.retry_on_timeout:
-                    trace = _transient_trace(transient_errors, attempt) or {}
+                    trace = _with_stream(_transient_trace(transient_errors, attempt), stream) or {}
                     raise _TransientPostFailure("timeout", f"timed out after {timeout}s", trace) from exc
                 self._sleep_before_transient_retry(attempt)
                 continue
             except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
                 transient_errors.append(f"attempt {attempt}: {type(exc).__name__}: {exc}")
                 if attempt >= max_attempts:
-                    trace = _transient_trace(transient_errors, attempt) or {}
+                    trace = _with_stream(_transient_trace(transient_errors, attempt), stream) or {}
                     raise _TransientPostFailure("http_error", str(exc), trace) from exc
                 self._sleep_before_transient_retry(attempt)
                 continue
@@ -2497,7 +2573,11 @@ class Runner:
                     # a retry reproduces the same generation and the same
                     # rejection — so return it now and let the caller classify.
                     transient_errors[-1] += " (engine rejected model output; not retried)"
-                    return response.status_code, raw_response, _transient_trace(transient_errors, attempt)
+                    return (
+                        response.status_code,
+                        raw_response,
+                        _with_stream(_transient_trace(transient_errors, attempt), stream),
+                    )
                 if attempt < max_attempts:
                     retry_after = (
                         self._retry_after_seconds(response)
@@ -2518,7 +2598,11 @@ class Runner:
             if self.max_total_tokens is not None and self.tokens_used > self.max_total_tokens:
                 raise _SpendGuardExceeded(self.tokens_used, self.max_total_tokens)
 
-            return response.status_code, raw_response, _transient_trace(transient_errors, attempt)
+            return (
+                response.status_code,
+                raw_response,
+                _with_stream(_transient_trace(transient_errors, attempt), stream),
+            )
 
         raise AssertionError("unreachable transient retry loop exit")
 

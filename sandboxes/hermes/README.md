@@ -45,7 +45,7 @@ A valid install must contain `run_agent.py` and `hermes_state.py`.
 | `agent_runner_timeout` | Upstream subprocess exceeded the episode cap (`HERMES_SUBPROCESS_TIMEOUT_S`, 300s by default; the runner raises it to an explicit `--timeout-per-case`) |
 | `agent_runner_crashed` | Upstream exited nonzero or didn't write `result.json` |
 | `result_json_malformed` | Upstream's result.json couldn't be parsed |
-| `model_endpoint_unreachable` | Upstream reported network error connecting to `model_endpoint` |
+| `model_endpoint_unreachable` | Upstream reported network error connecting to `model_endpoint`, **or** the agent gave up on the endpoint mid-episode — it exits 0 with `API call failed after N retries: …` as its final answer, which used to be graded as `verifier_fail` (#157) |
 | `server_error` | Server-side bug or missing config (model_endpoint absent, hermes-agent install missing) |
 
 ## Isolation guarantees — bench runs do NOT modify your host install
@@ -108,6 +108,7 @@ Container env:
 | `HERMES_AGENT_PATH` | Where the install lives inside the container | `/opt/hermes-agent` |
 | `HERMES_JOB_ROOT` | Per-scenario job dirs (cleaned after each scenario) | `/tmp/hermes-runs` |
 | `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap per scenario, enforced by the agent watchdog in `hermes-runtime.mjs` (previously a fixed 600 s that clamped larger caps). The proxy's read to upstream waits this cap + 180 s so the watchdog's result arrives first. Set by the runner: `max(300, --timeout-per-case)`, or `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` verbatim (#149) | `300` (5min) |
+| `HERMES_STREAM_STALE_TIMEOUT` / `HERMES_STREAM_READ_TIMEOUT` | hermes-agent's own stall detector and stream read timeout, off for local endpoints by default. **Opt-in** (#157): passed verbatim only when the operator sets `BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S` / `BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S`. A value equal to hermes' own default (180 / 120) is inert for a local endpoint. A dead endpoint takes ~6 attempts × the read timeout to give up, so under the default 300 s episode cap they rarely fire first | not injected |
 | `BENCHLOCAL_HERMES_AGENT_COMMIT` | Override the commit reported in `/health` | git-detected at runtime |
 | `HERMES_PINNED_COMMIT` | Build-time commit (set by Dockerfile) | manifest.mjs default |
 
