@@ -109,46 +109,44 @@ _HERMES_REQUEST_TIMEOUT_HEADROOM_S = 300.0
 
 # #157: hermes-agent streams its model calls and ships its own stall detector
 # (HERMES_STREAM_STALE_TIMEOUT: no chunk for N s -> kill the connection and
-# retry) plus an httpx read timeout (HERMES_STREAM_READ_TIMEOUT). Both are
-# switched OFF for local endpoints — which is how this harness always points it
-# — unless the value differs from hermes' own default: run_agent.py treats
-# exactly 180 (stale) / 120 (read) as "not set" and then uses infinity / 1800 s.
-# So the runner always passes explicit values, nudged off those sentinels.
-# The stale clock also runs before the first chunk (prefill), so it must
-# outlast a slow prefill of a hermes episode (<8K tokens of context); the read
-# timeout sits above it so the stall detector, not httpx, is what fires.
+# retry) plus a stream read timeout (HERMES_STREAM_READ_TIMEOUT). OPT-IN: they
+# are passed into the container only when the operator sets the matching
+# BENCHLOCAL_HERMES_STREAM_* variable, verbatim; with nothing set no env is
+# injected and hermes behaves exactly as before. Caveats for operators, from
+# hermes' run_agent.py: for a local endpoint (how this harness points it) a
+# value EQUAL to hermes' own default (180 stale / 120 read) is read as "unset"
+# and the detector stays off; and against a dead endpoint each attempt is
+# bounded by the read timeout with ~6 attempts before hermes gives up, so under
+# the default 300 s episode cap they rarely fire first — they matter only with
+# a long cap.
 _HERMES_STREAM_ENV = (
-    # (runner env, container env, default seconds, hermes "unset" sentinel)
-    ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "HERMES_STREAM_STALE_TIMEOUT", 240.0, 180.0),
-    ("BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S", "HERMES_STREAM_READ_TIMEOUT", 300.0, 120.0),
+    # (runner env, container env)
+    ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "HERMES_STREAM_STALE_TIMEOUT"),
+    ("BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S", "HERMES_STREAM_READ_TIMEOUT"),
 )
 
 
 def hermes_stream_env(environ: dict[str, str] | None = None) -> tuple[tuple[str, str], ...]:
-    """#157: container env that re-enables hermes-agent's own stall detection.
+    """#157: container env for hermes-agent's own stall detection — opt-in.
 
-    `0` leaves a knob unset, i.e. hermes' default behaviour (detector off for
-    local endpoints). A value equal to hermes' sentinel is nudged by 1 ms so it
-    is honoured instead of being read as "unset".
+    Only variables the operator set are passed, and verbatim. Unset or blank
+    injects nothing. A value must be a positive number of seconds: hermes
+    would read 0 as "kill every stream immediately", so it is rejected here
+    rather than handed through.
     """
     env = os.environ if environ is None else environ
     out: list[tuple[str, str]] = []
-    for runner_env, container_env, default, sentinel in _HERMES_STREAM_ENV:
+    for runner_env, container_env in _HERMES_STREAM_ENV:
         raw = env.get(runner_env)
         if raw is None or raw.strip() == "":
-            seconds = default
-        else:
-            try:
-                seconds = float(raw)
-            except ValueError as exc:
-                raise ValueError(f"{runner_env} must be a number of seconds, got {raw!r}") from exc
-            if seconds < 0:
-                raise ValueError(f"{runner_env} must be non-negative, got {raw!r}")
-        if seconds == 0:
             continue
-        if seconds == sentinel:
-            seconds += 0.001
-        out.append((container_env, f"{seconds:g}"))
+        try:
+            seconds = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{runner_env} must be a number of seconds, got {raw!r}") from exc
+        if not seconds > 0 or seconds == float("inf"):
+            raise ValueError(f"{runner_env} must be a positive number of seconds, got {raw!r}")
+        out.append((container_env, raw))
     return tuple(out)
 
 

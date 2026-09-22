@@ -108,7 +108,7 @@ Container env:
 | `HERMES_AGENT_PATH` | Where the install lives inside the container | `/opt/hermes-agent` |
 | `HERMES_JOB_ROOT` | Per-scenario job dirs (cleaned after each scenario) | `/tmp/hermes-runs` |
 | `HERMES_SUBPROCESS_TIMEOUT_S` | Upstream agent-runner wall-clock cap per scenario, enforced by the agent watchdog in `hermes-runtime.mjs` (previously a fixed 600 s that clamped larger caps). The proxy's read to upstream waits this cap + 180 s so the watchdog's result arrives first. Set by the runner: `max(300, --timeout-per-case)`, or `BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S` verbatim (#149) | `300` (5min) |
-| `HERMES_STREAM_STALE_TIMEOUT` / `HERMES_STREAM_READ_TIMEOUT` | hermes-agent's own stall detector and stream read timeout. Off for local endpoints unless set to something other than its defaults (180 / 120). Set by the runner from `BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S` / `BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S` (#157); `0` = leave unset | `240` / `300` |
+| `HERMES_STREAM_STALE_TIMEOUT` / `HERMES_STREAM_READ_TIMEOUT` | hermes-agent's own stall detector and stream read timeout, off for local endpoints by default. **Opt-in** (#157): passed verbatim only when the operator sets `BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S` / `BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S`. A value equal to hermes' own default (180 / 120) is inert for a local endpoint. A dead endpoint takes ~6 attempts × the read timeout to give up, so under the default 300 s episode cap they rarely fire first | not injected |
 | `BENCHLOCAL_HERMES_AGENT_COMMIT` | Override the commit reported in `/health` | git-detected at runtime |
 | `HERMES_PINNED_COMMIT` | Build-time commit (set by Dockerfile) | manifest.mjs default |
 

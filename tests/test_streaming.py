@@ -347,43 +347,54 @@ def test_stream_stall_timeout_must_be_positive():
 # --- hermes half: the agent's own stall detection -----------------------------
 
 
-def test_hermes_stream_env_defaults_avoid_hermes_sentinels():
-    from benchlocal_cli.sandbox import hermes_stream_env
-
-    env = dict(hermes_stream_env({}))
-    # hermes-agent treats exactly 180 (stale) / 120 (read) as "unset" and then
-    # disables the detector for local endpoints; the defaults must not be those.
-    assert env == {"HERMES_STREAM_STALE_TIMEOUT": "240", "HERMES_STREAM_READ_TIMEOUT": "300"}
+_HERMES_STREAM_RUNNER_ENV = ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S")
+_HERMES_STREAM_CONTAINER_ENV = ("HERMES_STREAM_STALE_TIMEOUT", "HERMES_STREAM_READ_TIMEOUT")
 
 
-def test_hermes_stream_env_nudges_sentinels_and_zero_disables():
-    from benchlocal_cli.sandbox import hermes_stream_env
+def test_hermes_stream_env_injects_nothing_by_default(monkeypatch):
+    """Opt-in: with no BENCHLOCAL_HERMES_STREAM_* set, the hermes container env
+    carries no HERMES_STREAM_* at all — hermes behaves exactly as on master."""
+    from benchlocal_cli import sandbox as sandbox_module
 
-    env = dict(hermes_stream_env({
-        "BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S": "180",
-        "BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S": "0",
-    }))
-    assert env == {"HERMES_STREAM_STALE_TIMEOUT": "180.001"}
-    assert float(env["HERMES_STREAM_STALE_TIMEOUT"]) != 180.0
-    assert dict(hermes_stream_env({"BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S": "120"}))["HERMES_STREAM_READ_TIMEOUT"] == "120.001"
+    for name in (*_HERMES_STREAM_RUNNER_ENV, *_HERMES_STREAM_CONTAINER_ENV):
+        monkeypatch.delenv(name, raising=False)
+    assert sandbox_module.hermes_stream_env() == ()
+    env_keys = [key for key, _value in sandbox_module.config_for_pack("hermesagent-20").env]
+    assert not [key for key in env_keys if key.startswith("HERMES_STREAM_")]
+    # Blank counts as unset.
+    monkeypatch.setenv("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "  ")
+    assert sandbox_module.hermes_stream_env() == ()
 
 
-@pytest.mark.parametrize("value", ["abc", "-1"])
+@pytest.mark.parametrize(
+    ("runner_env", "container_env", "value"),
+    [
+        ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "HERMES_STREAM_STALE_TIMEOUT", "45"),
+        ("BENCHLOCAL_HERMES_STREAM_READ_TIMEOUT_S", "HERMES_STREAM_READ_TIMEOUT", "90.5"),
+        # Equal to hermes' own default: passed verbatim, NOT nudged — the docs
+        # say it is inert for local endpoints; the harness does not rewrite it.
+        ("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "HERMES_STREAM_STALE_TIMEOUT", "180"),
+    ],
+)
+def test_hermes_stream_env_is_injected_verbatim_when_set(monkeypatch, runner_env, container_env, value):
+    from benchlocal_cli import sandbox as sandbox_module
+
+    for name in _HERMES_STREAM_RUNNER_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(runner_env, value)
+    env = sandbox_module.config_for_pack("hermesagent-20").env
+    stream_env = [(key, val) for key, val in env if key.startswith("HERMES_STREAM_")]
+    assert stream_env == [(container_env, value)]
+    # Only the hermes sandbox gets it.
+    assert not [key for key, _v in sandbox_module.config_for_pack("cli-40").env if key.startswith("HERMES_STREAM_")]
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "0", "inf"])
 def test_hermes_stream_env_rejects_bad_values(value):
     from benchlocal_cli.sandbox import hermes_stream_env
 
     with pytest.raises(ValueError):
         hermes_stream_env({"BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S": value})
-
-
-def test_hermes_sandbox_config_carries_the_stall_detector(monkeypatch):
-    from benchlocal_cli import sandbox as sandbox_module
-
-    monkeypatch.setenv("BENCHLOCAL_HERMES_STREAM_STALE_TIMEOUT_S", "45")
-    env = dict(sandbox_module.config_for_pack("hermesagent-20").env)
-    assert env["HERMES_STREAM_STALE_TIMEOUT"] == "45"
-    assert env["HERMES_STREAM_READ_TIMEOUT"] == "300"
-    assert "HERMES_STREAM_STALE_TIMEOUT" not in dict(sandbox_module.config_for_pack("cli-40").env)
 
 
 def _hermes_proxy():
