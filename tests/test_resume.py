@@ -22,7 +22,13 @@ def _base_args(tmp_path: Path, result_path: Path) -> list[str]:
         json.dumps(
             {
                 "SO-01": _response('{"title":"The Great Gatsby","year":1925}'),
-                "SO-04": _response("[package]\nname = \"my_cli\""),
+                # A complete answer: SO-04 is graded by upstream's TOML validator
+                # since #143 (it used to pass any non-empty text).
+                "SO-04": _response(
+                    '[package]\nname = "my_cli"\nversion = "0.1.0"\nedition = "2021"\n'
+                    'authors = ["Alice <alice@example.com>"]\n\n[dependencies]\nclap = "4.5"\n'
+                    'serde = { version = "1.0", features = ["derive"] }'
+                ),
             }
         )
     )

@@ -56,8 +56,8 @@ Use the canonical temp-0 default for regression tracking and cross-model ranking
 | Pack | Verifier type | Status |
 |---|---|---|
 | **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | ✅ vendor-generated |
-| **InstructFollow-15** | Deterministic — constraint validators | ✅ vendor-generated |
-| **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate | ✅ vendor-generated |
+| **InstructFollow-15** | Deterministic — constraint validators; 7 scenarios run ports of upstream's evaluators (v2.0.0, #143) | ✅ vendor-generated |
+| **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate; TOML / SQL / ICS / XML / Mermaid / HTML / BSON run ports of upstream's validators (v2.0.0, #143) | ✅ vendor-generated |
 | **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ vendor-generated |
 | **DataExtract-15** | Deterministic — JSON field-match | ✅ vendor-generated |
 | **BugFind-15** | **Execution-backed** — candidate-fix verifier sandbox | ✅ sandboxed v0.4 verifier |
@@ -293,6 +293,8 @@ Leave `--retry-on-timeout` **off** for cloud — a timeout means the token budge
 ```bash
 --extra-body '{"provider":{"only":["DeepInfra"],"allow_fallbacks":false}}'
 ```
+
+⚠️ **`instructfollow-15` and `structoutput-15` v2.0.0 are not comparable with v1.x.** In v1.x, 7 scenarios in each accepted any non-empty answer (a junk answer scored 7/15); v2 grades them with upstream's own checks, so scores can only go down. `benchlocal-cli rescore <result.json>` re-grades a saved v1 result with the current verifiers — see [docs/VERIFIER_FIDELITY_AUDIT.md](docs/VERIFIER_FIDELITY_AUDIT.md).
 
 **What to compare.** The **deterministic** packs (`toolcall-15`, `instructfollow-15`, `structoutput-15`, `dataextract-15`, `reasonmath-15`) are the cleanest apples-to-apples — single-shot, verifier-graded, no Docker. The **sandboxed/agentic** packs run a *local* Docker agent loop that calls your endpoint over the network, so they also need the sandbox images built (`bash tools/build-sandboxes.sh` from a checkout) and are less validated over a remote endpoint — land the deterministic set first.
 
