@@ -1821,3 +1821,132 @@ def test_isolated_sandbox_container_really_has_no_network():
         assert "BLOCKED" in probe.stdout, f"container reached the network: {probe.stdout!r}"
     finally:
         client.stop()
+
+
+# --- a turn cut off at the token cap ends the episode ------------------------
+
+
+def _scripted_http_client(responses: list[dict]):
+    """httpx.Client stand-in that returns `responses` in order and records requests."""
+
+    class _Client:
+        requests: list[dict] = []
+
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, json: dict, **_kwargs) -> FakeHTTPResponse:
+            _Client.requests.append(json)
+            return FakeHTTPResponse(responses[len(_Client.requests) - 1])
+
+    return _Client
+
+
+def _tool_turn(finish_reason: str, arguments: str) -> dict:
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-1", "type": "function", "function": {"name": "bash", "arguments": arguments}}
+                    ],
+                },
+            }
+        ],
+        "usage": {"completion_tokens": 12288},
+    }
+
+
+class _TruncationSandbox(FakeMultiTurnSandbox):
+    def __init__(self, end_payload: dict) -> None:
+        super().__init__()
+        self.end_payload = end_payload
+        self.turn_responses: list[dict] = []
+
+    def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
+        self.turn_responses.append(model_response)
+        return {
+            "action": "next-prompt",
+            "prompt": [{"role": "tool", "tool_call_id": "call-1", "name": "bash", "content": "{\"exit_code\":0}"}],
+            "tools": [],
+        }
+
+    def verify_multiturn_end(self, scenario_state_id: str) -> dict:
+        self.ended = True
+        return dict(self.end_payload)
+
+
+def _run_truncation_case(monkeypatch, responses: list[dict], end_payload: dict):
+    import benchlocal_cli.runner as runner_module
+
+    client = _scripted_http_client(responses)
+    client.requests = []
+    monkeypatch.setattr(runner_module.httpx, "Client", client)
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True)
+    sandbox = _TruncationSandbox(end_payload)
+    runner._sandbox_clients["cli-40"] = sandbox
+    meta = {"supports_sandboxed_only": True, "default_max_seconds": 600, "sampling_defaults": {"max_tokens": 16}}
+    scenario = {
+        "id": "CLI-21",
+        "pack_id": "cli-40",
+        "messages": [{"role": "user", "content": "fix the tests"}],
+        "raw_scenario": {"kind": "multiround"},
+        "verifier": {"type": "_stub", "asserts": []},
+    }
+    return runner.run_scenario(meta, scenario), sandbox, client
+
+
+_EXHAUSTED = {
+    "action": "verify-final",
+    "passed": False,
+    "failure_mode": "agent_loop_exhausted",
+    "detail": "CLI-21: agent loop ended before success",
+    "trace": {"turn_count": 1},
+}
+
+
+def test_multiturn_stops_at_a_length_truncated_turn(monkeypatch):
+    """A turn cut off at the cap carries a partial tool call. It must be neither
+    executed nor sent back as history (llama.cpp answers that history with a
+    500 that used to read as `model_output_unparseable`, #152)."""
+    partial = '{"command":"cat src/app.py</parameter></function></tool_call><tool_call><function=bash>'
+    run, sandbox, client = _run_truncation_case(monkeypatch, [_tool_turn("length", partial)], _EXHAUSTED)
+
+    assert len(client.requests) == 1  # no second model call carrying the partial turn
+    assert sandbox.turn_responses == []  # the partial tool call was never executed
+    assert sandbox.ended is True  # the episode was graded
+    assert run.result.passed is False
+    assert run.result.failure_mode == "token_limit"
+    assert "turn 1 truncated at token limit" in run.result.detail
+    assert "underlying verdict was agent_loop_exhausted" in run.result.detail
+    assert run.result.verifier_trace["truncated_turn"] == 1
+    assert run.result.tokens_completion == 12288  # the truncated turn's tokens still count
+
+
+def test_multiturn_truncated_turn_keeps_a_pass_earned_by_earlier_turns(monkeypatch):
+    responses = [_tool_turn("tool_calls", '{"command":"make fix"}'), _tool_turn("length", '{"command":"ec')]
+    passed = {"action": "verify-final", "passed": True, "failure_mode": "passed", "detail": "CLI-21: passed", "trace": {}}
+    run, sandbox, client = _run_truncation_case(monkeypatch, responses, passed)
+
+    assert len(client.requests) == 2
+    assert len(sandbox.turn_responses) == 1  # only the complete first turn ran
+    assert run.result.passed is True
+    assert run.result.failure_mode == "passed"
+    assert run.result.verifier_trace["truncated_turn"] == 2
+
+
+def test_multiturn_truncated_turn_does_not_relabel_an_infra_failure(monkeypatch):
+    infra = {"action": "verify-final", "passed": False, "failure_mode": "server_error", "detail": "unknown scenario_state_id", "trace": {}}
+    run, _sandbox, _client = _run_truncation_case(monkeypatch, [_tool_turn("length", '{"command":"x')], infra)
+
+    assert run.result.failure_mode == "server_error"
+    assert run.result.verifier_trace["truncated_turn"] == 1
