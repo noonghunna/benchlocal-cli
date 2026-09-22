@@ -220,6 +220,12 @@ class RunResult:
     # Failure-conditioned retries are diagnostic only; baseline pass@1 remains
     # authoritative and is recorded alongside per-scenario consistency here.
     retry_failed: dict | None = None
+    # #145: present only under --budget-from-timeout. Records which side was
+    # fixed (the clock) and which derived (the token ceiling), the measured
+    # rate and headroom it came from, the engine knob used, the startup
+    # control's verdict and the per-pack numbers — so a score is poolable only
+    # with runs that carry the same budget. None means the ceiling was fixed.
+    token_budget: dict | None = None
     # Additive best-of-k rollup for inline retries (#111).
     pass_at_k: dict[str, float | int] | None = None
     # Whole-benchmark repeat count. Always at least 1; additive for schema-v1 readers.
@@ -264,6 +270,8 @@ class RunResult:
             out["server_defaults"] = self.server_defaults
         if self.selection is not None:
             out["selection"] = self.selection
+        if self.token_budget is not None:
+            out["token_budget"] = self.token_budget
         if self.retry_failed is not None:
             out["retry_failed"] = self.retry_failed
         if self.pass_at_k is not None:

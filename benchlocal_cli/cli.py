@@ -173,6 +173,32 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--measured-tps", type=float, default=None, help="served model decode TPS override for dynamic timeout scaling; skips the startup probe")
     run.add_argument("--reference-tps", type=float, default=None, help="override pack timeout_reference_tps metadata for dynamic timeout scaling")
     run.add_argument("--timeout-scale-down", action="store_true", help="allow dynamic timeout scaling to shrink budgets for faster-than-reference models; off by default")
+    # #145: the dual of timeout scaling — fix the clock, derive the tokens.
+    run.add_argument(
+        "--budget-from-timeout",
+        action="store_true",
+        help="derive each request's token ceiling from its effective clock: "
+             "floor(headroom x timeout x measured_tps), clamped to the arm's ceiling "
+             "(--thinking-max-tokens on thinking arms, --max-tokens / pack default otherwise). "
+             "On llama.cpp the reasoning share is also sent per request; the budget is "
+             "recorded in the result as token_budget (#145)",
+    )
+    run.add_argument(
+        "--budget-headroom",
+        type=float,
+        default=0.8,
+        metavar="F",
+        help="fraction of the clock the derived budget may spend on decode; the rest covers "
+             "prefill, verification and turn overhead (default: 0.8; must be in (0, 1])",
+    )
+    run.add_argument(
+        "--no-budget-control",
+        dest="budget_control",
+        action="store_false",
+        help="skip the startup check that the engine honours a 128-token per-request "
+             "reasoning budget (with it, a dropped budget refuses the run instead of "
+             "silently running unbudgeted)",
+    )
     run.add_argument("--output", choices=["markdown", "json"], default="markdown", help="output format (default: markdown)")
     run.add_argument("--save-json", help="also save raw JSON results to this path")
     run.add_argument(
@@ -493,6 +519,18 @@ def _pack_line(pack: PackResult) -> str:
 
 
 
+def _token_budget_tag(result: RunResult) -> str:
+    budget = result.token_budget
+    if not isinstance(budget, dict) or budget.get("mode") != "derived":
+        return ""
+    tps = budget.get("measured_tps")
+    headroom = budget.get("headroom")
+    detail = "from clock"
+    if isinstance(tps, (int, float)) and isinstance(headroom, (int, float)):
+        detail = f"from clock x {float(tps):.1f} tok/s x {float(headroom):g}"
+    return f" [TOKEN BUDGET: derived {detail}]"
+
+
 def _sandbox_progress_event(event: dict) -> None:
     pack_id = event.get("pack_id") or "sandbox"
     exercise_id = event.get("id") or "?"
@@ -601,8 +639,12 @@ def _markdown(result: RunResult) -> str:
         f" [PARTIAL SELECTION: {len(result.selection)} scenarios]"
         if result.selection is not None else ""
     )
+    # #145: a derived token ceiling conditions the score — say so in the
+    # header, next to the other non-poolability tags. Empty when the ceiling
+    # was fixed (the default), so the default markdown is unchanged.
+    budget_tag = _token_budget_tag(result)
     lines = [
-        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag} ===",
+        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag}{budget_tag} ===",
         "",
     ]
     retry_diagnostic = result.retry_failed
@@ -1111,6 +1153,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--output json with --report requires --report-out")
         if args.retry_failures < 0:
             raise ValueError("--retry-failures must be 0 or greater")
+        if not 0.0 < float(args.budget_headroom) <= 1.0:
+            raise ValueError("--budget-headroom must be in (0, 1]")
         if args.timeout_ceiling_s is not None and args.timeout_ceiling_s < 0:
             raise ValueError("--timeout-ceiling-s must be 0 or greater")
         retry_failed_context: dict | None = None
@@ -1179,6 +1223,10 @@ def main(argv: list[str] | None = None) -> int:
                 else config.get("timeout_ceiling_s")
             )
             args.timeout_scale_down = bool(config.get("timeout_scale_down"))
+            args.budget_from_timeout = bool(config.get("budget_from_timeout"))
+            if config.get("budget_headroom") is not None:
+                args.budget_headroom = float(config["budget_headroom"])
+            args.budget_control = bool(config.get("budget_control", True))
             args.preserve_reasoning_history = bool(
                 config.get("preserve_reasoning_history")
             )
@@ -1468,6 +1516,16 @@ def main(argv: list[str] | None = None) -> int:
             "measured_tps": args.measured_tps,
             "reference_tps": args.reference_tps,
             "timeout_scale_down": args.timeout_scale_down,
+            "budget_from_timeout": bool(args.budget_from_timeout),
+            "budget_headroom": float(args.budget_headroom),
+            "budget_control": bool(args.budget_control),
+            # #145: the requested shape travels with the journal so a resumed
+            # run still says the ceiling was derived; the live run replaces it
+            # with the full per-pack report.
+            "token_budget": (
+                {"mode": "derived", "headroom": float(args.budget_headroom)}
+                if args.budget_from_timeout else None
+            ),
             "preserve_reasoning_history": args.preserve_reasoning_history,
             "retry_failures": inline_retry_failures,
             "retry_runaways": inline_retry_runaways,
@@ -1535,6 +1593,9 @@ def main(argv: list[str] | None = None) -> int:
             measured_tps=args.measured_tps,
             reference_tps=args.reference_tps,
             timeout_scale_down=args.timeout_scale_down,
+            budget_from_timeout=bool(args.budget_from_timeout),
+            budget_headroom=float(args.budget_headroom),
+            budget_control=bool(args.budget_control),
             enable_sandboxed_packs=sandboxed_enabled,
             mock_responses=_load_mock(args.mock_responses_from_json),
             negative_control=args.negative_control_text if args.negative_control else None,

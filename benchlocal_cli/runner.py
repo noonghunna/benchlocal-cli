@@ -328,6 +328,36 @@ DEFAULT_THINKING_SAMPLER = {
     "min_p": 0.0,
 }
 
+# #145: --budget-from-timeout derives each request's token ceiling from the
+# clock that actually governs it, `floor(headroom x clock x measured_tps)`,
+# instead of holding the ceiling fixed and letting a capped clock silently
+# become the tighter limit. The headroom covers what the clock pays for besides
+# decode: prefill, verification, turn overhead, and the probe's empty-context
+# optimism.
+DEFAULT_BUDGET_HEADROOM = 0.8
+# Per-request reasoning-budget keys honoured by llama.cpp-family servers. Both
+# spellings are sent because trees differ: `tools/server/server-common.cpp`
+# reads `thinking_budget_tokens` from the body (only when the server was not
+# booted with --reasoning-budget), newer trees read `reasoning_budget_tokens`
+# with the other as fallback. vLLM / SGLang / cloud endpoints drop both
+# silently — which is why the knob is only claimed for llama.cpp and why the
+# startup control below exists.
+_REASONING_BUDGET_KEYS: tuple[str, ...] = ("thinking_budget_tokens", "reasoning_budget_tokens")
+# The startup positive control: a 128-token reasoning budget on a prompt that
+# invites a long trace must not come back as a multi-thousand-token completion.
+_BUDGET_CONTROL_TOKENS = 128
+_BUDGET_CONTROL_MAX_TOKENS = 2048
+_BUDGET_CONTROL_FAIL_ABOVE = 1024
+_BUDGET_CONTROL_PROMPT = (
+    "Think this through carefully and at length before answering, considering "
+    "several approaches: a train leaves at 09:40 and travels 217 km at 68 km/h, "
+    "then waits 25 minutes and returns at 51 km/h. At what time is it back?"
+)
+# Packs whose agent makes its own model calls inside the container. A
+# per-request budget derived from the runner's per-case clock has no meaning
+# for an open-ended episode there (same reasoning as #149's clock floor).
+_AGENT_OWNED_PACKS = frozenset({"hermesagent-20", "aider-polyglot-30"})
+
 
 def _thinking_sampler_for(meta: dict, override: dict | None) -> dict:
     if override is not None:
@@ -697,6 +727,9 @@ class Runner:
         measured_tps: float | None = None,
         reference_tps: float | None = None,
         timeout_scale_down: bool = False,
+        budget_from_timeout: bool = False,
+        budget_headroom: float = DEFAULT_BUDGET_HEADROOM,
+        budget_control: bool = True,
         enable_sandboxed_packs: bool = False,
         mock_responses: dict[str, dict] | None = None,
         negative_control: str | None = None,
@@ -748,6 +781,14 @@ class Runner:
         self.reference_tps_override = None if reference_tps is None else float(reference_tps)
         self.timeout_scale_down = bool(timeout_scale_down)
         self._measured_decode_tps: float | None = self.measured_tps_override
+        # #145: derive the token ceiling from the clock instead of the reverse.
+        self.budget_from_timeout = bool(budget_from_timeout)
+        self.budget_headroom = float(budget_headroom)
+        if not 0.0 < self.budget_headroom <= 1.0:
+            raise ValueError("budget_headroom must be in (0, 1]")
+        self.budget_control = bool(budget_control)
+        self._engine_family: str | None = None
+        self._token_budget_report: dict | None = None
         self._timeout_scaling_note: str | None = None
         self._timeout_scaling_note_emitted = False
         self.enable_sandboxed_packs = enable_sandboxed_packs
@@ -872,6 +913,10 @@ class Runner:
             # any requests so we can tag the run and record what was used.
             if self.sampling_from_server:
                 self._server_defaults = self._read_server_defaults(warnings)
+            # #145: resolve the derived token budget (TPS, engine knob, the
+            # positive control) before any pack runs, so a budget that cannot
+            # be applied fails here and not three hours in.
+            self._prepare_token_budget(pack_ids, warnings)
             self._start_sandboxes(pack_ids, warnings)
             pack_results: list[PackResult] = []
             for pack_id in pack_ids:
@@ -942,6 +987,7 @@ class Runner:
                 sampling_overrides=dict(self.sampling_overrides) if self.sampling_overrides else None,
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
+                token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
                 repeat=repeat,
@@ -1424,6 +1470,253 @@ class Runner:
             return 1.0
         return float(effective) / float(baseline)
 
+    # ------------------------------------------------------------------ #145
+    # Derive the token ceiling from the clock (--budget-from-timeout).
+    #
+    # Timeout scaling (#46/#54/#103/#110) derives the CLOCK from measured TPS
+    # and holds the TOKEN ceiling fixed. When the clock is capped — by
+    # --timeout-ceiling-s, by --timeout-per-case, or by an operator who will
+    # not run a six-hour suite — the clock silently becomes the tighter limit
+    # again and every long trace dies as `timeout`, indistinguishable from a
+    # stuck model. This is the dual direction: fix the clock, derive the
+    # tokens, and say so in the result.
+
+    def _tokens_for_clock(self, clock_s: float, measured_tps: float) -> int:
+        return max(0, int(self.budget_headroom * float(clock_s) * float(measured_tps)))
+
+    def _answer_reserve(self, meta: dict, budget: int) -> int:
+        """Tokens held back from reasoning so the final answer still fits.
+
+        The pack's `timeout_baseline_tokens` (what its clock was sized for —
+        the non-thinking answer length) is the natural reserve, capped at a
+        quarter of the budget so reasoning always keeps the larger share.
+        """
+        baseline = self._timeout_baseline_tokens(meta)
+        return max(0, min(baseline, budget // 4))
+
+    def _detect_engine_family(self) -> str:
+        """`llama.cpp` when GET /props answers (the only family with a
+        per-request reasoning-budget knob), else `unknown`. Mock and
+        negative-control runs never touch the endpoint."""
+        if self.mock_responses or self.negative_control is not None:
+            return "unknown"
+        base = _endpoint_base(self.endpoint)
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{base}/props", headers=self._request_headers)
+            if response.status_code == 200 and isinstance(response.json(), dict):
+                return "llama.cpp"
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+        return "unknown"
+
+    def _prepare_token_budget(self, pack_ids: list[str], warnings: list[str]) -> None:
+        if not self.budget_from_timeout:
+            return
+        measured_tps = self._timeout_measured_tps()
+        if measured_tps is None or measured_tps <= 0:
+            raise ValueError(
+                "--budget-from-timeout: cannot derive a token budget without a measured "
+                "decode rate — the startup TPS probe did not run or failed "
+                f"({self._timeout_scaling_note or 'no note'}); pass --measured-tps N "
+                "(use the SLOWEST arm's rate when comparing configs) or fix the endpoint"
+            )
+        self._engine_family = self._detect_engine_family()
+        reasoning_keys = list(_REASONING_BUDGET_KEYS) if self._engine_family == "llama.cpp" else None
+        thinking_packs = [
+            pack_id for pack_id in pack_ids
+            if pack_id not in _AGENT_OWNED_PACKS
+            and resolve_thinking_enabled(load_pack(pack_id)[0], self.thinking_override)
+        ]
+        locked = sorted(
+            key for key in ("max_tokens", "thinking_budget", *_REASONING_BUDGET_KEYS)
+            if key in self.extra_body
+        )
+        report: dict = {
+            "mode": "derived",
+            "headroom": self.budget_headroom,
+            "measured_tps": measured_tps,
+            "engine": self._engine_family,
+            "reasoning_keys": reasoning_keys,
+            "control": {"status": "skipped", "reason": "no thinking-enabled pack in this run"},
+            "packs": {},
+        }
+        if locked:
+            report["extra_body_locked"] = locked
+            warnings.append(
+                "--budget-from-timeout: --extra-body already sets "
+                f"{', '.join(locked)}; those keys are left as given and the derived "
+                "budget is not applied to them"
+            )
+        if thinking_packs and reasoning_keys is None:
+            warnings.append(
+                "--budget-from-timeout: no per-request reasoning-budget control for this "
+                "engine (GET /props not served, so not llama.cpp) — the derived budget is "
+                "enforced through max_tokens only, so reasoning may consume the whole "
+                f"budget and truncate the answer (thinking packs: {', '.join(thinking_packs)})"
+            )
+            report["control"] = {"status": "skipped", "reason": "engine has no reasoning-budget knob"}
+        elif thinking_packs and reasoning_keys is not None:
+            if not self.budget_control:
+                report["control"] = {"status": "skipped", "reason": "--no-budget-control"}
+            elif self.mock_responses or self.negative_control is not None:
+                report["control"] = {"status": "skipped", "reason": "synthetic traffic"}
+            else:
+                report["control"] = self._verify_budget_control(measured_tps, warnings)
+        self._token_budget_report = report
+        knob = " + ".join(reasoning_keys) if reasoning_keys else "none (max_tokens only)"
+        control = report["control"]
+        control_text = control["status"] + (
+            f" ({control['reason']})" if control.get("reason") else
+            f" ({_BUDGET_CONTROL_TOKENS}-token budget → {control.get('completion_tokens')} completion tokens)"
+            if control.get("completion_tokens") is not None else ""
+        )
+        print(
+            f"[runner] token budget: derived from the per-request clock "
+            f"(--budget-from-timeout, headroom {self.budget_headroom:g}, "
+            f"measured {measured_tps:.1f} tok/s, engine {self._engine_family}, "
+            f"reasoning knob {knob}, control {control_text})",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def _verify_budget_control(self, measured_tps: float, warnings: list[str]) -> dict:
+        """Positive control: prove the engine honours a per-request reasoning budget.
+
+        Sends one thinking-ON request with a 128-token budget on a prompt that
+        invites a long trace. A multi-thousand-token completion means the
+        knob was dropped — exactly the silent failure the issue describes
+        (a full 8-pack ran for three hours believing a 32,768 budget was in
+        force) — so the run refuses to start. A short completion is
+        `applied`; no usage in the response is `inconclusive` (warned, not
+        fatal).
+        """
+        request: dict = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": _BUDGET_CONTROL_PROMPT}],
+            "temperature": 0,
+            "max_tokens": _BUDGET_CONTROL_MAX_TOKENS,
+        }
+        _apply_thinking_control(request, self.thinking_control, True, self.reasoning_effort)
+        for key in _REASONING_BUDGET_KEYS:
+            request[key] = _BUDGET_CONTROL_TOKENS
+        timeout = max(60.0, 2.0 * _BUDGET_CONTROL_MAX_TOKENS / measured_tps)
+        try:
+            status, response, _trace = self._post_chat(request, timeout, max_attempts=1)
+        except (httpx.HTTPError, _TransientPostFailure) as exc:
+            warnings.append(f"--budget-from-timeout: reasoning-budget control inconclusive ({exc})")
+            return {"status": "inconclusive", "reason": str(exc)}
+        if status >= 400:
+            warnings.append(
+                f"--budget-from-timeout: reasoning-budget control inconclusive (HTTP {status})"
+            )
+            return {"status": "inconclusive", "reason": f"HTTP {status}"}
+        tokens = self._completion_tokens(response)
+        if tokens is None:
+            warnings.append(
+                "--budget-from-timeout: reasoning-budget control inconclusive "
+                "(endpoint reported no usage.completion_tokens)"
+            )
+            return {"status": "inconclusive", "reason": "no usage in response"}
+        if tokens > _BUDGET_CONTROL_FAIL_ABOVE:
+            raise ValueError(
+                f"--budget-from-timeout: reasoning-budget control FAILED — a "
+                f"{_BUDGET_CONTROL_TOKENS}-token budget ({' / '.join(_REASONING_BUDGET_KEYS)}) "
+                f"produced {tokens} completion tokens, so the engine ignored the per-request "
+                "budget (server booted with --reasoning-budget? a tree that reads a different "
+                "key?). Refusing to run a whole suite on a budget that is not in force; pass "
+                "--no-budget-control to proceed with max_tokens enforcement only"
+            )
+        return {"status": "applied", "completion_tokens": tokens}
+
+    def _announce_token_budget(self, pack_id: str, meta: dict, warnings: list[str] | None) -> None:
+        report = self._token_budget_report
+        if report is None or pack_id in report["packs"]:
+            return
+        ceiling = self._effective_max_tokens(meta)
+        if pack_id in _AGENT_OWNED_PACKS:
+            report["packs"][pack_id] = {
+                "applies": False,
+                "reason": "agent makes its own model calls in-container",
+                "ceiling": ceiling,
+            }
+            print(
+                f"[runner] {pack_id} token budget: n/a — agent makes its own model calls "
+                f"in-container; ceiling {ceiling} unchanged",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        clock = self._model_request_timeout(meta, self._timeout_budget_for_meta(meta))
+        tps = float(report["measured_tps"])
+        derived = self._tokens_for_clock(clock, tps)
+        budget = min(derived, int(ceiling)) if ceiling else derived
+        binds = "clock" if ceiling is None or derived < int(ceiling) else "ceiling"
+        thinking = resolve_thinking_enabled(meta, self.thinking_override)
+        reserve = self._answer_reserve(meta, budget) if thinking else None
+        reasoning = (budget - reserve) if thinking else None
+        delivery = ["max_tokens"]
+        if thinking and report.get("reasoning_keys"):
+            delivery.extend(report["reasoning_keys"])
+        report["packs"][pack_id] = {
+            "applies": True,
+            "clock_s": clock,
+            "derived": derived,
+            "ceiling": ceiling,
+            "budget": budget,
+            "binds": binds,
+            "reasoning": reasoning,
+            "answer_reserve": reserve,
+            "delivery": delivery,
+        }
+        share = f", reasoning {reasoning} + answer reserve {reserve}" if thinking else ""
+        print(
+            f"[runner] {pack_id} token budget: {budget} ({binds} binds: derived {derived} = "
+            f"{self.budget_headroom:g} x {clock:.0f}s x {tps:.1f} tok/s, ceiling "
+            f"{ceiling if ceiling is not None else 'none'}){share}; delivered as "
+            f"{' + '.join(delivery)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        baseline = self._timeout_baseline_tokens(meta)
+        if budget < baseline and warnings is not None:
+            warnings.append(
+                f"{pack_id}: derived token budget {budget} is below the pack's nominal answer "
+                f"size {baseline} — the clock is too tight for this pack; expect token_limit"
+            )
+
+    def _apply_token_budget(
+        self, meta: dict, scenario: dict, request: dict, sampling: dict, request_timeout: float
+    ) -> None:
+        """Per request: ceiling = min(arm ceiling, headroom x clock x tps); on a
+        thinking request also the reasoning share, so the pair stays coherent
+        (a reasoning cap alone relocates the overrun into content)."""
+        report = self._token_budget_report
+        if report is None or scenario.get("pack_id") in _AGENT_OWNED_PACKS:
+            return
+        derived = self._tokens_for_clock(request_timeout, float(report["measured_tps"]))
+        ceiling = sampling.get("max_tokens")
+        try:
+            ceiling = int(ceiling) if ceiling is not None else None
+        except (TypeError, ValueError):
+            ceiling = None
+        budget = min(derived, ceiling) if ceiling else derived
+        locked = set(report.get("extra_body_locked") or ())
+        if "max_tokens" not in locked:
+            request["max_tokens"] = sampling["max_tokens"] = budget
+        thinking = _request_thinking_enabled(
+            sampling, self.thinking_control, resolve_thinking_enabled(meta, self.thinking_override)
+        )
+        if not thinking:
+            return
+        reasoning = max(1, budget - self._answer_reserve(meta, budget))
+        for key in report.get("reasoning_keys") or ():
+            if key not in locked:
+                request[key] = sampling[key] = reasoning
+        # CLI-40's provider-native Qwen pair carries the same quantity.
+        if "thinking_budget" in request and "thinking_budget" not in locked:
+            request["thinking_budget"] = sampling["thinking_budget"] = reasoning
+
     def _timeout_measured_tps(self) -> float | None:
         # #62: negative-control never calls the endpoint — skip the decode probe
         # entirely (no endpoint to probe) and use static pack budgets.
@@ -1708,6 +2001,8 @@ class Runner:
                 catalog_scenario_count=selected_catalog_count,
             )
 
+        self._announce_token_budget(pack_id, meta, warnings)
+
         runs: list[ScenarioRun] = []
         completed_repeats = completed_repeats or {}
         total_scenarios = sum(
@@ -1813,6 +2108,10 @@ class Runner:
         )
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
+        # The clock is resolved first: under --budget-from-timeout (#145) the
+        # request's token ceiling is a function of it.
+        timeout = self._timeout_budget_for_scenario(meta, scenario)
+        request_timeout = self._model_request_timeout(meta, timeout)
         request, sampling = build_request(
             scenario,
             meta,
@@ -1837,8 +2136,7 @@ class Runner:
                 for key in ("enable_thinking", "thinking_budget")
             ),
         )
-        timeout = self._timeout_budget_for_scenario(meta, scenario)
-        request_timeout = self._model_request_timeout(meta, timeout)
+        self._apply_token_budget(meta, scenario, request, sampling, request_timeout)
         started = time.perf_counter()
         status_code: int | None = None
         raw_response: dict | None = None
