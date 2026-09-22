@@ -104,6 +104,8 @@ Runner-owned model calls in sandboxed packs have a second, independent watchdog:
 
 and records a warning in the result when a runner-side knob was set on a pack it cannot reach. If hermes scenarios die at exactly `300.1s` with `agent_runner_timeout`, this is the clock to look at.
 
+Inside the hermes sandbox the cap is enforced by the verifier's own agent watchdog (`hermes-runtime.mjs`), and the sandbox proxy waits the cap plus 180 s so that watchdog's result — not a transport cut-off — is what gets recorded. Until that watchdog read `HERMES_SUBPROCESS_TIMEOUT_S` it was a fixed 600 s, so **any cap above 600 s was silently clamped to 600 s** while the clocks line above still reported the larger value. A hermes image built before the fix still behaves that way: rebuild it with `tools/build-sandboxes.sh`.
+
 A **request timeout is not retried** by the transport retry loop (a timeout means the request budget was genuinely hit); connection errors and HTTP 5xx still are. `--retry-on-timeout` (default off) restores the old transport behavior. Scenario-level timeout/runaway retries are separately controlled by `--retry-runaways`.
 
 ## Repo layout

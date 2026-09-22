@@ -8,6 +8,27 @@ const HERMES_SOURCE_DIR = "/opt/hermes-agent";
 const HERMES_VENV_DIR = "/opt/hermes-venv";
 const AGENT_RUNNER_PATH = "/opt/verification/agent-runner.py";
 
+// Episode cap for the spawned Hermes agent. The benchlocal proxy sets
+// HERMES_SUBPROCESS_TIMEOUT_S from the runner's resolved episode cap; this
+// watchdog used to be a fixed 10 minutes, which silently clamped any cap above
+// 600 s. Unset or blank keeps the historical 10-minute default for standalone
+// use of this verifier.
+const DEFAULT_HERMES_SUBPROCESS_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function hermesSubprocessTimeoutMs(env = process.env) {
+  const raw = env.HERMES_SUBPROCESS_TIMEOUT_S;
+  if (raw === undefined || String(raw).trim() === "") {
+    return DEFAULT_HERMES_SUBPROCESS_TIMEOUT_MS;
+  }
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`HERMES_SUBPROCESS_TIMEOUT_S must be a positive number of seconds, got ${raw}`);
+  }
+  return Math.ceil(seconds * 1000);
+}
+
+const HERMES_SUBPROCESS_TIMEOUT_MS = hermesSubprocessTimeoutMs();
+
 function getVenvBinaryPath(venvDir, name) {
   return path.join(venvDir, "bin", name);
 }
@@ -312,7 +333,7 @@ export async function executeHermesQuietQuery(request) {
       HERMES_SESSION_SOURCE: "benchlocal-hermesagent-20"
     },
     signal: request.signal,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS
   });
 
   await writeFile(stdoutPath, result.stdout, "utf8");
@@ -396,7 +417,7 @@ export async function executeHermesAgentRun(request) {
       HERMES_SESSION_SOURCE: "benchlocal-hermesagent-20"
     },
     signal: request.signal,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: HERMES_SUBPROCESS_TIMEOUT_MS
   });
 
   await writeFile(stdoutPath, result.stdout, "utf8");

@@ -123,7 +123,7 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 | `invalid_json` | Tool call arguments didn't parse, or fix wasn't valid Python, etc |
 | `timeout` | Hit a real wall-clock/subprocess/command time limit. |
 | `agent_loop_exhausted` | Multi-turn agent loop ended without a successful solution before any wall-clock timeout fired. |
-| `agent_runner_timeout` | (Hermes v0.7.3) upstream subprocess exceeded wall-clock cap (default 900s) |
+| `agent_runner_timeout` | Hermes: the agent exceeded its episode cap `HERMES_SUBPROCESS_TIMEOUT_S` (default 300s; the runner floors it at `--timeout-per-case`) |
 | `agent_runner_crashed` | (Hermes v0.7.3) upstream exited nonzero or didn't write `result.json` |
 | `result_json_malformed` | (Hermes v0.7.3) upstream's `result.json` couldn't be parsed |
 | `model_endpoint_unreachable` | (Hermes v0.7.3) upstream reported network error to `model_endpoint` |
