@@ -327,6 +327,24 @@ function buildSpecPack(pack, verifier, assertForSpec) {
   writeJsonl(pack, packMeta(pack, scenarios.length), scenarios);
 }
 
+// #143: scenarios with no hand-written assert used to fall back to
+// `format_regex: .+`, which passes any non-empty answer — 7 IF + 7 SO scenarios
+// scored a junk answer as correct. They now run a Python port of upstream's own
+// evaluator (benchlocal_cli/scoring/*_upstream.py, parity-tested against the
+// vendored JS). A scenario with neither must stop the build, not ship vacuous.
+const UPSTREAM_EVALUATED = new Set([
+  "IF-05", "IF-06", "IF-07", "IF-08", "IF-09", "IF-11", "IF-13",
+  "SO-04", "SO-05", "SO-06", "SO-09", "SO-11", "SO-12", "SO-15",
+]);
+
+function upstreamEvaluatorOrFail(pack, id) {
+  if (UPSTREAM_EVALUATED.has(id)) return [{ kind: "upstream_evaluator", evaluator: id }];
+  throw new Error(
+    `${pack} ${id}: no scenario-specific verifier. Add an assert or an upstream evaluator port; ` +
+    `a format_regex ".+" fallback would pass any non-empty answer (#143).`
+  );
+}
+
 function ifAsserts(spec) {
   const simple = {
     "IF-01": [{ kind: "format_regex", pattern: "^1\\. .+\\n2\\. .+\\n3\\. .+\\n4\\. .+\\n5\\. " }, { kind: "max_length_words", value: 45 }],
@@ -342,7 +360,7 @@ function ifAsserts(spec) {
     "IF-14": [{ kind: "case_only", value: "uppercase" }, { kind: "required_phrase", value: "RAIN" }],
     "IF-15": [{ kind: "format_regex", pattern: "^[A-Za-z]+,\\s*[A-Za-z]+,\\s*[A-Za-z]+,\\s*[A-Za-z]+$" }],
   };
-  return simple[spec.id] || [{ kind: "format_regex", pattern: ".+" }];
+  return simple[spec.id] || upstreamEvaluatorOrFail("InstructFollow-15", spec.id);
 }
 
 const RM_ACCEPTED_ANSWER_OVERRIDES = {
@@ -434,7 +452,7 @@ function structAsserts(spec) {
   if (spec.id === "SO-07") return [{ kind: "json_parse_required" }, { kind: "json_schema", schema: SO07_SCHEMA }];
   if (spec.id === "SO-10") return [{ kind: "markdown_structure", headers: ["| name | score | grade |"] }];
   if (spec.id === "SO-13") return [{ kind: "json_parse_required" }, { kind: "jsonpath_assertion", path: "$.zero", value: 0 }];
-  return [{ kind: "format_regex", pattern: ".+" }];
+  return upstreamEvaluatorOrFail("StructOutput-15", spec.id);
 }
 
 function dataExtractExpected(block) {

@@ -4,7 +4,7 @@
   "id": "instructfollow-15",
   "name": "InstructFollow-15",
   "author": "stevibe",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Constraint-heavy instruction-following benchmark with 15 fixed scenarios.",
   "entry": "./dist/benchlocal/index.js",
   "samplingDefaults": {

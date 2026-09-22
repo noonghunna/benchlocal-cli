@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from benchlocal_cli.scoring import instruct_follow_upstream
 from benchlocal_cli.scoring.common import content, result
 from benchlocal_cli.types import ScenarioResult
 
@@ -63,6 +64,19 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
             bullets = [line for line in _lines(text) if re.match(r"^[-*]\s+", line)]
             if len(bullets) != assertion["value"]:
                 return result(scenario, False, "verifier_fail", "bullet count mismatch")
+        elif kind == "upstream_evaluator":
+            # #143: a port of upstream's own evaluator for this scenario. It gets
+            # the unstripped answer — Python's strip() removes characters JS
+            # trim() keeps, and the port does its own JS-faithful trimming.
+            evaluator = instruct_follow_upstream.EVALUATORS.get(assertion.get("evaluator", ""))
+            if evaluator is None:
+                return result(scenario, False, "verifier_fail", f"unknown upstream evaluator {assertion.get('evaluator')!r}")
+            evaluation = evaluator(content(response))
+            if not evaluation.passed:
+                detail = f"upstream evaluator: {evaluation.summary}"
+                if evaluation.note:
+                    detail += f" {evaluation.note}"
+                return result(scenario, False, "verifier_fail", detail)
         elif kind == "language":
             if assertion["value"] == "english" and re.search(r"[^\x00-\x7F]", text):
                 return result(scenario, False, "verifier_fail", "non-ASCII text found in english response")

@@ -9,6 +9,7 @@ from typing import Any
 
 import jsonschema
 
+from benchlocal_cli.scoring import struct_output_upstream
 from benchlocal_cli.scoring.common import (
     content,
     get_path,
@@ -144,6 +145,22 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
         elif kind == "format_regex":
             if not re.search(assertion["pattern"], text, re.MULTILINE | re.DOTALL):
                 return result(scenario, False, "wrong_structure", "format regex did not match")
+        elif kind == "upstream_evaluator":
+            # #143: a port of upstream's own validator + axis scoring for this scenario.
+            evaluator = struct_output_upstream.EVALUATORS.get(assertion.get("evaluator", ""))
+            if evaluator is None:
+                return result(scenario, False, "verifier_fail", f"unknown upstream evaluator {assertion.get('evaluator')!r}")
+            evaluation = evaluator(text)
+            if not evaluation.passed:
+                axes = evaluation.axes
+                detail = (
+                    f"upstream evaluator: {evaluation.summary} (score {evaluation.score}/100; "
+                    f"parseable {axes.parseable}, correctness {axes.correctness}, discipline {axes.discipline})"
+                )
+                if evaluation.note:
+                    detail += f" {evaluation.note}"
+                mode = "verifier_fail" if axes.parseable and axes.correctness < 2 else "wrong_structure"
+                return result(scenario, False, mode, detail)
         else:
             return result(scenario, False, "verifier_fail", f"unknown struct_output assertion: {kind}")
     return result(scenario, True, "passed", "all structured-output assertions passed")
