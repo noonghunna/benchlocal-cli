@@ -137,6 +137,7 @@ class ScenarioResult:
         "timeout",             # HTTP timeout exceeded --timeout-per-case
         "http_error",          # 4xx / 5xx response
         "server_error",        # 500 / model-internal error
+        "model_output_unparseable",   # 5xx: engine could not parse the model's output (#152)
         "verifier_not_implemented",   # skipped sandboxed pack or unavailable sandbox
     ]
     detail: str                # human-readable explanation
@@ -233,6 +234,7 @@ Storing the JSON enables `--previous-result PATH --emit-delta` for regression-tr
 | `verifier_fail` / `wrong_answer` / `invalid_json` / `missing_field` / `extra_fields` / `schema_violation` / `wrong_structure` / `no_answer_found` | Counted as fail; included in failure breakdown |
 | `timeout` | Counted as fail; flag separately ("3 timeouts on this pack — endpoint may need bigger --timeout-per-case") |
 | `http_error` / `server_error` | Counted as fail; flag separately ("endpoint instability — N requests got 5xx; investigate before trusting score") |
+| `model_output_unparseable` | Counted as fail; a model verdict (the engine rejected the generation), not endpoint instability — never retried by the transport loop, inline retries only with `--retry-runaways` (#152) |
 | `verifier_not_implemented` | Skipped with warning (not counted in totals); shown only when a sandboxed pack is requested without `--enable-sandboxed-packs` or its container cannot start |
 
 ## Threshold policy

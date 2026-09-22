@@ -23,6 +23,11 @@ FailureMode = Literal[
     "agent_loop_exhausted",
     "http_error",
     "server_error",
+    # #152: the engine returned 5xx because it could not parse the MODEL's own
+    # output (llama.cpp "Failed to parse tool call arguments as JSON"). A
+    # deterministic model defect, not transient infra — split from server_error
+    # so it is not retried as if the server were unwell.
+    "model_output_unparseable",
     "verifier_not_implemented",
 ]
 

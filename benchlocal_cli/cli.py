@@ -197,7 +197,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--retry-runaways",
         action="store_true",
-        help="also retry token-limit and timeout runaways; off by default because each attempt is expensive",
+        help="also retry token-limit and timeout runaways, and engine-rejected model output "
+             "(model_output_unparseable); off by default because each attempt is expensive",
     )
     run.add_argument(
         "--retry-failed",

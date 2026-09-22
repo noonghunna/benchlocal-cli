@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import signal
 import statistics
 import sys
@@ -108,6 +109,33 @@ _CONTENT_FAILURE_MODES = frozenset({
 # Inline failure-only retries (#111) deliberately distinguish model verdicts
 # from harness failures and expensive runaway behavior.
 DEFAULT_INLINE_RETRY_ATTEMPTS = 3
+
+# #152: a 5xx whose body says the ENGINE rejected the MODEL's output is not a
+# server fault — it is a deterministic property of that generation, and every
+# retry reproduces it byte-for-byte (the issue's evidence: each distinct parse
+# column appeared exactly 4x across 48 engine 500s on a healthy server). Such a
+# response is classified `model_output_unparseable`, never retried at the
+# transport layer, and — because the generation typically ran to the cap before
+# the parser refused it — retried inline only under --retry-runaways, like the
+# other expensive never-finished failures.
+#
+# Patterns are matched against the engine's error message. Both are verified
+# against llama.cpp `common/chat.cpp`: the tool-call argument parser and the
+# chat-format parser (`common_chat_parse`) that rejects unparseable output.
+# vLLM's tool parsers log and swallow parse failures (no 5xx), so they need no
+# entry; an unrecognised 5xx stays `server_error` and keeps its retries.
+_MODEL_OUTPUT_REJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"Failed to parse tool call arguments as JSON", re.IGNORECASE),
+    re.compile(r"Failed to parse input at pos \d+", re.IGNORECASE),
+)
+_MODEL_DEFECT_FAILURE_MODES = frozenset({
+    "model_output_unparseable",
+})
+# Limit on how much of the engine's message is copied into `detail`; the
+# chat-parser message echoes the unparsed tail of the output, which can be
+# tens of kilobytes.
+_ENGINE_MESSAGE_DETAIL_CHARS = 240
+
 _INFRA_FAILURE_MODES = frozenset({
     "http_error",
     "server_error",
@@ -501,6 +529,51 @@ def _merge_transient_trace(existing: dict | None, new: dict | None) -> dict | No
         "transient_errors": list(existing.get("transient_errors") or [])
         + list(new.get("transient_errors") or []),
     }
+
+
+def _engine_error_message(raw_response: dict | None) -> str:
+    """Best-effort extraction of the engine's error text from a non-2xx body.
+
+    Accepts the OpenAI/llama.cpp shape `{"error": {"message": ...}}`, a bare
+    `{"error": "..."}`, and the `{"text": ...}` fallback `_post_chat` builds for
+    a non-JSON body. Returns "" when nothing textual is found.
+    """
+    if not isinstance(raw_response, dict):
+        return ""
+    error = raw_response.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    if isinstance(error, str):
+        return error
+    for key in ("message", "detail", "text"):
+        value = raw_response.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def is_model_output_rejection(raw_response: dict | None) -> bool:
+    """#152: does this 5xx body say the engine refused to parse the model's output?"""
+    message = _engine_error_message(raw_response)
+    return bool(message) and any(
+        pattern.search(message) for pattern in _MODEL_OUTPUT_REJECTION_PATTERNS
+    )
+
+
+def classify_server_error(status_code: int, raw_response: dict | None) -> tuple[str, str]:
+    """#152: split a 5xx into (failure_mode, detail).
+
+    `server_error` keeps its historical `HTTP <code>` detail (transient infra,
+    retried). `model_output_unparseable` carries the engine's message, trimmed,
+    so the parse position — the fingerprint of the generation — survives into
+    the saved JSON and the failure breakdown.
+    """
+    if not is_model_output_rejection(raw_response):
+        return "server_error", f"HTTP {status_code}"
+    message = " ".join(_engine_error_message(raw_response).split())
+    if len(message) > _ENGINE_MESSAGE_DETAIL_CHARS:
+        message = message[: _ENGINE_MESSAGE_DETAIL_CHARS - 1] + "…"
+    return "model_output_unparseable", f"HTTP {status_code}: engine rejected model output — {message}"
 
 
 def _latency(values: list[float]) -> dict[str, float | None]:
@@ -1348,6 +1421,15 @@ class Runner:
             if meta.get("_architecture") == "single-scoreboard":
                 return 1
             return max(1, self.retry_failures)
+        if mode in _MODEL_DEFECT_FAILURE_MODES:
+            # #152: the engine rejected the generation itself. A model verdict,
+            # not a harness fault — so it must NOT inherit the infra floor
+            # below — and typically a repetition loop that ran to the cap, so
+            # each attempt costs what a runaway costs. Off by default;
+            # --retry-runaways opts it in on the same terms as the runaways.
+            if self.retry_runaways:
+                return max(DEFAULT_INLINE_RETRY_ATTEMPTS, self.retry_failures)
+            return 1
         if mode in _INFRA_FAILURE_MODES:
             # Harness failures remain retryable even when model-verdict retries
             # are disabled. This complements request-level transient retries.
@@ -1379,6 +1461,9 @@ class Runner:
 
         current = baseline
         baseline.retry_eligible = self._inline_retry_limit(meta, current) > 1
+        seen_failures: set[tuple[str, str]] = set()
+        if (fingerprint := self._failure_fingerprint(current)) is not None:
+            seen_failures.add(fingerprint)
         while not current.result.passed:
             attempt_limit = self._inline_retry_limit(meta, current)
             if baseline.attempt_count >= attempt_limit:
@@ -1386,6 +1471,20 @@ class Runner:
             current = self.run_scenario(meta, scenario, repeat_index=repeat_index)
             baseline.retry_attempts.append(current.to_dict())
             baseline.attempt_count += 1
+            # #152: a retry that reproduces an earlier attempt's failure
+            # byte-for-byte is deterministic; further attempts cannot differ.
+            fingerprint = self._failure_fingerprint(current)
+            if fingerprint is not None and fingerprint in seen_failures:
+                note = (
+                    f"identical failure reproduced on attempt {baseline.attempt_count}; "
+                    f"remaining retries skipped"
+                )
+                trace = dict(baseline.result.verifier_trace or {})
+                trace["retry_stopped"] = note
+                baseline.result = replace(baseline.result, verifier_trace=trace)
+                break
+            if fingerprint is not None:
+                seen_failures.add(fingerprint)
 
         passed_attempt: int | None = 1 if baseline.result.passed else None
         if passed_attempt is None:
@@ -1399,6 +1498,25 @@ class Runner:
             or (passed_attempt is not None and baseline.best_of_n_eligible)
         )
         return baseline
+
+    @staticmethod
+    def _failure_fingerprint(run: ScenarioRun) -> tuple[str, str] | None:
+        """#152: identity of a failure whose retries can only reproduce it.
+
+        Only `_MODEL_DEFECT_FAILURE_MODES` are fingerprinted: the engine's
+        message carries the parse position, which pins the generation. Infra
+        failures are deliberately excluded — llama.cpp answers `503 Loading
+        model` with a byte-identical body on every attempt while it boots, and
+        an identical body there says nothing about determinism. Content
+        verdicts are excluded too: under the canonical temp=0 arms an identical
+        wrong answer is the common case, and collapsing pass@3 to pass@2 for
+        it is a pass@k policy decision, not this fix.
+        """
+        result = run.result
+        if result.passed or result.failure_mode not in _MODEL_DEFECT_FAILURE_MODES:
+            return None
+        message = _engine_error_message(run.raw_response) or result.detail
+        return (str(result.failure_mode), message)
 
     def _configured_pass_at_k(self, meta: dict, repeat: int) -> int:
         if (
@@ -1653,7 +1771,8 @@ class Runner:
                 status_code, raw_response, transient_trace = self._post_chat(request, request_timeout)
                 latency = time.perf_counter() - started
                 if status_code >= 500:
-                    result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}", latency)
+                    failure_mode, detail = classify_server_error(status_code, raw_response)  # #152
+                    result = ScenarioResult(scenario["id"], False, failure_mode, detail, latency)
                     result = self._inject_transient_trace(result, transient_trace)
                     return self._scenario_run(scenario, raw_response, request, sampling, status_code, result, repeat_index)
                 if status_code >= 400:
@@ -1813,6 +1932,12 @@ class Runner:
             # errors). Exhausted retries fall through and return the status (caller fails it).
             if response.status_code == 429 or response.status_code >= 500:
                 transient_errors.append(f"attempt {attempt}: HTTP {response.status_code}")
+                if response.status_code >= 500 and is_model_output_rejection(raw_response):
+                    # #152: the engine rejected the model's output. Deterministic —
+                    # a retry reproduces the same generation and the same
+                    # rejection — so return it now and let the caller classify.
+                    transient_errors[-1] += " (engine rejected model output; not retried)"
+                    return response.status_code, raw_response, _transient_trace(transient_errors, attempt)
                 if attempt < max_attempts:
                     retry_after = (
                         self._retry_after_seconds(response)
@@ -2127,7 +2252,8 @@ class Runner:
                 raw_response = sanitize_response_text_fields(raw_response)
                 raw_responses.append(raw_response)
                 if status_code >= 500:
-                    result = ScenarioResult(scenario["id"], False, "server_error", f"HTTP {status_code}")
+                    failure_mode, detail = classify_server_error(status_code, raw_response)  # #152
+                    result = ScenarioResult(scenario["id"], False, failure_mode, detail)
                     break
                 if status_code >= 400:
                     result = ScenarioResult(scenario["id"], False, "http_error", f"HTTP {status_code}")
