@@ -65,10 +65,16 @@ def _score_saved_scenario(
     previous = run.get("result") if isinstance(run.get("result"), dict) else {}
     latency = float(previous.get("latency_seconds") or run.get("latency_seconds") or 0.0)
     tokens = previous.get("tokens_completion", run.get("tokens_completion"))
+    # #147: carry the tier-2 usage counts too; a rescore cannot change them.
+    carried = {
+        key: previous.get(key, run.get(key))
+        for key in ("tokens_prompt", "tokens_total", "tokens_reasoning")
+    }
     result = replace(
         result,
         latency_seconds=latency,
         tokens_completion=tokens if isinstance(tokens, int) else None,
+        **{key: value if isinstance(value, int) else None for key, value in carried.items()},
     )
     result = Runner._reclassify_if_truncated(result, raw_response)
 
@@ -79,6 +85,9 @@ def _score_saved_scenario(
     run["detail"] = result.detail
     run["latency_seconds"] = result.latency_seconds
     run["tokens_completion"] = result.tokens_completion
+    run["tokens_prompt"] = result.tokens_prompt
+    run["tokens_total"] = result.tokens_total
+    run["tokens_reasoning"] = result.tokens_reasoning
     run["verifier_trace"] = result.verifier_trace
     run["response_field_used"] = content_with_source(raw_response)[1]
     return True, None

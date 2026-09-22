@@ -51,6 +51,14 @@ class ScenarioResult:
     pass_rate: float | None = None
     passed_count: int | None = None
     total_count: int | None = None
+    # #147 tier 2: the rest of `usage`, which the runner already read for the
+    # spend guard and then dropped. None when the endpoint did not report
+    # them; `tokens_reasoning` only where reasoning is split out
+    # (`completion_tokens_details.reasoning_tokens` — llama.cpp reasons inline).
+    # Multi-turn scenarios carry the sum over their turns.
+    tokens_prompt: int | None = None
+    tokens_total: int | None = None
+    tokens_reasoning: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +103,9 @@ class ScenarioRun:
         data["detail"] = self.result.detail
         data["latency_seconds"] = self.result.latency_seconds
         data["tokens_completion"] = self.result.tokens_completion
+        data["tokens_prompt"] = self.result.tokens_prompt
+        data["tokens_total"] = self.result.tokens_total
+        data["tokens_reasoning"] = self.result.tokens_reasoning
         data["verifier_trace"] = self.result.verifier_trace
         return data
 
@@ -120,6 +131,11 @@ class PackResult:
     catalog_scenario_count: int | None = None
     # Additive best-of-k rollup; strict pass@1 remains in passed/total/score.
     pass_at_k: dict[str, float | int] | None = None
+    # #147: additive token rollup over the rows the score counts —
+    # {"completion", "retries", "counted", "missing", "total"} plus "prompt" /
+    # "total_tokens" / "reasoning" when reported. `missing` rows are reported, not
+    # read as zero. None when the pack has no counted rows.
+    tokens: dict | None = None
     # Additive pack-level telemetry over every recorded completion, including
     # successful finish_reason=length responses and nested retries/turns.
     diagnostics: dict | None = None
@@ -145,6 +161,8 @@ class PackResult:
             out["catalog_scenario_count"] = self.catalog_scenario_count
         if self.pass_at_k is not None:
             out["pass_at_k"] = self.pass_at_k
+        if self.tokens is not None:
+            out["tokens"] = self.tokens
         if self.diagnostics is not None:
             out["diagnostics"] = self.diagnostics
         return out
@@ -176,6 +194,10 @@ class RunResult:
     # None means delta wasn't computed (the default; preserves saved-JSON
     # back-compat with v0.7.x readers per Codex review #9).
     delta: dict | None = None
+    # #147: run-level sum of the per-pack `tokens` rollups plus
+    # `endpoint_reported_total` — the spend guard's cumulative usage.total_tokens
+    # over every request the runner made. None for pre-#147 / hand-built results.
+    tokens: dict | None = None
     # v0.9.1: CLI-level sampling overrides (--temperature, --top-p, etc.).
     # None means the run used the pack's default sampling (canonical).
     # Non-None means the run traded reproducibility for recommended-temp
@@ -228,6 +250,8 @@ class RunResult:
             out["thinking_validity"] = self.thinking_validity
         if self.delta is not None:
             out["delta"] = self.delta
+        if self.tokens is not None:
+            out["tokens"] = self.tokens
         if self.sampling_overrides is not None:
             out["sampling_overrides"] = self.sampling_overrides
         if self.sampling_source is not None:
