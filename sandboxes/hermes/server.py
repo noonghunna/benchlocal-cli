@@ -391,11 +391,34 @@ _NETWORK_ERROR_PATTERNS = re.compile(
 )
 
 
+# #157: when hermes-agent's model calls keep failing — a stalled endpoint that
+# its stream stall detector / read timeout gives up on, or a server that died
+# mid-episode — the agent does NOT error out. It exits 0 and reports the failure
+# as its FINAL ANSWER (run_agent.py:
+# f"API call failed after {max_retries} retries: {_final_summary}"). The grader
+# then scores the untouched workspace and the scenario reads as a model
+# `verifier_fail`. Recognise the agent's own give-up message instead.
+_AGENT_API_FAILURE_RE = re.compile(r"^API call failed after \d+ retries\b")
+
+
+def _agent_api_failure(upstream: dict) -> str | None:
+    output = upstream.get("output")
+    final = output.get("finalAnswer") if isinstance(output, dict) else None
+    if isinstance(final, str) and _AGENT_API_FAILURE_RE.match(final.strip()):
+        return final.strip()
+    return None
+
+
 def _classify_failure(upstream: dict) -> str:
     """Map upstream's response to our existing failure_mode taxonomy so v0.8
     `inspect --mode <X>` filtering keeps working. Codex review #11: preserve
     the back-compat field semantics even though the underlying source shifted.
     """
+    if _agent_api_failure(upstream) is not None:
+        # The endpoint failed the agent; the grade of an untouched workspace
+        # says nothing about the model. Checked before `partial`/"timed out"
+        # so it is never read as a model verdict or a runaway.
+        return "model_endpoint_unreachable"
     status = upstream.get("status")
     if status == "partial":
         # Per brief: collapse partial to fail in v0.7.4 (binary semantics).
@@ -454,13 +477,18 @@ def _translate_upstream_result(scenario_id: str, upstream: dict, elapsed_s: floa
     passed = status == "pass"
     failure_mode = "passed" if passed else _classify_failure(upstream)
     summary = str(upstream.get("summary") or "")
+    api_failure = None if passed else _agent_api_failure(upstream)
 
     return {
         "action": "verify-final",
         "passed": passed,
         # Back-compat (Codex review #11): keep populated even though semantics shifted.
         "failure_mode": failure_mode,
-        "detail": summary[:500],
+        "detail": (
+            f"{scenario_id}: agent gave up on the model endpoint mid-episode — {api_failure}"
+            if api_failure
+            else summary
+        )[:500],
         "trace": {
             # Stable across v0.7.x — preserved for diagnostics
             "hermes_agent_path": str(HERMES_AGENT_PATH),

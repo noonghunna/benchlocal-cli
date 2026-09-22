@@ -23,6 +23,10 @@ FailureMode = Literal[
     "agent_loop_exhausted",
     "http_error",
     "server_error",
+    # #157: a streamed request (--stream) stopped producing events mid-stream
+    # for longer than --stream-stall-timeout. An endpoint fault (infra), not a
+    # runaway: the model was not producing tokens when it was cut off.
+    "stall",
     # #152: the engine returned 5xx because it could not parse the MODEL's own
     # output (llama.cpp "Failed to parse tool call arguments as JSON"). A
     # deterministic model defect, not transient infra — split from server_error

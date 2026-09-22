@@ -56,6 +56,26 @@ def _sorted_counts(values: Counter[str]) -> dict[str, int]:
     return {key: values[key] for key in sorted(values)}
 
 
+def _p95(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, -(-95 * len(ordered) // 100) - 1)]  # nearest rank
+
+
+def _stream_summary(first_chunks: list[float], gaps: list[float], requests: int) -> dict[str, Any] | None:
+    """#157: liveness over every streamed request in the pack. None when the
+    run did not stream, so non-streaming output is unchanged."""
+    if not requests:
+        return None
+    summary: dict[str, Any] = {"requests": requests}
+    if gaps:
+        summary["max_gap_s"] = max(gaps)
+        summary["p95_gap_s"] = _p95(gaps)
+    if first_chunks:
+        summary["first_chunk_p50_s"] = sorted(first_chunks)[(len(first_chunks) - 1) // 2]
+        summary["first_chunk_max_s"] = max(first_chunks)
+    return summary
+
+
 def pack_diagnostics(runs: Iterable[Any]) -> dict[str, Any] | None:
     """Summarize all saved completions, including nested retry/multi-turn calls."""
 
@@ -63,6 +83,9 @@ def pack_diagnostics(runs: Iterable[Any]) -> dict[str, Any] | None:
     extraction_methods: Counter[str] = Counter()
     extraction_issues: Counter[str] = Counter()
     response_fields: Counter[str] = Counter()
+    stream_first: list[float] = []
+    stream_gaps: list[float] = []
+    stream_requests = 0
 
     for run in runs:
         for attempt in _iter_attempts(run):
@@ -83,6 +106,11 @@ def pack_diagnostics(runs: Iterable[Any]) -> dict[str, Any] | None:
                 extraction_issues[str(issue)] += 1
             if source:
                 response_fields[str(source)] += 1
+            stream = trace.get("stream")
+            if isinstance(stream, Mapping):
+                stream_requests += int(stream.get("requests") or 0)
+                stream_first.extend(v for v in stream.get("first_chunk_s") or [] if isinstance(v, (int, float)))
+                stream_gaps.extend(v for v in stream.get("max_gap_s") or [] if isinstance(v, (int, float)))
 
     diagnostics: dict[str, Any] = {}
     total = sum(finish_reasons.values())
@@ -100,6 +128,9 @@ def pack_diagnostics(runs: Iterable[Any]) -> dict[str, Any] | None:
             "issues": _sorted_counts(extraction_issues),
             "response_fields": _sorted_counts(response_fields),
         }
+    stream_summary = _stream_summary(stream_first, stream_gaps, stream_requests)
+    if stream_summary is not None:
+        diagnostics["stream"] = stream_summary
     return diagnostics or None
 
 
