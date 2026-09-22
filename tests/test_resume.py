@@ -51,6 +51,12 @@ def _without_timestamps(data: dict) -> dict:
     copied = json.loads(json.dumps(data))
     copied.pop("started_at", None)
     copied.pop("finished_at", None)
+    # #146: wall clock is timing like the stamps above — a killed-and-resumed
+    # run cannot take the same time as the uninterrupted reference.
+    copied.pop("duration_s", None)
+    for pack in copied.get("packs") or []:
+        if isinstance(pack, dict):
+            pack.pop("duration_s", None)
     return copied
 
 

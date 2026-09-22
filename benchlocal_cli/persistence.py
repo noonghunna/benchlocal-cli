@@ -14,6 +14,7 @@ from benchlocal_cli.runner import (
     DEFAULT_INLINE_RETRY_ATTEMPTS,
     PACK_MODES,
     _combine_pass_at_k,
+    _duration_between,
     _latency,
     _pass_at_k_summary,
     _repeat_variance,
@@ -125,6 +126,7 @@ def _aggregate_pack(
     thinking_override: bool | None,
     retry_failures: int,
     retry_runaways: bool,
+    duration_s: float | None = None,
 ) -> PackResult:
     meta, _scenarios = load_pack(pack_id)
     configured_k = 0
@@ -171,6 +173,7 @@ def _aggregate_pack(
                 status=status,
                 thinking_enabled=resolve_thinking_enabled(meta, thinking_override),
                 variance=_repeat_variance(runs, repeat),
+                duration_s=duration_s,
                 catalog_scenario_count=catalog_scenario_count,
                 pass_at_k=_pass_at_k_summary(runs, configured_k),
                 diagnostics=pack_diagnostics(runs),
@@ -192,6 +195,7 @@ def _aggregate_pack(
         status="ok" if total else "stubbed",
         thinking_enabled=resolve_thinking_enabled(meta, thinking_override),
         variance=_repeat_variance(runs, repeat),
+        duration_s=duration_s,
         catalog_scenario_count=catalog_scenario_count,
         pass_at_k=_pass_at_k_summary(runs, configured_k),
         diagnostics=pack_diagnostics(runs),
@@ -221,6 +225,7 @@ def _build_result(
     finished_at: str,
     warnings: list[str] | None = None,
     pack_templates: dict[str, PackResult] | None = None,
+    pack_durations: dict[str, float] | None = None,
 ) -> RunResult:
     target_selection = list(config["target_selection"])
     _canonical, target_by_pack = validate_selection(target_selection)
@@ -257,6 +262,7 @@ def _build_result(
                 thinking_override=thinking_override,
                 retry_failures=retry_failures,
                 retry_runaways=retry_runaways,
+                duration_s=(pack_durations or {}).get(pack_id),
             )
         )
 
@@ -270,13 +276,14 @@ def _build_result(
         thinking_validity, validity_warnings = None, []
     else:
         thinking_validity, validity_warnings = thinking_validity_for_packs(packs)
+    started_at = str(config.get("started_at") or _utc_now())
     result = RunResult(
         schema_version=str(config.get("schema_version") or "1"),
         runner_version=str(config.get("runner_version") or __version__),
         endpoint=str(config.get("endpoint") or ""),
         model=str(config.get("model") or ""),
         mode=str(config.get("mode") or "custom"),
-        started_at=str(config.get("started_at") or _utc_now()),
+        started_at=started_at,
         finished_at=finished_at,
         packs=packs,
         totals={"passed": passed, "total": total, "score": passed / total if total else 0.0},
@@ -285,6 +292,7 @@ def _build_result(
         thinking_control=str(config.get("thinking_control") or "enable_thinking"),
         reasoning_effort=config.get("reasoning_effort"),
         warnings=_unique_warnings(warnings, validity_warnings),
+        duration_s=_duration_between(started_at, finished_at),
         thinking_validity=thinking_validity or None,
         sampling_overrides=config.get("sampling_overrides"),
         sampling_source=config.get("sampling_source"),
@@ -497,6 +505,16 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
         str(pack.get("pack_id") or "")
         for pack in state.previous_result.get("packs") or []
     } | {pack.pack_id for pack in new_result.packs}
+    # #146: a pack's wall clock is the sum of the sessions that ran part of
+    # it; the rebuild below cannot measure it, so carry the measured pieces.
+    pack_durations: dict[str, float] = {}
+    for pack in state.previous_result.get("packs") or []:
+        if isinstance(pack, dict) and isinstance(pack.get("duration_s"), (int, float)):
+            pack_id = str(pack.get("pack_id") or "")
+            pack_durations[pack_id] = pack_durations.get(pack_id, 0.0) + float(pack["duration_s"])
+    for pack in new_result.packs:
+        if pack.duration_s is not None:
+            pack_durations[pack.pack_id] = pack_durations.get(pack.pack_id, 0.0) + float(pack.duration_s)
     return _build_result(
         config,
         rows,
@@ -506,4 +524,5 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
             _strip_validity_warnings(list(new_result.warnings), validity_pack_ids),
         ),
         pack_templates=templates,
+        pack_durations=pack_durations,
     )
