@@ -104,6 +104,15 @@ DEFAULT_MODEL_TURN_TIMEOUT_S = 300.0
 # pause mid-generation — because it only has to beat the total budget, which on
 # a thinking run can be many minutes.
 DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0
+# #160: after this many consecutive scenarios end in an infra failure mode, one
+# liveness probe decides whether the endpoint is gone. Isolated failures keep
+# the inline infra retry; only a run of them costs a probe. 0 disables the rule.
+DEFAULT_STOP_AFTER_INFRA_FAILURES = 3
+DEFAULT_ENDPOINT_PROBE_TIMEOUT_S = 30.0
+# Pack status and warning prefix for a pack the stop rule cut short. The prefix
+# lets a resumed run drop the previous session's notice once it is resolved.
+ENDPOINT_DOWN_STATUS = "endpoint-down"
+ENDPOINT_DOWN_WARNING_PREFIX = "endpoint down: "
 
 # #61: content-verdict failure modes that a token-cap truncation should override.
 # A failure on any of these *while* finish_reason == "length" is confounded by
@@ -932,6 +941,8 @@ class Runner:
         retry_on_timeout: bool = False,
         stream: bool = False,
         stream_stall_timeout: float = DEFAULT_STREAM_STALL_TIMEOUT_S,
+        stop_after_infra_failures: int = DEFAULT_STOP_AFTER_INFRA_FAILURES,
+        endpoint_probe_timeout: float = DEFAULT_ENDPOINT_PROBE_TIMEOUT_S,
         preserve_reasoning_history: bool = False,
         retry_failures: int = DEFAULT_INLINE_RETRY_ATTEMPTS,
         retry_runaways: bool = False,
@@ -1039,6 +1050,17 @@ class Runner:
         if float(stream_stall_timeout) <= 0:
             raise ValueError("stream_stall_timeout must be positive")
         self.stream_stall_timeout = float(stream_stall_timeout)
+        # #160: stop a pack against an endpoint that is gone instead of running
+        # every remaining scenario's inline infra retries against it.
+        if int(stop_after_infra_failures) < 0:
+            raise ValueError("stop_after_infra_failures must be non-negative")
+        self.stop_after_infra_failures = int(stop_after_infra_failures)
+        if float(endpoint_probe_timeout) <= 0:
+            raise ValueError("endpoint_probe_timeout must be positive")
+        self.endpoint_probe_timeout = float(endpoint_probe_timeout)
+        # The failed probe that stopped a pack; later packs re-probe once before
+        # running anything, and clear it if the endpoint came back.
+        self._endpoint_down: dict | None = None
         # Reasoning is output-only for the default OpenAI-compatible/Qwen/R1
         # path. Providers whose tool loops require signed/encrypted reasoning
         # continuity can opt back into replay explicitly.
@@ -1970,6 +1992,61 @@ class Runner:
                 return True
         return False
 
+    def _stop_rule_active(self) -> bool:
+        """#160: the stop rule judges the real endpoint, so synthetic traffic
+        (mocks, the negative control) never probes and never stops."""
+        return (
+            self.stop_after_infra_failures > 0
+            and not self.mock_responses
+            and self.negative_control is None
+        )
+
+    def _probe_endpoint_alive(self) -> dict:
+        """#160: one short, unretried request that must come back with an answer.
+
+        A 1-token chat completion rather than `GET /v1/models`: a hung engine —
+        the `stall` case #157 detects — keeps answering `/v1/models` from its
+        HTTP thread while generation never returns. The request carries no
+        thinking control (a thinking-only endpoint can reject `enable_thinking:
+        false`); one token is enough either way. Anything but an HTTP 200 with
+        `choices` fails the probe: if the probe gets no answer, neither will the
+        next scenario.
+        """
+        request = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "max_tokens": 1,
+        }
+        started = time.perf_counter()
+
+        def outcome(ok: bool, detail: str) -> dict:
+            return {
+                "ok": ok,
+                "detail": detail,
+                "elapsed_s": round(time.perf_counter() - started, 3),
+                "at": _utc_now(),
+            }
+
+        try:
+            with httpx.Client(timeout=self.endpoint_probe_timeout) as client:
+                response = client.post(
+                    _chat_url(self.endpoint), json=request, headers=self._request_headers
+                )
+        except httpx.TimeoutException:
+            return outcome(False, f"no answer within {self.endpoint_probe_timeout:g}s")
+        except httpx.HTTPError as exc:
+            return outcome(False, f"{type(exc).__name__}: {exc}")
+        if response.status_code != 200:
+            body = " ".join(response.text.split())[:200]
+            return outcome(False, f"HTTP {response.status_code}" + (f": {body}" if body else ""))
+        try:
+            body = response.json()
+        except ValueError:
+            return outcome(False, "HTTP 200 with a non-JSON body")
+        if not isinstance(body, dict) or not body.get("choices"):
+            return outcome(False, "HTTP 200 without choices")
+        return outcome(True, "HTTP 200")
+
     def _probe_decode_tps(self) -> float | None:
         if not self._endpoint_reachable():
             self._timeout_scaling_note = (
@@ -2221,33 +2298,62 @@ class Runner:
 
         runs: list[ScenarioRun] = []
         completed_repeats = completed_repeats or {}
-        total_scenarios = sum(
-            1
+        pending = [
+            (repeat_index, scenario)
             for repeat_index in range(1, repeat + 1)
             for scenario in scenarios
             if repeat_index not in completed_repeats.get(scenario["id"], set())
-        )
-        scenario_index = 0
-        for repeat_index in range(1, repeat + 1):
-            for scenario in scenarios:
-                if repeat_index in completed_repeats.get(scenario["id"], set()):
-                    continue
-                scenario_index += 1
-                if (
-                    repeat == 1
-                    and self.negative_control is None
-                    and self.inline_retries_enabled
-                ):
-                    run = self._run_scenario_with_inline_retries(
-                        meta, scenario, repeat_index=repeat_index
-                    )
-                else:
-                    # --repeat is the symmetric variance path and negative
-                    # controls must never multiply deterministic junk samples.
-                    run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
-                runs.append(run)
-                if self._on_scenario_complete is not None:
-                    self._on_scenario_complete(run, scenario_index, total_scenarios)
+        ]
+        total_scenarios = len(pending)
+        # #160: an earlier pack stopped on a dead endpoint. Probe once before
+        # running anything here, so a still-dead endpoint costs one probe per
+        # pack instead of another run of infra failures to rediscover it.
+        stop: dict | None = None
+        if pending and self._endpoint_down is not None and self._stop_rule_active():
+            probe = self._probe_endpoint_alive()
+            if probe["ok"]:
+                self._endpoint_down = None
+            else:
+                stop = self._endpoint_stop(pack_id, None, [], pending, probe, warnings)
+                pending = []
+        infra_streak: list[ScenarioRun] = []
+        for scenario_index, (repeat_index, scenario) in enumerate(pending, start=1):
+            if (
+                repeat == 1
+                and self.negative_control is None
+                and self.inline_retries_enabled
+            ):
+                run = self._run_scenario_with_inline_retries(
+                    meta, scenario, repeat_index=repeat_index
+                )
+            else:
+                # --repeat is the symmetric variance path and negative
+                # controls must never multiply deterministic junk samples.
+                run = self.run_scenario(meta, scenario, repeat_index=repeat_index)
+            runs.append(run)
+            if self._on_scenario_complete is not None:
+                self._on_scenario_complete(run, scenario_index, total_scenarios)
+            if not self._stop_rule_active():
+                continue
+            if not run.result.passed and run.result.failure_mode in _INFRA_FAILURE_MODES:
+                infra_streak.append(run)
+            else:
+                infra_streak = []
+            if len(infra_streak) < self.stop_after_infra_failures:
+                continue
+            probe = self._probe_endpoint_alive()
+            if probe["ok"]:
+                # Transient: the failures were real but the endpoint answers.
+                infra_streak = []
+                continue
+            # The streak is the dead endpoint's doing, not the model's: set it
+            # aside unscored so --resume reruns it with the scenarios not run.
+            set_aside = {id(item) for item in infra_streak}
+            runs = [item for item in runs if id(item) not in set_aside]
+            stop = self._endpoint_stop(
+                pack_id, run.id, infra_streak, pending[scenario_index:], probe, warnings
+            )
+            break
 
         counted = [run for run in runs if run.result.failure_mode != "verifier_not_implemented"]
         latencies = [run.result.latency_seconds for run in counted if run.result.latency_seconds > 0]
@@ -2257,6 +2363,7 @@ class Runner:
         # rather than collapsing to a binary 1/1 or 0/1 — which buried both the
         # true success rate (16/30 shown as "1/1 = 100%") and graceful partial
         # results on timeout (18/30 shown as "0/1 = 0%").
+        pack_result: PackResult | None = None
         if meta.get("_architecture") == "single-scoreboard" and counted:
             sr = counted[0].result
             if sr.total_count is not None:
@@ -2277,7 +2384,7 @@ class Runner:
                     )
                     else "ok"
                 )
-                return PackResult(
+                pack_result = PackResult(
                     pack_id=pack_id,
                     version=meta["version"],
                     upstream_commit=meta["upstream_commit"],
@@ -2300,30 +2407,88 @@ class Runner:
                     runaway=runaway_summary(runs),
                 )
 
-        passed = sum(1 for run in counted if run.result.passed)
-        total = len(counted)
-        return PackResult(
-            pack_id=pack_id,
-            version=meta["version"],
-            upstream_commit=meta["upstream_commit"],
-            scenario_count=len(scenarios),
-            passed=passed,
-            total=total,
-            score=(passed / total if total else 0.0),
-            latency=_latency(latencies),
-            scenarios=runs,
-            status="ok" if total else "stubbed",
-            thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
-            catalog_scenario_count=selected_catalog_count,
-            variance=_repeat_variance(runs, repeat),
-            tokens=_pack_tokens(runs),
-            pass_at_k=_pass_at_k_summary(
-                runs,
-                self._configured_pass_at_k(meta, repeat),
-            ),
-            diagnostics=pack_diagnostics(runs),
-            runaway=runaway_summary(runs),
-        )
+        if pack_result is None:
+            passed = sum(1 for run in counted if run.result.passed)
+            total = len(counted)
+            pack_result = PackResult(
+                pack_id=pack_id,
+                version=meta["version"],
+                upstream_commit=meta["upstream_commit"],
+                scenario_count=len(scenarios),
+                passed=passed,
+                total=total,
+                score=(passed / total if total else 0.0),
+                latency=_latency(latencies),
+                scenarios=runs,
+                status="ok" if total else "stubbed",
+                thinking_enabled=resolve_thinking_enabled(meta, self.thinking_override),
+                catalog_scenario_count=selected_catalog_count,
+                variance=_repeat_variance(runs, repeat),
+                tokens=_pack_tokens(runs),
+                pass_at_k=_pass_at_k_summary(
+                    runs,
+                    self._configured_pass_at_k(meta, repeat),
+                ),
+                diagnostics=pack_diagnostics(runs),
+                runaway=runaway_summary(runs),
+            )
+        if stop is not None:
+            pack_result.status = ENDPOINT_DOWN_STATUS
+            pack_result.stop = stop
+        return pack_result
+
+    def _endpoint_stop(
+        self,
+        pack_id: str,
+        after_scenario: str | None,
+        set_aside: list[ScenarioRun],
+        not_run: list[tuple[int, dict]],
+        probe: dict,
+        warnings: list[str] | None,
+    ) -> dict:
+        """#160: record a pack the stop rule cut short, and say so loudly.
+
+        `after_scenario` is None when the pack never started because the
+        endpoint was still down from an earlier pack.
+        """
+        self._endpoint_down = probe
+        stop = {
+            "reason": "endpoint_down",
+            "after_scenario": after_scenario,
+            "probe": probe,
+            "unscored": [
+                {
+                    "id": run.id,
+                    "repeat_index": run.repeat_index,
+                    "failure_mode": run.result.failure_mode,
+                    "detail": run.result.detail,
+                }
+                for run in set_aside
+            ],
+            "not_run": [
+                {"id": scenario["id"], "repeat_index": repeat_index}
+                for repeat_index, scenario in not_run
+            ],
+        }
+        if after_scenario is None:
+            message = (
+                f"{ENDPOINT_DOWN_WARNING_PREFIX}{pack_id} not run — the endpoint still "
+                f"did not answer a liveness probe ({probe['detail']}). "
+                f"{len(not_run)} scenario(s) left for --resume."
+            )
+        else:
+            modes = sorted({run.result.failure_mode for run in set_aside})
+            message = (
+                f"{ENDPOINT_DOWN_WARNING_PREFIX}{pack_id} stopped after "
+                f"{len(set_aside)} consecutive infrastructure failures "
+                f"({', '.join(modes)}); a liveness probe got no answer "
+                f"({probe['detail']}). {len(set_aside)} infra-failed scenario(s) were "
+                f"set aside unscored and {len(not_run)} were not run, so {pack_id} is "
+                f"NOT a complete score. Once the endpoint is back, --resume runs them."
+            )
+        if warnings is not None:
+            warnings.append(message)
+        return stop
 
     def run_scenario(self, meta: dict, scenario: dict, *, repeat_index: int = 1) -> ScenarioRun:
         # The clock is resolved first: under --budget-from-timeout (#145) the

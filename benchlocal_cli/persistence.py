@@ -12,6 +12,8 @@ from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runawa
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.runner import (
     DEFAULT_INLINE_RETRY_ATTEMPTS,
+    ENDPOINT_DOWN_STATUS,
+    ENDPOINT_DOWN_WARNING_PREFIX,
     PACK_MODES,
     _combine_pass_at_k,
     _duration_between,
@@ -525,10 +527,13 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     ]
     if counters:
         config["endpoint_reported_total"] = sum(counters)
+    # #160: the previous session's endpoint-down notices describe scenarios this
+    # session was asked to run; any still missing get a fresh notice below.
     previous_warnings = [
         warning
         for warning in state.previous_result.get("warnings") or []
         if warning != "partial per-scenario journal; run is incomplete"
+        and not warning.startswith(ENDPOINT_DOWN_WARNING_PREFIX)
     ]
     validity_pack_ids = {
         str(pack.get("pack_id") or "")
@@ -544,7 +549,7 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     for pack in new_result.packs:
         if pack.duration_s is not None:
             pack_durations[pack.pack_id] = pack_durations.get(pack.pack_id, 0.0) + float(pack.duration_s)
-    return _build_result(
+    merged = _build_result(
         config,
         rows,
         finished_at=new_result.finished_at,
@@ -555,3 +560,13 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
         pack_templates=templates,
         pack_durations=pack_durations,
     )
+    # #160: the rebuild recomputes each pack from its rows and would read a pack
+    # this session stopped as "ok". Carry the stop over; its not_run/unscored
+    # lists are exactly what is still missing, since this session was asked to
+    # run everything the previous one had not.
+    stops = {pack.pack_id: pack.stop for pack in new_result.packs if pack.stop is not None}
+    for pack in merged.packs:
+        if pack.pack_id in stops:
+            pack.status = ENDPOINT_DOWN_STATUS
+            pack.stop = stops[pack.pack_id]
+    return merged

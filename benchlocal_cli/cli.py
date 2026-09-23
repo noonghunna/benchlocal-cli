@@ -321,6 +321,26 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--stop-after-infra-failures",
+        type=int,
+        default=_env_int("BENCHLOCAL_STOP_AFTER_INFRA_FAILURES", 3),
+        help=(
+            "after this many consecutive scenarios end in an infrastructure failure, probe "
+            "the endpoint once; if it does not answer, stop the pack, leave the rest unscored "
+            "for --resume, and exit 5 (#160; default: 3; 0 disables; "
+            "env BENCHLOCAL_STOP_AFTER_INFRA_FAILURES)"
+        ),
+    )
+    run.add_argument(
+        "--endpoint-probe-timeout",
+        type=float,
+        default=_env_float("BENCHLOCAL_ENDPOINT_PROBE_TIMEOUT", 30.0),
+        help=(
+            "seconds the #160 liveness probe (a 1-token completion) waits for an answer "
+            "(default: 30; env BENCHLOCAL_ENDPOINT_PROBE_TIMEOUT)"
+        ),
+    )
+    run.add_argument(
         "--sandbox-log-dir",
         help=(
             "capture sandbox container stdout/stderr to <dir>/sandbox-<pack-id>.log "
@@ -509,6 +529,14 @@ def _mode_from_args(args: argparse.Namespace) -> str:
     return "medium"
 
 
+def _stop_note(pack: PackResult) -> str:
+    """#160: say how much of a pack the stop rule left unscored, beside its status."""
+    if pack.stop is None:
+        return ""
+    missing = len(pack.stop.get("unscored") or []) + len(pack.stop.get("not_run") or [])
+    return f"; stopped — {missing} not scored"
+
+
 def _pack_line(pack: PackResult) -> str:
     """Format a single pack result line for incremental output (#23)."""
     if pack.skipped:
@@ -525,6 +553,7 @@ def _pack_line(pack: PackResult) -> str:
             f"{status}; partial — {pack.scenario_count} of "
             f"{pack.catalog_scenario_count} selected"
         )
+    status += _stop_note(pack)
     score = f"{pack.score:.0%}" if pack.total else "-"
     p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
     if pack.pass_at_k is not None:
@@ -855,6 +884,7 @@ def _markdown(result: RunResult) -> str:
                 f"{status}; partial — {pack.scenario_count} of "
                 f"{pack.catalog_scenario_count} selected"
             )
+        status += _stop_note(pack)
         score = f"{pack.score:.0%}" if pack.total else "-"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
@@ -1083,6 +1113,7 @@ def _results_card_markdown(result: RunResult) -> str:
                 f"{status}; partial — {pack.scenario_count} of "
                 f"{pack.catalog_scenario_count} selected"
             )
+        status += _stop_note(pack)
         score = f"{pack.score:.0%}" if pack.total else "-"
         variance = pack.variance or {}
         std = "—" if result.repeat == 1 or variance.get("std") is None else f"{float(variance['std']):.1%}"
@@ -1787,6 +1818,8 @@ def main(argv: list[str] | None = None) -> int:
             retry_on_timeout=args.retry_on_timeout,
             stream=args.stream,
             stream_stall_timeout=args.stream_stall_timeout,
+            stop_after_infra_failures=args.stop_after_infra_failures,
+            endpoint_probe_timeout=args.endpoint_probe_timeout,
             preserve_reasoning_history=args.preserve_reasoning_history,
             retry_failures=inline_retry_failures,
             retry_runaways=inline_retry_runaways,
@@ -1874,6 +1907,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.negative_control:
             _print_negative_control_report(result, args.negative_control_text)
 
+        if any(pack.stop is not None for pack in result.packs):
+            # #160: an incomplete run outranks the checks below — its regression
+            # and validity verdicts are about scenarios that never ran.
+            return 5  # endpoint went down; unscored scenarios are left for --resume
         if args.exit_on_regression and result.delta and result.delta.get("total_regressions", 0) > 0:
             return 3  # CI-friendly regression exit code
         if args.strict_thinking and any(

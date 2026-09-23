@@ -124,6 +124,18 @@ Independently of those knobs: when the agent gives up on the endpoint mid-episod
 
 A **request timeout is not retried** by the transport retry loop (a timeout means the request budget was genuinely hit); connection errors and HTTP 5xx still are. `--retry-on-timeout` (default off) restores the old transport behavior. Scenario-level timeout/runaway retries are separately controlled by `--retry-runaways`.
 
+### Stopping on a dead endpoint (`--stop-after-infra-failures`, #160)
+
+Infrastructure failures (`http_error`, `server_error`, `stall`, `model_endpoint_unreachable`, `agent_runner_crashed`, `result_json_malformed`) are retried inline even under `--no-retry`, because a harness hiccup should not count against the model. Against an endpoint that is simply gone, that multiplies the cost of finding out: a hung endpoint costs every remaining scenario its full retries, and a `hermesagent-20` pack against an endpoint that never answers could spend hours doing it.
+
+So after **`--stop-after-infra-failures N`** consecutive scenarios (default `3`, `0` disables; env `BENCHLOCAL_STOP_AFTER_INFRA_FAILURES`) end in an infrastructure failure, the runner sends **one liveness probe**: a 1-token chat completion, unretried, bounded by `--endpoint-probe-timeout` (default `30` s; env `BENCHLOCAL_ENDPOINT_PROBE_TIMEOUT`). It is a completion rather than `GET /v1/models` because a hung engine keeps answering `/v1/models` while generation never returns.
+
+- **The probe answers** (HTTP 200 with `choices`): the failures were transient. The counter resets and the pack continues, exactly as before.
+- **It does not**: the pack **stops**. The infra-failed streak is set aside **unscored** (it was the endpoint, not the model), the remaining scenarios are **not run**, the pack's status is `endpoint-down`, a warning says it is not a complete score, and the run exits **`5`**. Each later pack probes once before starting and is skipped the same way while the endpoint stays down, or runs normally if it came back.
+- **`--resume <saved json>`** runs both the set-aside and the not-run scenarios; a resume that completes them clears the stop. The saved JSON records it per pack as `packs[].stop` (`after_scenario`, `probe`, `unscored`, `not_run`), and history ingestion refuses a stopped run without `--allow-partial`.
+
+A non-infrastructure result (a pass, or any model verdict) breaks the streak. `timeout` does not count: without `--stream` it cannot tell a runaway on a live server from a dead one, and a probe after a runaway could queue behind it. With `--stream`, a hung endpoint shows up as `stall`, which does count. Synthetic traffic (mocks, the negative control) never probes.
+
 ## Repo layout
 
 ```
