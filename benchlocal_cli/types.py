@@ -173,6 +173,11 @@ class PackResult:
     # comparable to the score. Score arithmetic is untouched — a runaway is
     # still a fail; this only makes the budget artifacts visible.
     runaway: dict | None = None
+    # #160: present only when the stop rule cut this pack short against a dead
+    # endpoint: {"reason", "after_scenario", "probe", "unscored", "not_run"}.
+    # `unscored` are the infra-failed rows set aside (not in `scenarios`, not
+    # counted); `not_run` never ran. --resume runs both.
+    stop: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -203,6 +208,8 @@ class PackResult:
             out["diagnostics"] = self.diagnostics
         if self.runaway is not None:
             out["runaway"] = self.runaway
+        if self.stop is not None:
+            out["stop"] = self.stop
         return out
 
 

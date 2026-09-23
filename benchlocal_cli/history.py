@@ -92,6 +92,14 @@ def append_run(run_dict: dict, history_path: str | Path, *, allow_partial: bool 
     (Codex review #5)."""
     if run_dict.get("selection") is not None and not allow_partial:
         raise ValueError("partial selection results require --allow-partial for history ingestion")
+    # #160: a pack the stop rule cut short is as partial as a selection.
+    if not allow_partial and any(
+        isinstance(pack, dict) and pack.get("stop") for pack in run_dict.get("packs") or []
+    ):
+        raise ValueError(
+            "a pack stopped on a dead endpoint (#160); --resume it, or pass "
+            "--allow-partial for history ingestion"
+        )
     history_path = Path(history_path)
     history_path.parent.mkdir(parents=True, exist_ok=True)
     row = _row_from_run(run_dict)
