@@ -738,8 +738,10 @@ def _runaway_lines(result: RunResult) -> list[str]:
 
     `verifier_fail` is the model answering and being wrong; `token_limit` /
     `timeout` / `agent_runner_timeout` are the model never finishing. Both are
-    fails and the score is untouched — but a run whose losses are budget
-    artifacts must say so. Returns [] whenever the count is zero (or the result
+    fails and the score is untouched — but a run whose losses never finished
+    must say so, without claiming why: a runaway can be a cap that was too low
+    OR a model that loops forever (a reproducible content loop is a real model
+    failure), and only the output distinguishes them. Returns [] whenever the count is zero (or the result
     predates the rollup), which is what keeps the default markdown byte-stable.
     """
     summary = result.runaway
@@ -748,8 +750,9 @@ def _runaway_lines(result: RunResult) -> list[str]:
     lines = [
         "",
         f"Runaway: {int(summary['count'])} / {int(summary.get('total') or 0)} scenarios "
-        f"never finished ({_runaway_modes_text(summary)}) — still counted as failures, "
-        f"but they are budget artifacts, not capability misses.",
+        f"never finished ({_runaway_modes_text(summary)}) — still counted as failures. "
+        f"Each is either a budget artifact (the cap cut off an answer still in progress) "
+        f"or a model loop that would never finish; inspect the output to tell which.",
     ]
     for pack in result.packs:
         pack_summary = pack.runaway

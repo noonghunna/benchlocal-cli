@@ -37,8 +37,10 @@ FailureMode = Literal[
 
 # Failure modes where the model never produced an answer: the request or the
 # in-sandbox agent episode ran out of budget. A runaway is still a FAIL — the
-# score is untouched — but it is a harness/budget artifact, not evidence about
-# the model's capability, so the runner keeps it out of inline retries by
+# score is untouched — and it is not a wrong answer: it is either a budget
+# artifact (the cap cut off an answer still in progress) or a loop the model
+# never leaves, and only the output tells which. It is expensive either way, so
+# the runner keeps it out of inline retries by
 # default (#111) and the summary reports it separately (#148). Lives here, next
 # to FailureMode, so runner / persistence / rescore / cli share one definition.
 RUNAWAY_FAILURE_MODES = frozenset({

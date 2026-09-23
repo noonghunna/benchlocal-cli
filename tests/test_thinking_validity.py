@@ -252,3 +252,64 @@ def test_strict_thinking_exit_code(monkeypatch, capsys):
 
     monkeypatch.setattr(Runner, "run", lambda self, *a, **k: clean)
     assert main(args + ["--strict-thinking"]) == 0
+
+
+def test_pack_validity_sparse_below_half():
+    """A thinking arm where fewer than half the responses reasoned is `sparse`.
+
+    A real MiMo-V2.6-9B thinking-on run reasoned on 1 of 15 dataextract and
+    1 of 15 instructfollow responses; the old check (silent only at ZERO) read
+    both as valid thinking arms."""
+    def runs(n_reasoning, total):
+        return [
+            _run(str(i), _response(reasoning="x" if i < n_reasoning else None))
+            for i in range(total)
+        ]
+
+    assert pack_thinking_validity(_pack("p", True, runs(1, 15)))["status"] == "sparse"
+    assert pack_thinking_validity(_pack("p", True, runs(1, 4)))["status"] == "sparse"
+    # Exactly half is not sparse — the boundary the partial-presence case above sits on.
+    assert pack_thinking_validity(_pack("p", True, runs(2, 4)))["status"] == "ok"
+    assert pack_thinking_validity(_pack("p", True, runs(12, 15)))["status"] == "ok"
+    # Zero stays `silent`, and a disabled arm is judged exactly as before.
+    assert pack_thinking_validity(_pack("p", True, runs(0, 15)))["status"] == "silent"
+    assert pack_thinking_validity(_pack("p", False, runs(1, 15)))["status"] == "contaminated"
+
+
+def test_validity_warning_sparse_text():
+    warning = validity_warning("dataextract-15", {"status": "sparse", "responses": 15, "with_reasoning": 1})
+    # The resume path strips validity warnings by this exact prefix.
+    assert warning.startswith("dataextract-15: thinking was")
+    assert "only 1 of 15" in warning
+    assert "not a misconfiguration" in warning
+    assert "not a clean thinking arm" in warning
+
+
+def test_resume_strips_sparse_warning():
+    from benchlocal_cli.persistence import _strip_validity_warnings
+
+    sparse = validity_warning("dataextract-15", {"status": "sparse", "responses": 15, "with_reasoning": 1})
+    kept = "some other warning"
+    assert _strip_validity_warnings([sparse, kept], {"dataextract-15"}) == [kept]
+
+
+def test_strict_thinking_does_not_fail_on_sparse(monkeypatch):
+    """Sparse is the model's choice, not a misconfiguration: warn, never exit 4."""
+    from benchlocal_cli.cli import main
+    from benchlocal_cli.types import RunResult
+
+    sparse = RunResult(
+        schema_version="1",
+        runner_version="test",
+        endpoint="http://mock",
+        model="mock",
+        mode="custom",
+        started_at="2026-09-23T00:00:00Z",
+        finished_at="2026-09-23T00:00:01Z",
+        packs=[],
+        totals={"passed": 1, "total": 1, "score": 1.0},
+        thinking_validity={"dataextract-15": {"expected": "on", "responses": 15, "with_reasoning": 1, "status": "sparse"}},
+    )
+    monkeypatch.setattr(Runner, "run", lambda self, *a, **k: sparse)
+    args = ["run", "--scenario", "structoutput-15/SO-01", "--endpoint", "http://mock", "--model", "mock"]
+    assert main(args + ["--strict-thinking"]) == 0

@@ -145,8 +145,8 @@ def runaway_summary(runs: Iterable[Any]) -> dict[str, Any] | None:
 
     `verifier_fail` means the model answered and was wrong; `token_limit` /
     `timeout` / `agent_runner_timeout` mean it never finished. Both score as a
-    fail — this does NOT touch the arithmetic — but a run whose losses are
-    budget artifacts should say so where a human reads it.
+    fail — this does NOT touch the arithmetic — but a run whose losses never
+    finished should say so where a human reads it, without claiming why.
 
     Counts exactly the rows the score counts: the top-level (attempt-1) result
     of each run, `verifier_not_implemented` excluded, so `count / total` is
