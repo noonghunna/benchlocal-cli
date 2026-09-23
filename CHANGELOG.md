@@ -9,6 +9,64 @@ the same content per-version.
 
 ---
 
+## v0.10.0 — 2026-09-23
+
+
+### ✨ Features
+
+- feat(runner): stop a pack when the endpoint is gone instead of retrying every scenario (#160) ([7dfb5a9](https://github.com/noonghunna/benchlocal-cli/commit/7dfb5a90bbcf880bc86e1b218de5d1c78ce4857b))
+- feat(sandbox): make hermes stream-timeout passthrough opt-in (#157) ([b8ab532](https://github.com/noonghunna/benchlocal-cli/commit/b8ab532599fc5e54ddf450d414a281e14d67bf74))
+- feat(runner): opt-in streaming with a stall clock, and hermes stall detection (#157) ([6081d20](https://github.com/noonghunna/benchlocal-cli/commit/6081d2049a2cb99bebff1aac26fe4ec794a94644))
+- feat(report): report token usage per pack and for the run (#147) ([951b600](https://github.com/noonghunna/benchlocal-cli/commit/951b6001a6031c01d9a2b2f63ac253d9fc262af5))
+- feat(report): record wall-clock duration per pack and for the run (#146) ([f4b5217](https://github.com/noonghunna/benchlocal-cli/commit/f4b5217a76b8acaf9654ae699015a76afbb54bbf))
+- feat(runner): --budget-from-timeout derives the token ceiling from clock x measured TPS (#145) ([0d33041](https://github.com/noonghunna/benchlocal-cli/commit/0d3304163aed2c283f887497ff261537d729583a))
+- feat(report): surface runaway failures separately from verifier_fail ([960e007](https://github.com/noonghunna/benchlocal-cli/commit/960e0071dd15382bc3ec892503141b2f79b40e54))
+- feat(run): detect thinking arms that didn't take effect (#126) ([21f99d3](https://github.com/noonghunna/benchlocal-cli/commit/21f99d3cb3ff176a5c1a779b5cec00bb8215d80b))
+- feat(report): add native Results Card v2 output ([fcca801](https://github.com/noonghunna/benchlocal-cli/commit/fcca80150da9f685f50087f56bfba61b644540c1))
+- feat(run): add retry, timeout, and reasoning guards ([d52a52a](https://github.com/noonghunna/benchlocal-cli/commit/d52a52afc82a680f4590a27cad6a6715d735ed42))
+
+
+### 🐛 Bug fixes
+
+- fix(report): flag sparse thinking arms and stop calling every runaway a budget artifact ([fc217cb](https://github.com/noonghunna/benchlocal-cli/commit/fc217cb907497524220d556a47dc83bcf5f5d5e4))
+- fix(packs): judge IF-11 and SO-11 against their prompts, not upstream's rendering (#143) ([241a5cc](https://github.com/noonghunna/benchlocal-cli/commit/241a5cc0540e5c47d2ace04c89669c3039af042b))
+- fix(packs): grade the 14 vacuous IF/SO scenarios with ports of upstream's evaluators (#143) ([fc7fc86](https://github.com/noonghunna/benchlocal-cli/commit/fc7fc86e7b9513a518afbf472c4ebcccfc0935e4))
+- fix(hermes): make the agent watchdog honor the episode cap (completes #149) ([9e15dae](https://github.com/noonghunna/benchlocal-cli/commit/9e15dae087793656c8538c6ad22b059283060460))
+- fix(runner): stop a multi-turn episode at a turn cut off by the token cap ([924de7e](https://github.com/noonghunna/benchlocal-cli/commit/924de7e5aaebc9aade70cbb88ca4d47c5c0bb7c1))
+- fix(runner): classify engine rejection of model output as model_output_unparseable (#152) ([582c1e4](https://github.com/noonghunna/benchlocal-cli/commit/582c1e408e3e37db6eb73986257ae4fef80afb0c))
+- fix(sandbox): let --timeout-per-case reach the hermes episode cap and log effective clocks ([2d1019a](https://github.com/noonghunna/benchlocal-cli/commit/2d1019ac81a7a37bda570c03f9ff1ade33756c4a))
+- fix(release): reconcile version with v0.9.9 and guard the tag (#141) ([#141](https://github.com/noonghunna/benchlocal-cli/pull/141) by @noonghunna)
+- fix(dataextract): enforce top-level shape only where the prompt declares one (#140) ([#140](https://github.com/noonghunna/benchlocal-cli/pull/140) by @noonghunna)
+- fix(dataextract): score content on a shape mismatch instead of reporting 0% (#139) ([#139](https://github.com/noonghunna/benchlocal-cli/pull/139) by @noonghunna)
+- fix(packs): declare field types in DataExtract, name the SO-07 wrapper (v1.1.0) ([7a16e12](https://github.com/noonghunna/benchlocal-cli/commit/7a16e12670cd7075001e65fbf52604bbd854f187))
+- fix(cli-40): stop sending contradictory thinking params in the no-thinking arm ([aeeaa58](https://github.com/noonghunna/benchlocal-cli/commit/aeeaa581ba926a0f16a458a564512290008e104d))
+- fix(reasonmath): accept combined unsat answer forms in RM-04 ([c120213](https://github.com/noonghunna/benchlocal-cli/commit/c12021375857f1a4c594ff4bba1baea1d40f3caf))
+- fix(sandbox): treat an unpaired trailing fence as a closer, not an opener ([5aaa2d9](https://github.com/noonghunna/benchlocal-cli/commit/5aaa2d93a6d5005efed5d007a5e5c5d321153c40))
+- fix: resolve model-specific thinking controls ([c6a1c75](https://github.com/noonghunna/benchlocal-cli/commit/c6a1c7537d5de233a3d70433340bfe0b9f8c820c))
+- fix(reasoning): make code sandbox scoring content-first ([8113c2e](https://github.com/noonghunna/benchlocal-cli/commit/8113c2ede16d9293e78d23a8691699c9bf2d51bc))
+- fix(sandbox): add preserve_reasoning_history to verify_multiturn_start ([3931d04](https://github.com/noonghunna/benchlocal-cli/commit/3931d04e20b052a28a56a288cdd7e066fe4fb6d1))
+
+
+### 📝 Documentation
+
+- docs: prompt-verifier alignment audit across all packs (2026-08-12) ([67ddb1e](https://github.com/noonghunna/benchlocal-cli/commit/67ddb1ebd2c8908aa564116485092d1f1556745e))
+- docs: failure-triage policy — model miss is the default label ([10b0d9b](https://github.com/noonghunna/benchlocal-cli/commit/10b0d9bfa0c4804d4b7d5abf85ac4f5cf6f1c21c))
+- docs: reasoning-pack provenance, drift record, and extend-don't-regenerate convention ([5dd58e7](https://github.com/noonghunna/benchlocal-cli/commit/5dd58e76a01940cf8ec564ce6ac7ae596d4e1608))
+
+
+### 🧹 Other
+
+- Enforce network_isolated instead of only declaring it (#142) ([#142](https://github.com/noonghunna/benchlocal-cli/pull/142) by @moritzburgard)
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(release): bump version 0.9.9 -> 0.10.0 ([cdeefcf](https://github.com/noonghunna/benchlocal-cli/commit/cdeefcf611b10d09be6fd891150bd743685d11dc))
+- chore: ignore benchlocal-runs/, the runner's own sandbox-log root ([1d27ae1](https://github.com/noonghunna/benchlocal-cli/commit/1d27ae19bc32ba047e9549d039c89175735f5e16))
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.10.0`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.9.9...v0.10.0)
 ## v0.9.9 — 2026-07-22
 
 
