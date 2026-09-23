@@ -16,8 +16,11 @@ collected (no extra requests):
 The second is the dangerous one: it produces a believable comparison from a
 contaminated baseline and nothing downstream reveals it. Detection therefore
 fails loudly on ANY reasoning observed in a disabled arm, while a requested
-arm only warns when NO response shows reasoning (models may think
-conditionally, so partial presence is legitimate).
+arm is flagged `silent` only when NO response shows reasoning (models may think
+conditionally, so partial presence is legitimate). A requested arm where FEWER
+than SPARSE_BELOW of responses reasoned is flagged `sparse` — a warning, never a
+--strict-thinking failure: it is the model's choice, but the arm's scores were
+mostly produced without reasoning and should not be read as a thinking arm.
 """
 
 from __future__ import annotations
@@ -74,6 +77,16 @@ def response_has_reasoning(raw_response: Any) -> bool | None:
     return False if saw_message else None
 
 
+# A thinking-requested pack where FEWER than this share of responses carried any
+# reasoning is "sparse". Adaptive-thinking models (the chat template does not
+# force a <think> block, so the model decides per request) can skip reasoning on
+# most of a pack; the old check only flagged ZERO, so a pack with 1 of 15
+# responses reasoning read as a valid thinking arm. Sparse is a warning, not a
+# --strict-thinking failure: it is usually the model's choice, not a
+# misconfiguration, but the results are mostly not a thinking arm.
+SPARSE_BELOW = 0.5
+
+
 def pack_thinking_validity(pack_result: Any) -> dict | None:
     """Inspect a finished pack's responses against what was requested.
 
@@ -95,6 +108,8 @@ def pack_thinking_validity(pack_result: Any) -> dict | None:
         return None
     if expected_on and with_reasoning == 0:
         status = "silent"
+    elif expected_on and with_reasoning / inspected < SPARSE_BELOW:
+        status = "sparse"
     elif not expected_on and with_reasoning > 0:
         status = "contaminated"
     else:
@@ -139,6 +154,15 @@ def validity_warning(pack_id: str, observation: Mapping[str, Any]) -> str | None
             f"in any of {responses} responses. The model may not support thinking, or "
             "the server may not be parsing it (llama.cpp --reasoning-format). "
             "These results are NOT a valid thinking arm."
+        )
+    if status == "sparse":
+        return (
+            f"{pack_id}: thinking was requested but only {with_reasoning} of {responses} "
+            "responses returned reasoning. Unlike a pack with none, this is usually the "
+            "model choosing not to think (adaptive-thinking models whose chat template "
+            "does not force a <think> block), not a misconfiguration — but most of this "
+            "pack's results were produced WITHOUT reasoning, so it is not a clean "
+            "thinking arm."
         )
     if status == "contaminated":
         return (

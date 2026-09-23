@@ -243,7 +243,8 @@ def test_runner_reports_runaways_in_markdown_and_json_without_rescoring(monkeypa
     lines = rendered.splitlines()
     summary = (
         "Runaway: 2 / 4 scenarios never finished (token_limit 1, timeout 1) — still counted "
-        "as failures, but they are budget artifacts, not capability misses."
+        "as failures. Each is either a budget artifact (the cap cut off an answer still in "
+        "progress) or a model loop that would never finish; inspect the output to tell which."
     )
     assert summary in lines
     assert "- test-pack: 2 / 4 (token_limit 1, timeout 1)" in lines
