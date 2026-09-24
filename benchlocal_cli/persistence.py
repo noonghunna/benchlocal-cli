@@ -316,6 +316,8 @@ def _build_result(
         tokens=_tokens_with_counter(packs, config),
         sampling_source=config.get("sampling_source"),
         server_defaults=config.get("server_defaults"),
+        server_defaults_source=config.get("server_defaults_source"),
+        run_meta=config.get("run_meta"),
         token_budget=config.get("token_budget"),
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
@@ -398,6 +400,8 @@ def _infer_config(data: dict, source: Path) -> dict:
         "sampling_overrides": data.get("sampling_overrides"),
         "sampling_source": data.get("sampling_source"),
         "server_defaults": data.get("server_defaults"),
+        "server_defaults_source": data.get("server_defaults_source"),
+        "run_meta": data.get("run_meta"),
         "token_budget": data.get("token_budget"),
         "budget_from_timeout": (data.get("token_budget") or {}).get("mode") == "derived",
         "budget_headroom": (data.get("token_budget") or {}).get("headroom"),
@@ -512,7 +516,12 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     }
     config = dict(state.config)
     config["runner_version"] = new_result.runner_version
-    config["server_defaults"] = new_result.server_defaults
+    # A resumed session that could not re-read the defaults (e.g. caller-supplied
+    # values not passed again) keeps the ones the original session recorded.
+    config["server_defaults"] = new_result.server_defaults or config.get("server_defaults")
+    config["server_defaults_source"] = new_result.server_defaults_source or config.get("server_defaults_source")
+    # A resumed session keeps the original run's rig facts unless it was given new ones.
+    config["run_meta"] = new_result.run_meta or config.get("run_meta")
     config["thinking_control"] = new_result.thinking_control
     config["reasoning_effort"] = new_result.reasoning_effort
     # #147: the spend counter is per session; sum the ones that were recorded

@@ -971,6 +971,9 @@ class Runner:
         inline_retries_enabled: bool = True,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
+        server_defaults: dict | None = None,
+        server_defaults_source: str | None = None,
+        run_meta: dict | None = None,
         thinking_sampler: dict | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
@@ -1102,6 +1105,13 @@ class Runner:
         self.thinking_sampler = None if thinking_sampler is None else dict(thinking_sampler)
         # Populated by _read_server_defaults() before the run starts.
         self._server_defaults: dict | None = None
+        self._server_defaults_source: str | None = None
+        # club-3090#1396: defaults the CALLER resolved (e.g. from the serving
+        # container's launch flags) for engines with no defaults endpoint; used
+        # only when the engine reports none itself. Plus free-form rig facts.
+        self._supplied_server_defaults = dict(server_defaults) if server_defaults else None
+        self._supplied_server_defaults_source = server_defaults_source
+        self.run_meta = dict(run_meta) if run_meta else None
         self._sandbox_clients: dict[str, SandboxClient] = {}
         # Callbacks for incremental progress (#23)
         self._on_pack_complete = on_pack_complete
@@ -1151,6 +1161,16 @@ class Runner:
             # any requests so we can tag the run and record what was used.
             if self.sampling_from_server:
                 self._server_defaults = self._read_server_defaults(warnings)
+                if self._server_defaults:
+                    self._server_defaults_source = "GET /props"
+                elif self._supplied_server_defaults:
+                    # The engine reports nothing (vLLM, SGLang): record what the
+                    # caller resolved, and say that it was the caller.
+                    self._server_defaults = dict(self._supplied_server_defaults)
+                    self._server_defaults_source = (
+                        f"supplied: {self._supplied_server_defaults_source}"
+                        if self._supplied_server_defaults_source else "supplied by caller"
+                    )
             # #145: resolve the derived token budget (TPS, engine knob, the
             # positive control) before any pack runs, so a budget that cannot
             # be applied fails here and not three hours in.
@@ -1198,6 +1218,8 @@ class Runner:
             if self.sampling_from_server:
                 if self._server_defaults:
                     sd_desc = ", ".join(f"{k}={v}" for k, v in self._server_defaults.items())
+                    if self._server_defaults_source and self._server_defaults_source != "GET /props":
+                        sd_desc += f"; {self._server_defaults_source}"
                     warnings.append(
                         f"sampling inherited from server ({sd_desc}) — "
                         f"results are NOT comparable to the default temp=0 baseline"
@@ -1232,6 +1254,8 @@ class Runner:
                 tokens=self._run_tokens(pack_results),
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
+                server_defaults_source=self._server_defaults_source if self.sampling_from_server else None,
+                run_meta=self.run_meta,
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
