@@ -433,6 +433,30 @@ def _parser() -> argparse.ArgumentParser:
             "and records the values. Mutually exclusive with --temperature/--top-p/etc."
         ),
     )
+    # club-3090#1396: vLLM and SGLang expose no defaults endpoint, so a report
+    # read "value not exposed by endpoint" and could not be compared across rigs.
+    run.add_argument(
+        "--server-defaults",
+        metavar="JSON",
+        help=(
+            "JSON object of the sampling defaults the server applies, for engines that "
+            "don't expose them (vLLM, SGLang), e.g. resolved from the serving container's "
+            "launch flags. Only with --sampling-from-server; the engine's own GET /props "
+            "values win when present. Keys: temperature, top_p, top_k, min_p, "
+            "presence_penalty, frequency_penalty, repetition_penalty, repeat_penalty, plus "
+            "an optional string 'source' saying where the values came from."
+        ),
+    )
+    run.add_argument(
+        "--run-meta",
+        action="append",
+        metavar="KEY=VALUE",
+        help=(
+            "record a fact about the rig or serving config with the results; repeatable "
+            "(e.g. --run-meta tp=2 --run-meta gpus='2x RTX 3090'). Stored in the results "
+            "JSON and shown in the summary header and the Results Card."
+        ),
+    )
     run.add_argument("--extra-body", help="JSON object merged into each chat-completions request body")
     # Cloud endpoints (OpenRouter / DashScope / DeepInfra / …): Bearer auth + a spend guard.
     run.add_argument(
@@ -808,6 +832,8 @@ def _markdown(result: RunResult) -> str:
     if result.sampling_source == "server":
         if result.server_defaults:
             sd_str = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
+            if result.server_defaults_source and result.server_defaults_source != "GET /props":
+                sd_str += f"; {result.server_defaults_source}"
             canonical_tag = f" ⚠ NON-CANONICAL (sampling: server defaults — {sd_str})"
         else:
             canonical_tag = " ⚠ NON-CANONICAL (sampling: server defaults — value not exposed by endpoint)"
@@ -825,6 +851,8 @@ def _markdown(result: RunResult) -> str:
     budget_tag = _token_budget_tag(result)
     lines = [
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag}{budget_tag} ===",
+        # club-3090#1396: rig facts the caller recorded; absent → no line (byte-stable default).
+        *([f"rig: {_run_meta_str(result.run_meta)}"] if result.run_meta else []),
         "",
     ]
     retry_diagnostic = result.retry_failed
@@ -1088,13 +1116,39 @@ def _markdown(result: RunResult) -> str:
     return "\n".join(lines)
 
 
+def _run_meta_str(meta: dict) -> str:
+    return " · ".join(f"{key}={value}" for key, value in meta.items())
+
+
+def _card_context_lines(result: RunResult) -> list[str]:
+    """club-3090#1396: the rig and the sampling in effect, so cards from
+    different rigs compare cleanly. Empty for a canonical run with no rig facts,
+    which keeps that card unchanged."""
+    lines: list[str] = []
+    if result.run_meta:
+        lines.append(f"Rig: {_run_meta_str(result.run_meta)}")
+    if result.sampling_source == "server":
+        if result.server_defaults:
+            values = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
+            source = f" ({result.server_defaults_source})" if result.server_defaults_source else ""
+            lines.append(f"Sampling: server defaults — {values}{source}")
+        else:
+            lines.append("Sampling: server defaults — not exposed by the endpoint")
+    elif result.sampling_overrides:
+        values = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
+        lines.append(f"Sampling: {values} (overrides)")
+    return lines
+
+
 def _results_card_markdown(result: RunResult) -> str:
     """Render the stable, paste-ready Results Card v2 shape (#114)."""
     version = result.runner_version.removeprefix("v")
+    context = _card_context_lines(result)
     lines = [
         f"## Quality bench, thinking {_thinking_label(result)}, "
         f"benchlocal-cli v{version}, repeat = {result.repeat}",
         "",
+        *([*context, ""] if context else []),
         "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status",
         "---|---:|---:|---:|---:|---:|---:|---",
     ]
@@ -1205,6 +1259,48 @@ def _print_negative_control_report(result, junk_text: str) -> None:
             f"✓ 0/{total} PASSed — all exercised verifiers correctly rejected the junk.",
             file=sys.stderr,
         )
+
+
+_SERVER_DEFAULT_KEYS = (
+    "temperature", "top_p", "top_k", "min_p", "presence_penalty",
+    "frequency_penalty", "repetition_penalty", "repeat_penalty",
+)
+
+
+def _load_server_defaults(value: str | None) -> tuple[dict | None, str | None]:
+    """club-3090#1396: parse --server-defaults into (numeric defaults, source)."""
+    if not value:
+        return None, None
+    data = json.loads(value)
+    if not isinstance(data, dict):
+        raise ValueError("--server-defaults must be a JSON object")
+    source = data.pop("source", None)
+    if source is not None and not isinstance(source, str):
+        raise ValueError("--server-defaults: 'source' must be a string")
+    unknown = sorted(set(data) - set(_SERVER_DEFAULT_KEYS))
+    if unknown:
+        raise ValueError(
+            f"--server-defaults: unknown key(s) {', '.join(unknown)} "
+            f"(allowed: {', '.join(_SERVER_DEFAULT_KEYS)}, source)"
+        )
+    for key, number in data.items():
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ValueError(f"--server-defaults: {key} must be a number")
+    return (data or None), source
+
+
+def _load_run_meta(values: list[str] | None) -> dict | None:
+    """club-3090#1396: parse repeated --run-meta KEY=VALUE into an ordered dict."""
+    if not values:
+        return None
+    meta: dict[str, str] = {}
+    for item in values:
+        key, sep, val = item.partition("=")
+        key = key.strip()
+        if not sep or not key or not all(c.isalnum() or c in "_.-" for c in key):
+            raise ValueError(f"--run-meta expects KEY=VALUE (key: letters, digits, _ . -), got {item!r}")
+        meta[key] = val.strip()
+    return meta
 
 
 def _load_extra_body(value: str | None) -> dict | None:
@@ -1667,6 +1763,13 @@ def main(argv: list[str] | None = None) -> int:
             inline_retries_enabled = False
 
         effective_extra_body = _load_extra_body(args.extra_body)
+        supplied_server_defaults, supplied_defaults_source = _load_server_defaults(args.server_defaults)
+        if supplied_server_defaults and not args.sampling_from_server:
+            raise ValueError(
+                "--server-defaults only applies with --sampling-from-server "
+                "(explicit sampling flags send their own values)"
+            )
+        run_meta = _load_run_meta(args.run_meta)
         effective_thinking_sampler = _load_thinking_sampler(args.thinking_sampler)
         run_started_at = (
             str(resume_state.config.get("started_at"))
@@ -1704,6 +1807,7 @@ def main(argv: list[str] | None = None) -> int:
             "thinking_sampler": effective_thinking_sampler,
             "sampling_overrides": sampling_overrides or None,
             "sampling_source": "server" if args.sampling_from_server else None,
+            "run_meta": run_meta,
             "extra_body": effective_extra_body,
             "timeout_per_case": args.timeout_per_case,
             "timeout_ceiling_s": args.timeout_ceiling_s,
@@ -1826,6 +1930,9 @@ def main(argv: list[str] | None = None) -> int:
             inline_retries_enabled=inline_retries_enabled,
             sampling_overrides=sampling_overrides or None,
             sampling_from_server=args.sampling_from_server,
+            server_defaults=supplied_server_defaults,
+            server_defaults_source=supplied_defaults_source,
+            run_meta=run_meta,
             thinking_sampler=effective_thinking_sampler,
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,

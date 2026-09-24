@@ -261,6 +261,14 @@ class RunResult:
     # or None if the endpoint didn't expose them (vLLM). Only populated
     # when sampling_source == "server".
     server_defaults: dict | None = None
+    # club-3090#1396: where `server_defaults` came from — "GET /props" when the
+    # engine reported them, "supplied: <source>" when the caller resolved them
+    # (vLLM and SGLang expose no defaults endpoint). None when there are none.
+    server_defaults_source: str | None = None
+    # club-3090#1396: caller-supplied facts about the rig and serving config
+    # (--run-meta KEY=VALUE — topology, engine, quant, power cap …) so reports
+    # from different rigs compare cleanly. Recorded verbatim; None when absent.
+    run_meta: dict | None = None
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
@@ -319,6 +327,10 @@ class RunResult:
             out["sampling_source"] = self.sampling_source
         if self.server_defaults is not None:
             out["server_defaults"] = self.server_defaults
+        if self.server_defaults_source is not None:
+            out["server_defaults_source"] = self.server_defaults_source
+        if self.run_meta is not None:
+            out["run_meta"] = self.run_meta
         if self.selection is not None:
             out["selection"] = self.selection
         if self.token_budget is not None:

@@ -232,6 +232,55 @@ def test_multi_turn_sums_usage_across_turns(monkeypatch):
     assert run.result.tokens_reasoning is None  # never reported → None, not 0
 
 
+class _FakeHermesSandbox:
+    """hermesagent-20: the sandbox runs the whole agent episode at start and
+    answers verify-final directly — no runner-owned turns, so no response the
+    runner could read usage from. `usage` is what the sandbox proxy tallied."""
+
+    config = type("FakeConfig", (), {"multi_turn": True})()
+
+    def __init__(self, usage: dict | None) -> None:
+        self.usage = usage
+
+    def verify_multiturn_start(self, scenario: dict, **kwargs) -> dict:
+        payload = {"action": "verify-final", "passed": True, "failure_mode": "passed", "detail": "ok"}
+        if self.usage is not None:
+            payload["usage"] = self.usage
+        return payload
+
+    def verify_multiturn_end(self, scenario_state_id: str) -> dict:
+        return {"passed": False, "failure_mode": "timeout", "detail": "ended"}
+
+
+def _hermes_run(monkeypatch, usage: dict | None):
+    _install(monkeypatch, [])
+    runner = Runner(endpoint="http://localhost:9999", model="fake", enable_sandboxed_packs=True, max_transient_retries=0)
+    runner._sandbox_clients["hermesagent-20"] = _FakeHermesSandbox(usage)
+    run = runner.run_scenario(_meta(), {"id": "HA-01", "pack_id": "hermesagent-20",
+                                        "messages": [{"role": "user", "content": "x"}], "verifier": {"type": "_stub", "asserts": []}})
+    return runner, run
+
+
+def test_hermes_folds_the_sandbox_proxy_usage_into_the_row_and_spend_guard(monkeypatch):
+    # club-3090#1396: the agent's in-container calls were invisible, so HA rows had no count.
+    runner, run = _hermes_run(monkeypatch, {"requests": 4, "requests_with_usage": 4, "prompt_tokens": 900,
+                                            "completion_tokens": 300, "total_tokens": 1200, "reasoning_tokens": 120})
+    assert run.result.passed is True
+    assert (run.result.tokens_completion, run.result.tokens_prompt, run.result.tokens_total, run.result.tokens_reasoning) == (300, 900, 1200, 120)
+    assert runner.tokens_used == 1200  # the run's endpoint-reported total now includes the agent
+
+
+def test_hermes_from_an_older_sandbox_keeps_no_count_rather_than_zero(monkeypatch):
+    # A sandbox image built before the proxy sends no `usage`: the row stays "missing", never 0.
+    runner, run = _hermes_run(monkeypatch, None)
+    assert run.result.tokens_completion is None and run.result.tokens_total is None
+    assert runner.tokens_used == 0
+    # ...and a proxy that saw calls but no usage block is treated the same way.
+    runner, run = _hermes_run(monkeypatch, {"requests": 2, "requests_with_usage": 0, "prompt_tokens": 0,
+                                            "completion_tokens": 0, "total_tokens": 0, "reasoning_tokens": 0})
+    assert run.result.tokens_completion is None
+
+
 def test_run_attaches_pack_and_run_rollups_with_the_spend_counter(monkeypatch):
     meta = {"pack_id": "test-pack", "version": "1.0.0", "upstream_commit": "abc123", "sampling_defaults": {"max_tokens": 32}}
     scenarios = [{"id": "A-01", "pack_id": "test-pack", "messages": []}, {"id": "A-02", "pack_id": "test-pack", "messages": []}]

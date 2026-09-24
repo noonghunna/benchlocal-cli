@@ -579,6 +579,27 @@ def _usage_counts(raw_response: dict | None) -> dict[str, int | None]:
     }
 
 
+def _agent_usage_counts(payload: dict | None) -> dict[str, int | None] | None:
+    """club-3090#1396: the four #147 counts for an agent that calls the model from
+    inside its sandbox (hermesagent-20), read from the `usage` tally the sandbox's
+    pass-through proxy attaches to its verdict. None when the sandbox sent none —
+    an image built before the proxy, or a proxy that saw no usage block — so the
+    row stays "missing" instead of reading as zero."""
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict) or not usage.get("requests_with_usage"):
+        return None
+
+    def _int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    return {
+        "tokens_completion": _int(usage.get("completion_tokens")),
+        "tokens_prompt": _int(usage.get("prompt_tokens")),
+        "tokens_total": _int(usage.get("total_tokens")),
+        "tokens_reasoning": _int(usage.get("reasoning_tokens")) or None,
+    }
+
+
 def _add_usage(total: dict[str, int | None], raw_response: dict | None) -> None:
     """Accumulate one turn's counts into a multi-turn total (None + n = n)."""
     for key, value in _usage_counts(raw_response).items():
@@ -812,9 +833,10 @@ def _pack_tokens(runs: list) -> dict | None:
     counts (`verifier_not_implemented` excluded), so it lines up with
     `passed / total`; `retries` sums the nested inline-retry attempts, which
     cost tokens too but are not attempt 1. `counted` / `missing` say how many
-    scored rows carried a count — a pack whose agent calls the model from
-    inside its container (hermesagent-20) reports none, and that gap is
-    reported rather than silently read as zero. `prompt`, `total_tokens` and
+    scored rows carried a count. A pack whose agent calls the model from
+    inside its container (hermesagent-20) gets its counts from the sandbox's
+    usage proxy (club-3090#1396); a sandbox image built before that reports
+    none, and the gap is reported rather than silently read as zero. `prompt`, `total_tokens` and
     `reasoning` (tier 2) are present only when at least one row has them.
     Accepts ScenarioRun objects or their saved-JSON dicts. None when the
     pack has no counted rows.
@@ -949,6 +971,9 @@ class Runner:
         inline_retries_enabled: bool = True,
         sampling_overrides: dict | None = None,
         sampling_from_server: bool = False,
+        server_defaults: dict | None = None,
+        server_defaults_source: str | None = None,
+        run_meta: dict | None = None,
         thinking_sampler: dict | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
@@ -1080,6 +1105,13 @@ class Runner:
         self.thinking_sampler = None if thinking_sampler is None else dict(thinking_sampler)
         # Populated by _read_server_defaults() before the run starts.
         self._server_defaults: dict | None = None
+        self._server_defaults_source: str | None = None
+        # club-3090#1396: defaults the CALLER resolved (e.g. from the serving
+        # container's launch flags) for engines with no defaults endpoint; used
+        # only when the engine reports none itself. Plus free-form rig facts.
+        self._supplied_server_defaults = dict(server_defaults) if server_defaults else None
+        self._supplied_server_defaults_source = server_defaults_source
+        self.run_meta = dict(run_meta) if run_meta else None
         self._sandbox_clients: dict[str, SandboxClient] = {}
         # Callbacks for incremental progress (#23)
         self._on_pack_complete = on_pack_complete
@@ -1129,6 +1161,16 @@ class Runner:
             # any requests so we can tag the run and record what was used.
             if self.sampling_from_server:
                 self._server_defaults = self._read_server_defaults(warnings)
+                if self._server_defaults:
+                    self._server_defaults_source = "GET /props"
+                elif self._supplied_server_defaults:
+                    # The engine reports nothing (vLLM, SGLang): record what the
+                    # caller resolved, and say that it was the caller.
+                    self._server_defaults = dict(self._supplied_server_defaults)
+                    self._server_defaults_source = (
+                        f"supplied: {self._supplied_server_defaults_source}"
+                        if self._supplied_server_defaults_source else "supplied by caller"
+                    )
             # #145: resolve the derived token budget (TPS, engine knob, the
             # positive control) before any pack runs, so a budget that cannot
             # be applied fails here and not three hours in.
@@ -1176,6 +1218,8 @@ class Runner:
             if self.sampling_from_server:
                 if self._server_defaults:
                     sd_desc = ", ".join(f"{k}={v}" for k, v in self._server_defaults.items())
+                    if self._server_defaults_source and self._server_defaults_source != "GET /props":
+                        sd_desc += f"; {self._server_defaults_source}"
                     warnings.append(
                         f"sampling inherited from server ({sd_desc}) — "
                         f"results are NOT comparable to the default temp=0 baseline"
@@ -1210,6 +1254,8 @@ class Runner:
                 tokens=self._run_tokens(pack_results),
                 sampling_source="server" if self.sampling_from_server else None,
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
+                server_defaults_source=self._server_defaults_source if self.sampling_from_server else None,
+                run_meta=self.run_meta,
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
@@ -3007,7 +3053,9 @@ class Runner:
                     pass_rate=start_payload.get("pass_rate"),
                     passed_count=start_payload.get("passed_count"),
                     total_count=start_payload.get("total_count"),
+                    **(agent_counts := _agent_usage_counts(start_payload) or {}),
                 )
+                self.tokens_used += int(agent_counts.get("tokens_total") or 0)  # #1396: the spend guard sees the agent too
                 result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
                 return self._scenario_run(
                     scenario,
@@ -3176,6 +3224,16 @@ class Runner:
             } or None
         if truncated_turn is not None:
             verifier_trace = {**(verifier_trace or {}), "truncated_turn": truncated_turn}
+        # club-3090#1396: an agent that calls the model from inside its sandbox
+        # never shows the runner a response; fold the sandbox proxy's tally in
+        # exactly as a runner-owned turn would be, spend guard included.
+        agent_counts = _agent_usage_counts(final_payload)
+        if agent_counts:
+            for key in ("tokens_prompt", "tokens_total", "tokens_reasoning"):
+                if agent_counts.get(key) is not None:
+                    usage_sum[key] = (usage_sum.get(key) or 0) + agent_counts[key]
+            tokens_total += int(agent_counts.get("tokens_completion") or 0)
+            self.tokens_used += int(agent_counts.get("tokens_total") or 0)
         result = replace(
             result,
             latency_seconds=latency,
