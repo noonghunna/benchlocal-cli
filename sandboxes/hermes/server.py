@@ -578,6 +578,180 @@ def _upstream_unreachable_response(scenario_id: str, reason: str) -> dict:
     }
 
 
+# club-3090#1396: token accounting for the agent's own model calls.
+# hermes-agent calls the model directly from inside this container, so the
+# runner never sees a response and the pack reported no token counts at all —
+# not per scenario, not in the run's endpoint total. The agent already asks for
+# stream usage itself (`stream_options.include_usage`), so a pass-through proxy
+# that relays every request UNCHANGED and reads the `usage` block off each
+# response recovers the counts without touching the pinned agent. It is on by
+# default; BENCHLOCAL_HERMES_USAGE_PROXY=0 restores the direct connection. If
+# the proxy cannot start, the agent talks to the endpoint directly, as before,
+# and the scenario simply has no count — never a failed scenario.
+_HOP_BY_HOP = frozenset({
+    "host", "content-length", "connection", "keep-alive", "transfer-encoding",
+    "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate",
+    "accept-encoding", "content-encoding",
+})
+
+
+def _usage_from(obj: object) -> dict | None:
+    """The `usage` block of one completion (JSON body or SSE chunk), or None."""
+    usage = obj.get("usage") if isinstance(obj, dict) else None
+    return usage if isinstance(usage, dict) and usage else None
+
+
+class UsageProxy:
+    """Loopback pass-through to the model endpoint that tallies `usage`.
+
+    One scenario runs at a time per sandbox, so a single tally is reset by
+    `begin()` and read by `end()`. Per response it keeps the LAST usage block
+    seen: servers that stream cumulative usage on every chunk are then counted
+    once, and servers that send it only on the final chunk are unaffected.
+    """
+
+    def __init__(self) -> None:
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        self._lock = threading.Lock()
+        self._target = ""
+        self._reset()
+        proxy = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - quiet
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                proxy._relay(self, "GET")
+
+            def do_POST(self) -> None:  # noqa: N802
+                proxy._relay(self, "POST")
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.daemon_threads = True
+        self.port = self._server.server_address[1]
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def _reset(self) -> None:
+        self._tally = {
+            "requests": 0, "requests_with_usage": 0, "prompt_tokens": 0,
+            "completion_tokens": 0, "total_tokens": 0, "reasoning_tokens": 0,
+        }
+
+    def begin(self, target_base_url: str) -> str:
+        """Point the proxy at the real `/v1` base; return the base the agent uses."""
+        with self._lock:
+            self._target = target_base_url.rstrip("/")
+            self._reset()
+        return f"http://127.0.0.1:{self.port}/v1"
+
+    def end(self) -> dict:
+        with self._lock:
+            return dict(self._tally)
+
+    def _record(self, usage: dict | None) -> None:
+        with self._lock:
+            self._tally["requests"] += 1
+            if not usage:
+                return
+            self._tally["requests_with_usage"] += 1
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and value >= 0:
+                    self._tally[key] += value
+            details = usage.get("completion_tokens_details")
+            reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+            if isinstance(reasoning, int) and reasoning >= 0:
+                self._tally["reasoning_tokens"] += reasoning
+
+    def _relay(self, handler: BaseHTTPRequestHandler, method: str) -> None:
+        path = handler.path
+        suffix = path[len("/v1"):] if path.startswith("/v1") else path
+        url = self._target + suffix
+        length = int(handler.headers.get("Content-Length") or 0)
+        body = handler.rfile.read(length) if length else None
+        headers = {k: v for k, v in handler.headers.items() if k.lower() not in _HOP_BY_HOP}
+        headers["Accept-Encoding"] = "identity"  # usage must be readable in transit
+        last_usage: dict | None = None
+        try:
+            # No read timeout: the episode cap (HERMES_SUBPROCESS_TIMEOUT_S) bounds
+            # the agent, and a proxy-side read timeout is exactly the kind of silent
+            # clamp #149 removed.
+            timeout = httpx.Timeout(connect=30.0, read=None, write=60.0, pool=30.0)
+            with httpx.Client(timeout=timeout) as client, client.stream(
+                method, url, content=body, headers=headers
+            ) as upstream:
+                handler.send_response(upstream.status_code)
+                for key, value in upstream.headers.items():
+                    if key.lower() not in _HOP_BY_HOP:
+                        handler.send_header(key, value)
+                handler.send_header("Connection", "close")
+                handler.end_headers()
+                is_sse = "text/event-stream" in upstream.headers.get("content-type", "")
+                pending = b""
+                buffered = bytearray()
+                for chunk in upstream.iter_raw():
+                    handler.wfile.write(chunk)
+                    handler.wfile.flush()
+                    if is_sse:
+                        pending += chunk
+                        *lines, pending = pending.split(b"\n")
+                        for line in lines:
+                            data = line.strip()
+                            if not data.startswith(b"data:"):
+                                continue
+                            data = data[5:].strip()
+                            if not data or data == b"[DONE]":
+                                continue
+                            try:
+                                last_usage = _usage_from(json.loads(data)) or last_usage
+                            except ValueError:
+                                continue
+                    else:
+                        buffered.extend(chunk)
+                if not is_sse and buffered:
+                    try:
+                        last_usage = _usage_from(json.loads(bytes(buffered)))
+                    except ValueError:
+                        last_usage = None
+        except httpx.HTTPError as exc:
+            try:
+                message = json.dumps({"error": {"message": f"usage proxy: upstream error: {exc}"}}).encode()
+                handler.send_response(502)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(message)))
+                handler.end_headers()
+                handler.wfile.write(message)
+            except OSError:
+                pass
+        except OSError:
+            pass  # the agent hung up mid-response; nothing left to relay
+        finally:
+            if method == "POST":
+                self._record(last_usage)
+
+
+_USAGE_PROXY: UsageProxy | None = None
+_USAGE_PROXY_FAILED = False
+
+
+def _usage_proxy() -> UsageProxy | None:
+    """The shared proxy, started on first use; None when disabled or unavailable."""
+    global _USAGE_PROXY, _USAGE_PROXY_FAILED
+    if os.environ.get("BENCHLOCAL_HERMES_USAGE_PROXY", "1") == "0" or _USAGE_PROXY_FAILED:
+        return None
+    if _USAGE_PROXY is None:
+        try:
+            _USAGE_PROXY = UsageProxy()
+        except OSError as exc:
+            _USAGE_PROXY_FAILED = True
+            sys.stderr.write(f"[hermes-sandbox] usage proxy unavailable ({exc}); agent calls go direct\n")
+            return None
+    return _USAGE_PROXY
+
+
 def _verify_start_via_upstream(req: dict) -> dict:
     scenario = req.get("scenario") or {}
     scenario_id = req.get("scenario_id") or scenario.get("id") or "?"
@@ -613,6 +787,18 @@ def _verify_start_via_upstream(req: dict) -> dict:
         return _endpoint_preflight_response(scenario_id, reach)
 
     upstream_request = _translate_request(req)
+    proxy = _usage_proxy()
+    if proxy is not None:
+        model = upstream_request["model"]
+        model["inferenceBaseUrl"] = proxy.begin(model["inferenceBaseUrl"])
+    result = _run_upstream_scenario(scenario_id, upstream_request)
+    if proxy is not None:
+        # Attached on every outcome: a timed-out or failed episode still spent tokens.
+        result["usage"] = proxy.end()
+    return result
+
+
+def _run_upstream_scenario(scenario_id: str, upstream_request: dict) -> dict:
     started = time.monotonic()
     try:
         resp = httpx.post(

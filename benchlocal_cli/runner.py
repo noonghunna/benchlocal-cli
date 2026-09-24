@@ -579,6 +579,27 @@ def _usage_counts(raw_response: dict | None) -> dict[str, int | None]:
     }
 
 
+def _agent_usage_counts(payload: dict | None) -> dict[str, int | None] | None:
+    """club-3090#1396: the four #147 counts for an agent that calls the model from
+    inside its sandbox (hermesagent-20), read from the `usage` tally the sandbox's
+    pass-through proxy attaches to its verdict. None when the sandbox sent none —
+    an image built before the proxy, or a proxy that saw no usage block — so the
+    row stays "missing" instead of reading as zero."""
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict) or not usage.get("requests_with_usage"):
+        return None
+
+    def _int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    return {
+        "tokens_completion": _int(usage.get("completion_tokens")),
+        "tokens_prompt": _int(usage.get("prompt_tokens")),
+        "tokens_total": _int(usage.get("total_tokens")),
+        "tokens_reasoning": _int(usage.get("reasoning_tokens")) or None,
+    }
+
+
 def _add_usage(total: dict[str, int | None], raw_response: dict | None) -> None:
     """Accumulate one turn's counts into a multi-turn total (None + n = n)."""
     for key, value in _usage_counts(raw_response).items():
@@ -812,9 +833,10 @@ def _pack_tokens(runs: list) -> dict | None:
     counts (`verifier_not_implemented` excluded), so it lines up with
     `passed / total`; `retries` sums the nested inline-retry attempts, which
     cost tokens too but are not attempt 1. `counted` / `missing` say how many
-    scored rows carried a count — a pack whose agent calls the model from
-    inside its container (hermesagent-20) reports none, and that gap is
-    reported rather than silently read as zero. `prompt`, `total_tokens` and
+    scored rows carried a count. A pack whose agent calls the model from
+    inside its container (hermesagent-20) gets its counts from the sandbox's
+    usage proxy (club-3090#1396); a sandbox image built before that reports
+    none, and the gap is reported rather than silently read as zero. `prompt`, `total_tokens` and
     `reasoning` (tier 2) are present only when at least one row has them.
     Accepts ScenarioRun objects or their saved-JSON dicts. None when the
     pack has no counted rows.
@@ -3007,7 +3029,9 @@ class Runner:
                     pass_rate=start_payload.get("pass_rate"),
                     passed_count=start_payload.get("passed_count"),
                     total_count=start_payload.get("total_count"),
+                    **(agent_counts := _agent_usage_counts(start_payload) or {}),
                 )
+                self.tokens_used += int(agent_counts.get("tokens_total") or 0)  # #1396: the spend guard sees the agent too
                 result = self._inject_sandbox_log_file(result, scenario.get("pack_id"))
                 return self._scenario_run(
                     scenario,
@@ -3176,6 +3200,16 @@ class Runner:
             } or None
         if truncated_turn is not None:
             verifier_trace = {**(verifier_trace or {}), "truncated_turn": truncated_turn}
+        # club-3090#1396: an agent that calls the model from inside its sandbox
+        # never shows the runner a response; fold the sandbox proxy's tally in
+        # exactly as a runner-owned turn would be, spend guard included.
+        agent_counts = _agent_usage_counts(final_payload)
+        if agent_counts:
+            for key in ("tokens_prompt", "tokens_total", "tokens_reasoning"):
+                if agent_counts.get(key) is not None:
+                    usage_sum[key] = (usage_sum.get(key) or 0) + agent_counts[key]
+            tokens_total += int(agent_counts.get("tokens_completion") or 0)
+            self.tokens_used += int(agent_counts.get("tokens_total") or 0)
         result = replace(
             result,
             latency_seconds=latency,
