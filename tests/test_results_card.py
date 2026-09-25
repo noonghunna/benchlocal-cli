@@ -147,6 +147,13 @@ def test_results_card_repeat_three_has_stable_headline_shape_and_json_fields():
 
     assert headline == """## Quality bench, thinking off, benchlocal-cli v0.9.9, repeat = 3
 
+Setting | Value
+---|---
+Model | mock-model
+Thinking | off
+Sampling | pack defaults
+Max tokens | pack defaults per answer
+
 Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status
 ---|---:|---:|---:|---:|---:|---:|---
 alpha-1 (v1.0.0) | 2 / 3 | 67% | 23.6% | 0.35 | 2.00s | 2.90s | ok
@@ -273,3 +280,49 @@ def test_results_card_without_usage_data_keeps_the_old_columns():
     rendered = _results_card_markdown(_result())
     assert "Tokens out" not in rendered
     assert "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status" in rendered
+
+
+def test_results_card_meta_table_shows_rig_sampling_effort_and_budgets():
+    result = _usage_result()
+    result.thinking_mode = "force-on"
+    result.reasoning_effort = "low"
+    result.thinking_max_tokens = 65536
+    result.sampling_overrides = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "max_tokens": 4096}
+    result.run_meta = {"engine": "sglang v0.5.20", "tp": "2", "pp": "1", "gpus": "2x NVIDIA GeForce RTX 3090",
+                       "quant": "auto-round", "kv": "fp8_e4m3", "spec": "DFLASH n=8", "max_ctx": "262144"}
+    headline = _results_card_markdown(result).split("\n\nPack | ", 1)[0]
+
+    assert headline.endswith("""Setting | Value
+---|---
+Model | mock-model
+Engine | sglang v0.5.20
+Topology | TP=2 · PP=1 · 2x NVIDIA GeForce RTX 3090
+Weights · KV | auto-round · KV fp8_e4m3
+Speculative decoding | DFLASH n=8
+Rig (other) | max_ctx=262144
+Thinking | on · reasoning effort: low
+Sampling | temperature=0.7, top_p=0.8, top_k=20, min_p=0.0 (overrides)
+Max tokens | 4,096 per answer · 65,536 thinking""")
+
+
+def test_results_card_meta_table_names_an_unsent_effort_and_server_sampling():
+    result = _usage_result()
+    result.thinking_mode = "force-on"
+    result.thinking_max_tokens = 16384
+    result.sampling_source = "server"
+    result.server_defaults = {"temperature": 1.0, "top_p": 0.95}
+    result.server_defaults_source = "GET /props"
+    rendered = _results_card_markdown(result)
+
+    assert "Thinking | on · reasoning effort: not sent (model default)" in rendered
+    assert "Sampling | server defaults — temperature=1.0, top_p=0.95 (GET /props)" in rendered
+    assert "Max tokens | pack defaults per answer · 16,384 thinking" in rendered
+    assert "Topology" not in rendered  # no run_meta, no invented rig rows
+
+
+def test_thinking_max_tokens_round_trips_and_is_dropped_when_thinking_is_off():
+    result = _usage_result()
+    result.thinking_max_tokens = 32768
+    assert result.to_dict()["thinking_max_tokens"] == 32768
+    result.thinking_max_tokens = None
+    assert "thinking_max_tokens" not in result.to_dict()

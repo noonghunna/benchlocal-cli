@@ -1120,24 +1120,57 @@ def _run_meta_str(meta: dict) -> str:
     return " · ".join(f"{key}={value}" for key, value in meta.items())
 
 
-def _card_context_lines(result: RunResult) -> list[str]:
-    """club-3090#1396: the rig and the sampling in effect, so cards from
-    different rigs compare cleanly. Empty for a canonical run with no rig facts,
-    which keeps that card unchanged."""
-    lines: list[str] = []
-    if result.run_meta:
-        lines.append(f"Rig: {_run_meta_str(result.run_meta)}")
+def _card_meta_lines(result: RunResult) -> list[str]:
+    """The run's setup as a `Setting | Value` table above the pack table (club-3090#1396 follow-up),
+    so cards from different rigs, samplers and budgets compare cleanly. Rig rows come from
+    `run_meta` (club-3090's quality-test.sh reads them off the engine's own boot log) and appear
+    only when present; model, thinking, sampling and max tokens are always known."""
+    meta = dict(result.run_meta or {})
+    rows: list[tuple[str, str]] = [("Model", result.model or "-")]
+    if meta.get("engine"):
+        rows.append(("Engine", str(meta.pop("engine"))))
+    topology = [f"TP={meta.pop('tp')}" if meta.get("tp") else "", f"PP={meta.pop('pp')}" if meta.get("pp") else "",
+                str(meta.pop("gpus")) if meta.get("gpus") else ""]
+    if any(topology):
+        rows.append(("Topology", " · ".join(part for part in topology if part)))
+    weights = [str(meta.pop("quant")) if meta.get("quant") else "", f"KV {meta.pop('kv')}" if meta.get("kv") else ""]
+    if any(weights):
+        rows.append(("Weights · KV", " · ".join(part for part in weights if part)))
+    if meta.get("spec"):
+        rows.append(("Speculative decoding", str(meta.pop("spec"))))
+    if meta:
+        rows.append(("Rig (other)", _run_meta_str(meta)))
+
+    thinking = _thinking_label(result)
+    thinks = result.thinking_mode == "force-on" or (
+        result.thinking_mode != "force-off" and any(pack.thinking_enabled for pack in result.packs)
+    )
+    if thinks:
+        effort = result.reasoning_effort if result.reasoning_effort is not None else "not sent (model default)"
+        thinking += f" · reasoning effort: {effort}"
+    rows.append(("Thinking", thinking))
+
+    overrides = {k: v for k, v in (result.sampling_overrides or {}).items() if k != "max_tokens"}
     if result.sampling_source == "server":
         if result.server_defaults:
             values = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
             source = f" ({result.server_defaults_source})" if result.server_defaults_source else ""
-            lines.append(f"Sampling: server defaults — {values}{source}")
+            sampling = f"server defaults — {values}{source}"
         else:
-            lines.append("Sampling: server defaults — not exposed by the endpoint")
-    elif result.sampling_overrides:
-        values = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
-        lines.append(f"Sampling: {values} (overrides)")
-    return lines
+            sampling = "server defaults — not exposed by the endpoint"
+    elif overrides:
+        sampling = ", ".join(f"{k}={v}" for k, v in overrides.items()) + " (overrides)"
+    else:
+        sampling = "pack defaults"
+    rows.append(("Sampling", sampling))
+
+    answer = (result.sampling_overrides or {}).get("max_tokens")
+    budget = f"{int(answer):,} per answer" if isinstance(answer, int) else "pack defaults per answer"
+    if thinks and isinstance(result.thinking_max_tokens, int):
+        budget += f" · {result.thinking_max_tokens:,} thinking"
+    rows.append(("Max tokens", budget))
+
+    return ["Setting | Value", "---|---", *(f"{name} | {value}" for name, value in rows)]
 
 
 def _format_token_count(count: int) -> str:
@@ -1176,7 +1209,7 @@ def _card_shows_usage(result: RunResult) -> bool:
 def _results_card_markdown(result: RunResult) -> str:
     """Render the stable, paste-ready Results Card v2 shape (#114)."""
     version = result.runner_version.removeprefix("v")
-    context = _card_context_lines(result)
+    context = _card_meta_lines(result)
     usage = _card_shows_usage(result)
     lines = [
         f"## Quality bench, thinking {_thinking_label(result)}, "

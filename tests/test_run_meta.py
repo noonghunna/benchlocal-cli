@@ -86,8 +86,8 @@ def test_supplied_defaults_and_rig_reach_json_header_and_card(tmp_path, capsys, 
     assert "\nrig: tp=2 · gpus=2x RTX 3090\n" in out
 
     card = report.read_text()
-    assert "Rig: tp=2 · gpus=2x RTX 3090" in card
-    assert "Sampling: server defaults — temperature=1.0, top_p=0.95, top_k=20 (supplied: vLLM --override-generation-config)" in card
+    assert "Topology | TP=2 · 2x RTX 3090" in card
+    assert "Sampling | server defaults — temperature=1.0, top_p=0.95, top_k=20 (supplied: vLLM --override-generation-config)" in card
 
 
 def test_engine_reported_props_win_over_supplied_defaults(tmp_path, monkeypatch):

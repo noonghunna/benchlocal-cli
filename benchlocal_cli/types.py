@@ -269,6 +269,9 @@ class RunResult:
     # (--run-meta KEY=VALUE — topology, engine, quant, power cap …) so reports
     # from different rigs compare cleanly. Recorded verbatim; None when absent.
     run_meta: dict | None = None
+    # The thinking-mode completion budget (--thinking-max-tokens) the run applied to thinking-enabled
+    # packs; None when thinking was forced off. Recorded so the Results Card can show it.
+    thinking_max_tokens: int | None = None
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
@@ -331,6 +334,8 @@ class RunResult:
             out["server_defaults_source"] = self.server_defaults_source
         if self.run_meta is not None:
             out["run_meta"] = self.run_meta
+        if self.thinking_max_tokens is not None:
+            out["thinking_max_tokens"] = self.thinking_max_tokens
         if self.selection is not None:
             out["selection"] = self.selection
         if self.token_budget is not None:
