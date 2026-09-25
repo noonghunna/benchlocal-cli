@@ -77,30 +77,44 @@ def _guess_provider(base_url: str, requested_provider: str) -> str:
     return "custom"
 
 
+# Sampler keys the OpenAI SDK's `chat.completions.create()` accepts as keyword arguments.
+OPENAI_NATIVE_SAMPLER_KEYS = ("temperature", "top_p", "max_tokens")
+# Engine-side sampler keys (vLLM / SGLang / llama.cpp read them from the request body) that the SDK
+# does NOT accept as keyword arguments — they must travel in `extra_body`.
+EXTRA_BODY_SAMPLER_KEYS = ("top_k", "min_p", "repetition_penalty")
+
+
 def _request_overrides(
     generation: Dict[str, Any], extra_body: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    overrides: Dict[str, Any] = {}
+    """Build Hermes' request_overrides from the harness generation config.
 
-    # The pinned Hermes runtime forwards request_overrides directly into its
-    # OpenAI-compatible completions client. That client rejects
-    # request_timeout_seconds as an unexpected kwarg, so keep timeout
-    # enforcement at the verifier process level instead of passing it through
-    # as a model override.
-    for key in (
-        "temperature",
-        "top_p",
-        "top_k",
-        "min_p",
-        "repetition_penalty",
-        "max_tokens",
-    ):
+    The pinned Hermes runtime merges request_overrides straight into the kwargs of its OpenAI
+    client's `chat.completions.create()`. openai 2.x rejects any keyword it does not know with a
+    client-side `TypeError: ... unexpected keyword argument 'top_k'`, raised BEFORE any HTTP request.
+    Hermes then gives up and returns `failed` without a single model call, and the scenario scored
+    0 with no error visible (club-3090#1269: 0/20 at ~2.5 s, `usage.requests == 0` on every
+    scenario, whenever a leg set top_k / min_p explicitly). So only the SDK-native keys go
+    top-level; top_k / min_p / repetition_penalty go in `extra_body`, where the SDK forwards them
+    verbatim. The generation config wins over a same-named key in the model's extraBody.
+
+    request_timeout_seconds is rejected the same way, so timeout enforcement stays at the verifier
+    process level instead of being passed through as a model override.
+    """
+    overrides: Dict[str, Any] = {}
+    body: Dict[str, Any] = dict(extra_body or {})
+
+    for key in OPENAI_NATIVE_SAMPLER_KEYS:
         value = generation.get(key)
         if value is not None:
             overrides[key] = value
+    for key in EXTRA_BODY_SAMPLER_KEYS:
+        value = generation.get(key)
+        if value is not None:
+            body[key] = value
 
-    if extra_body:
-        overrides["extra_body"] = dict(extra_body)
+    if body:
+        overrides["extra_body"] = body
 
     return overrides
 
@@ -284,8 +298,15 @@ def main() -> int:
 
         result = agent.run_conversation(str(request.get("prompt") or ""))
 
+        # Hermes reports many failures as a NORMAL return — {"failed": True, "error": "..."} — rather
+        # than raising (a client-side TypeError, retries exhausted, context overflow, ...). Dropping
+        # those two keys made such an episode indistinguishable from a model that simply answered
+        # nothing (club-3090#1269). Surface them: ok=False routes the text to core.mjs' agent_error line.
+        hermes_failed = bool(result.get("failed"))
         _write_json(result_path, {
-            "ok": True,
+            "ok": not hermes_failed,
+            "error": (str(result.get("error") or "hermes returned failed=True without an error") if hermes_failed else None),
+            "hermesFailed": hermes_failed,
             "sessionId": session_id,
             "finalResponse": result.get("final_response"),
             "completed": bool(result.get("completed")),
