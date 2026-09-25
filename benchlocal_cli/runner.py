@@ -1256,6 +1256,9 @@ class Runner:
                 server_defaults=self._server_defaults if self.sampling_from_server else None,
                 server_defaults_source=self._server_defaults_source if self.sampling_from_server else None,
                 run_meta=self.run_meta,
+                thinking_max_tokens=(
+                    None if self.thinking_mode == "force-off" else self.thinking_max_tokens
+                ),
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),

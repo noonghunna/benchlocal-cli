@@ -318,6 +318,10 @@ def _build_result(
         server_defaults=config.get("server_defaults"),
         server_defaults_source=config.get("server_defaults_source"),
         run_meta=config.get("run_meta"),
+        thinking_max_tokens=(
+            None if str(config.get("thinking_mode") or "") == "force-off"
+            else config.get("thinking_max_tokens")
+        ),
         token_budget=config.get("token_budget"),
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
@@ -402,6 +406,7 @@ def _infer_config(data: dict, source: Path) -> dict:
         "server_defaults": data.get("server_defaults"),
         "server_defaults_source": data.get("server_defaults_source"),
         "run_meta": data.get("run_meta"),
+        "thinking_max_tokens": data.get("thinking_max_tokens"),
         "token_budget": data.get("token_budget"),
         "budget_from_timeout": (data.get("token_budget") or {}).get("mode") == "derived",
         "budget_headroom": (data.get("token_budget") or {}).get("headroom"),

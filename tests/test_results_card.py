@@ -147,6 +147,13 @@ def test_results_card_repeat_three_has_stable_headline_shape_and_json_fields():
 
     assert headline == """## Quality bench, thinking off, benchlocal-cli v0.9.9, repeat = 3
 
+Setting | Value
+---|---
+Model | mock-model
+Thinking | off
+Sampling | pack defaults
+Max tokens | pack defaults per answer
+
 Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status
 ---|---:|---:|---:|---:|---:|---:|---
 alpha-1 (v1.0.0) | 2 / 3 | 67% | 23.6% | 0.35 | 2.00s | 2.90s | ok
@@ -226,3 +233,96 @@ def test_cli_rejects_ambiguous_report_output_combinations(tmp_path, capsys):
 
     assert main(["run", "--report", "md", "--output", "json"]) == 1
     assert "--output json with --report requires --report-out" in capsys.readouterr().err
+
+
+def _usage_result() -> RunResult:
+    """A v0.10.0+ result: per-pack token rollups (#147) and wall clock (#146)."""
+    result = _result(repeat=1)
+    alpha, beta = result.packs
+    alpha.tokens = {"completion": 41_150, "retries": 50, "counted": 3, "total": 3, "reasoning": 30_000}
+    alpha.duration_s = 750.0
+    beta.tokens = {"completion": 900, "retries": 0, "counted": 2, "total": 3}
+    beta.duration_s = 42.4
+    result.tokens = {"completion": 42_050, "retries": 50, "counted": 5, "total": 6}
+    result.duration_s = 4000.0
+    return result
+
+
+def test_results_card_adds_tokens_and_time_columns_when_the_run_carries_them():
+    rendered = _results_card_markdown(_usage_result())
+    headline = rendered.split("\n\n<details>", 1)[0]
+
+    assert "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Tokens out | Time | Status" in headline
+    assert "---|---:|---:|---:|---:|---:|---:|---:|---:|---" in headline
+    # completion + retries, compact; wall clock via the #146 formatter
+    assert "alpha-1 (v1.0.0) | 2 / 3 | 67% | — | — | 2.00s | 2.90s | 41.2k | 12m30s | ok" in headline
+    # a partial count says so instead of passing for a small number
+    assert "beta-1 (v1.0.0) | 3 / 3 | 100% | — | — | 2.00s | 2.00s | 900 (2/3) | 42.4s | ok" in headline
+    # TOTAL: run rollup + the run's own wall clock (overhead included), not the pack sum
+    assert "TOTAL | 5 / 6 | 83% |  |  |  |  | 42.1k (5/6) | 1h06m40s |" in headline
+    assert "Tokens out = generated tokens" in headline
+
+
+def test_results_card_usage_cells_degrade_to_dashes():
+    result = _usage_result()
+    alpha, beta = result.packs
+    alpha.tokens = {"completion": 0, "retries": 0, "counted": 0, "total": 3}  # nothing counted
+    beta.duration_s = None
+    result.duration_s = None
+    rendered = _results_card_markdown(result)
+
+    assert "| 2.00s | 2.90s | - | 12m30s | ok" in rendered
+    assert "| 2.00s | 2.00s | 900 (2/3) | - | ok" in rendered
+    assert "TOTAL | 5 / 6 | 83% |  |  |  |  | 42.1k (5/6) | 12m30s |" in rendered  # falls back to the pack sum
+
+
+def test_results_card_without_usage_data_keeps_the_old_columns():
+    rendered = _results_card_markdown(_result())
+    assert "Tokens out" not in rendered
+    assert "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status" in rendered
+
+
+def test_results_card_meta_table_shows_rig_sampling_effort_and_budgets():
+    result = _usage_result()
+    result.thinking_mode = "force-on"
+    result.reasoning_effort = "low"
+    result.thinking_max_tokens = 65536
+    result.sampling_overrides = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "max_tokens": 4096}
+    result.run_meta = {"engine": "sglang v0.5.20", "tp": "2", "pp": "1", "gpus": "2x NVIDIA GeForce RTX 3090",
+                       "quant": "auto-round", "kv": "fp8_e4m3", "spec": "DFLASH n=8", "max_ctx": "262144"}
+    headline = _results_card_markdown(result).split("\n\nPack | ", 1)[0]
+
+    assert headline.endswith("""Setting | Value
+---|---
+Model | mock-model
+Engine | sglang v0.5.20
+Topology | TP=2 · PP=1 · 2x NVIDIA GeForce RTX 3090
+Weights · KV | auto-round · KV fp8_e4m3
+Speculative decoding | DFLASH n=8
+Rig (other) | max_ctx=262144
+Thinking | on · reasoning effort: low
+Sampling | temperature=0.7, top_p=0.8, top_k=20, min_p=0.0 (overrides)
+Max tokens | 4,096 per answer · 65,536 thinking""")
+
+
+def test_results_card_meta_table_names_an_unsent_effort_and_server_sampling():
+    result = _usage_result()
+    result.thinking_mode = "force-on"
+    result.thinking_max_tokens = 16384
+    result.sampling_source = "server"
+    result.server_defaults = {"temperature": 1.0, "top_p": 0.95}
+    result.server_defaults_source = "GET /props"
+    rendered = _results_card_markdown(result)
+
+    assert "Thinking | on · reasoning effort: not sent (model default)" in rendered
+    assert "Sampling | server defaults — temperature=1.0, top_p=0.95 (GET /props)" in rendered
+    assert "Max tokens | pack defaults per answer · 16,384 thinking" in rendered
+    assert "Topology" not in rendered  # no run_meta, no invented rig rows
+
+
+def test_thinking_max_tokens_round_trips_and_is_dropped_when_thinking_is_off():
+    result = _usage_result()
+    result.thinking_max_tokens = 32768
+    assert result.to_dict()["thinking_max_tokens"] == 32768
+    result.thinking_max_tokens = None
+    assert "thinking_max_tokens" not in result.to_dict()
