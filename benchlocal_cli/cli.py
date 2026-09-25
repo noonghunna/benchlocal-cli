@@ -1140,17 +1140,53 @@ def _card_context_lines(result: RunResult) -> list[str]:
     return lines
 
 
+def _format_token_count(count: int) -> str:
+    """Compact token count for a card cell: `734`, `41.2k`, `1.23M`."""
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}k"
+    return f"{count / 1_000_000:.2f}M"
+
+
+def _card_tokens_cell(summary: object) -> str:
+    """Generated tokens a pack (or the run) spent: completion, which includes reasoning where the
+    endpoint counts it, plus the tokens of inline retries. `-` when nothing was counted; a partial
+    count says how many scored rows carried one, so a gap is never read as a small number."""
+    if not isinstance(summary, dict) or not int(summary.get("counted") or 0):
+        return "-"
+    cell = _format_token_count(int(summary.get("completion") or 0) + int(summary.get("retries") or 0))
+    counted = int(summary.get("counted") or 0)
+    total = int(summary.get("total") or 0)
+    if counted < total:
+        cell += f" ({counted}/{total})"
+    return cell
+
+
+def _card_shows_usage(result: RunResult) -> bool:
+    """#146/#147 data present? Results saved before v0.10.0 carry neither, and their card stays
+    byte-identical to what it was."""
+    return any(
+        isinstance(pack.tokens, dict) or pack.duration_s is not None
+        for pack in result.packs
+        if not pack.skipped
+    )
+
+
 def _results_card_markdown(result: RunResult) -> str:
     """Render the stable, paste-ready Results Card v2 shape (#114)."""
     version = result.runner_version.removeprefix("v")
     context = _card_context_lines(result)
+    usage = _card_shows_usage(result)
     lines = [
         f"## Quality bench, thinking {_thinking_label(result)}, "
         f"benchlocal-cli v{version}, repeat = {result.repeat}",
         "",
         *([*context, ""] if context else []),
-        "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status",
-        "---|---:|---:|---:|---:|---:|---:|---",
+        "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency"
+        + (" | Tokens out | Time" if usage else "")
+        + " | Status",
+        "---|---:|---:|---:|---:|---:|---:" + ("|---:|---:" if usage else "") + "|---",
     ]
     for pack in result.packs:
         if pack.skipped:
@@ -1174,22 +1210,46 @@ def _results_card_markdown(result: RunResult) -> str:
         cv = "—" if result.repeat == 1 or variance.get("cv") is None else f"{float(variance['cv']):.2f}"
         p50 = "-" if pack.latency["p50"] is None else f"{pack.latency['p50']:.2f}s"
         p95 = "-" if pack.latency["p95"] is None else f"{pack.latency['p95']:.2f}s"
+        usage_cells = ""
+        if usage:
+            spent = "-" if pack.skipped else _card_tokens_cell(pack.tokens)
+            wall = "-" if pack.duration_s is None else _format_duration(float(pack.duration_s))
+            usage_cells = f" | {spent} | {wall}"
         lines.append(
             f"{pack.pack_id} (v{pack.version}) | {pack.passed} / {pack.total} | "
-            f"{score} | {std} | {cv} | {p50} | {p95} | {status}"
+            f"{score} | {std} | {cv} | {p50} | {p95}{usage_cells} | {status}"
         )
 
     total = int(result.totals.get("total") or 0)
     passed = int(result.totals.get("passed") or 0)
     equivalent_score_150 = int((passed * 150 / total) + 0.5) if total else 0
+    total_row = f"TOTAL | {passed} / {total} | {float(result.totals.get('score') or 0.0):.0%} |  |  |  |  |"
+    if usage:
+        measured = [float(pack.duration_s) for pack in result.packs if pack.duration_s is not None]
+        run_wall = (
+            float(result.duration_s) if result.duration_s is not None
+            else sum(measured) if measured else None
+        )
+        total_row += (
+            f" {_card_tokens_cell(result.tokens)} | "
+            f"{'-' if run_wall is None else _format_duration(run_wall)} |"
+        )
     lines.extend(
         [
             "",
-            f"TOTAL | {passed} / {total} | {float(result.totals.get('score') or 0.0):.0%} |  |  |  |  |",
+            total_row,
             "",
             f"Equivalent to: {equivalent_score_150}/150",
         ]
     )
+    if usage:
+        lines.extend(
+            [
+                "",
+                "Tokens out = generated tokens (completion, incl. reasoning and retries); "
+                "(n/m) = rows that reported a count. Time = pack wall clock; TOTAL = the whole run.",
+            ]
+        )
 
     legacy_lines = _markdown(result).splitlines()
     raw_lines = legacy_lines[:2]

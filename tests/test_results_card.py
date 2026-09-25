@@ -226,3 +226,50 @@ def test_cli_rejects_ambiguous_report_output_combinations(tmp_path, capsys):
 
     assert main(["run", "--report", "md", "--output", "json"]) == 1
     assert "--output json with --report requires --report-out" in capsys.readouterr().err
+
+
+def _usage_result() -> RunResult:
+    """A v0.10.0+ result: per-pack token rollups (#147) and wall clock (#146)."""
+    result = _result(repeat=1)
+    alpha, beta = result.packs
+    alpha.tokens = {"completion": 41_150, "retries": 50, "counted": 3, "total": 3, "reasoning": 30_000}
+    alpha.duration_s = 750.0
+    beta.tokens = {"completion": 900, "retries": 0, "counted": 2, "total": 3}
+    beta.duration_s = 42.4
+    result.tokens = {"completion": 42_050, "retries": 50, "counted": 5, "total": 6}
+    result.duration_s = 4000.0
+    return result
+
+
+def test_results_card_adds_tokens_and_time_columns_when_the_run_carries_them():
+    rendered = _results_card_markdown(_usage_result())
+    headline = rendered.split("\n\n<details>", 1)[0]
+
+    assert "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Tokens out | Time | Status" in headline
+    assert "---|---:|---:|---:|---:|---:|---:|---:|---:|---" in headline
+    # completion + retries, compact; wall clock via the #146 formatter
+    assert "alpha-1 (v1.0.0) | 2 / 3 | 67% | — | — | 2.00s | 2.90s | 41.2k | 12m30s | ok" in headline
+    # a partial count says so instead of passing for a small number
+    assert "beta-1 (v1.0.0) | 3 / 3 | 100% | — | — | 2.00s | 2.00s | 900 (2/3) | 42.4s | ok" in headline
+    # TOTAL: run rollup + the run's own wall clock (overhead included), not the pack sum
+    assert "TOTAL | 5 / 6 | 83% |  |  |  |  | 42.1k (5/6) | 1h06m40s |" in headline
+    assert "Tokens out = generated tokens" in headline
+
+
+def test_results_card_usage_cells_degrade_to_dashes():
+    result = _usage_result()
+    alpha, beta = result.packs
+    alpha.tokens = {"completion": 0, "retries": 0, "counted": 0, "total": 3}  # nothing counted
+    beta.duration_s = None
+    result.duration_s = None
+    rendered = _results_card_markdown(result)
+
+    assert "| 2.00s | 2.90s | - | 12m30s | ok" in rendered
+    assert "| 2.00s | 2.00s | 900 (2/3) | - | ok" in rendered
+    assert "TOTAL | 5 / 6 | 83% |  |  |  |  | 42.1k (5/6) | 12m30s |" in rendered  # falls back to the pack sum
+
+
+def test_results_card_without_usage_data_keeps_the_old_columns():
+    rendered = _results_card_markdown(_result())
+    assert "Tokens out" not in rendered
+    assert "Pack | Pass / Total | Score | Std | CV | p50 latency | p95 latency | Status" in rendered
