@@ -587,7 +587,8 @@ class SandboxClient:
         # / teardown-capture race). Only when the caller supplies a host dir AND
         # this pack declares a run_output_dir. NOTE: deliberately NOT `:ro`.
         if run_dir and self.config.run_output_dir:
-            cmd.extend(["-v", f"{run_dir}:{self.config.run_output_dir}"])
+            # #168: Docker reads a relative source as a named volume and exits 125.
+            cmd.extend(["-v", f"{os.path.abspath(run_dir)}:{self.config.run_output_dir}"])
             for key, value in self.config.run_mount_env:
                 cmd.extend(["-e", f"{key}={value}"])
         if needs_host_gateway:
@@ -665,8 +666,15 @@ class SandboxClient:
         cmd = self._build_docker_run_argv(name, run_dir)
         try:
             proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        except FileNotFoundError as exc:
             raise RuntimeError(f"failed to start sandbox {self.config.pack_id}: {exc}") from exc
+        except subprocess.CalledProcessError as exc:
+            # #168: surface Docker's own reason; the exit status alone reads like a missing image.
+            detail = (exc.stderr or "").strip()
+            raise RuntimeError(
+                f"failed to start sandbox {self.config.pack_id}: {exc}"
+                + (f" — docker: {detail}" if detail else "")
+            ) from exc
         self._container_id = proc.stdout.strip()
         deadline = time.monotonic() + ready_timeout_s
         last_error = ""

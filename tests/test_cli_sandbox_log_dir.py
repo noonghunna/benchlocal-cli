@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 
 from benchlocal_cli.cli import _resolve_sandbox_log_dir
@@ -73,4 +74,32 @@ def test_default_sandbox_log_dir_without_save_json_uses_run_directory():
     )
 
     assert resolved is not None
-    assert re.fullmatch(r"benchlocal-runs/\d{8}-\d{6}Z/sandbox-logs", resolved)
+    assert os.path.isabs(resolved)
+    assert re.search(r"/benchlocal-runs/\d{8}-\d{6}Z/sandbox-logs$", resolved)
+
+
+def test_relative_save_json_yields_absolute_log_dir(tmp_path, monkeypatch):
+    """#168: the log dir reaches `docker run -v`, which refuses a relative source."""
+    monkeypatch.chdir(tmp_path)
+
+    resolved = _resolve_sandbox_log_dir(
+        requested=None,
+        save_json="results/aider-polyglot.json",
+        pack_ids=["aider-polyglot-30"],
+        sandboxed_enabled=True,
+    )
+
+    assert resolved == os.path.join(os.getcwd(), "results", "sandbox-logs")
+
+
+def test_relative_explicit_log_dir_is_made_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    resolved = _resolve_sandbox_log_dir(
+        requested="logs/sandbox",
+        save_json=None,
+        pack_ids=["bugfind-15"],
+        sandboxed_enabled=True,
+    )
+
+    assert resolved == os.path.join(os.getcwd(), "logs", "sandbox")

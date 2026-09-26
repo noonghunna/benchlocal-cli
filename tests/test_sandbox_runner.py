@@ -1468,6 +1468,41 @@ def test_aider_docker_argv_no_run_mount_without_run_dir():
     assert "BENCHLOCAL_AIDER_KEEP_JOBDIRS=1" not in argv
 
 
+def test_run_mount_is_absolute_for_relative_run_dir(tmp_path, monkeypatch):
+    """#168: a relative run-dir reaches `docker run -v` absolute. Docker reads a
+    relative source as a named volume and refuses it (exit 125)."""
+    import os
+
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    monkeypatch.chdir(tmp_path)
+    client = SandboxClient(config_for_pack("aider-polyglot-30"))
+    argv = client._build_docker_run_argv("test-name", "results/sandbox-logs/aider-run")
+
+    expected = os.path.join(os.getcwd(), "results", "sandbox-logs", "aider-run")
+    assert f"{expected}:/tmp/aider-polyglot-runs" in argv
+    assert "results/sandbox-logs/aider-run:/tmp/aider-polyglot-runs" not in argv
+
+
+def test_start_failure_surfaces_docker_stderr(monkeypatch):
+    """#168: a failed `docker run` reports Docker's own reason, not only the exit
+    status, which read like a missing image."""
+    from benchlocal_cli import sandbox as sandbox_module
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(
+            125, cmd, output="",
+            stderr="docker: Error response from daemon: create results/x: "
+                   "\"results/x\" includes invalid characters for a local volume name",
+        )
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
+    client = SandboxClient(config_for_pack("bugfind-15"))
+    with pytest.raises(RuntimeError, match="invalid characters for a local volume name"):
+        client.start()
+
+
 def test_non_runmount_pack_ignores_run_dir(tmp_path):
     """A pack without run_output_dir (bugfind) gets no run mount even when a
     host run-dir is supplied."""
