@@ -158,10 +158,26 @@ def _set_progress_state(**updates) -> None:
         _BATCH_PROGRESS_STATE.update(updates)
 
 
+def _find_run_dir(tmp_benchmarks: Path, run_name: str) -> Path | None:
+    """The run dir aider's benchmark.py actually creates under tmp.benchmarks:
+    `<timestamp>--<run_name>`, not `<run_name>` itself (#169). Newest match wins.
+    None until benchmark.py has created it."""
+    if not tmp_benchmarks.is_dir():
+        return None
+    matches = sorted(p for p in tmp_benchmarks.glob(f"*{run_name}*") if p.is_dir())
+    return matches[-1] if matches else None
+
+
 def _resolve_progress() -> dict:
     with _BATCH_PROGRESS_LOCK:
         state = dict(_BATCH_PROGRESS_STATE)
     run_dir_value = state.get("run_dir")
+    # #169: resolve the live dir on every poll, the same way the final result
+    # does. The name aider picks is only known once benchmark.py creates it.
+    if state.get("active") and state.get("tmp_benchmarks") and state.get("run_name"):
+        found = _find_run_dir(Path(str(state["tmp_benchmarks"])), str(state["run_name"]))
+        run_dir_value = str(found) if found is not None else None
+        state["run_dir"] = run_dir_value
     if state.get("active") and run_dir_value:
         run_dir = Path(str(run_dir_value))
         completed = _progress_items_from_run_dir(run_dir)
@@ -688,12 +704,12 @@ def _verify_start(req: dict) -> dict:
         env["AIDER_BENCHMARK_DIR"] = str(job_dir / "tmp.benchmarks")
 
         tmp_benchmarks = job_dir / "tmp.benchmarks"
-        expected_run_dir = tmp_benchmarks / run_name
         _set_progress_state(
             active=True,
             scenario_id=scenario_id,
             run_name=run_name,
-            run_dir=str(expected_run_dir),
+            tmp_benchmarks=str(tmp_benchmarks),
+            run_dir=None,  # resolved per poll by _resolve_progress (#169)
             completed_exercises=[],
             total_expected=CANONICAL_TOTAL,
             started_at=time.time(),
@@ -730,8 +746,7 @@ def _verify_start(req: dict) -> dict:
         # within our staged workspace. (Moved BEFORE timeout-handling so we
         # can recover partial data when subprocess gets killed by SIGKILL.)
         tmp_benchmarks = job_dir / "tmp.benchmarks"
-        run_dirs = sorted(tmp_benchmarks.glob(f"*{run_name}*"))
-        run_dir = run_dirs[-1] if run_dirs else tmp_benchmarks
+        run_dir = _find_run_dir(tmp_benchmarks, run_name) or tmp_benchmarks
 
         per_exercise = _walk_per_exercise_results(run_dir)
         final_progress = _progress_items_from_run_dir(run_dir)
