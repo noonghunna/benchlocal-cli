@@ -115,6 +115,26 @@ The runner sets `OPENAI_BASE_URL` + `OPENAI_API_BASE` inside the
 container to a host-reachable rewrite of your endpoint
 (`localhost` → `host.docker.internal`).
 
+### Thinking on / off
+
+Aider makes its own model calls, so the runner hands the resolved reasoning
+switch to the sandbox, which writes it into aider's model settings and loads
+them with `--read-model-settings`. The switch reaches the endpoint as top-level
+`chat_template_kwargs` (or `reasoning_effort`) on every aider request:
+
+| Flag | Sent on the wire |
+|---|---|
+| (none) | the pack default: `enable_thinking: false` |
+| `--enable-thinking` | `enable_thinking: true` |
+| `--no-thinking` | `enable_thinking: false` |
+
+Endpoints without a reasoning switch get nothing extra.
+
+⚠️ **Runs before the #172/#173 fix are not comparable on this pack.** The
+settings file was written but never loaded, so every mode, including the
+default, ran at the endpoint's own default (thinking ON for Qwen3-style
+templates), whatever the result JSON's `thinking_mode` said.
+
 ## Re-syncing upstream
 
 Both upstream commits are pinned in
