@@ -290,6 +290,50 @@ console.log(JSON.stringify({{
 
 
 
+_LARGE_ANSWER = "<solution>\necho hi\n</solution>\n" + "x" * 300_000  # > Linux's 128 KiB per-argv cap
+
+
+@pytest.mark.parametrize(
+    ("name", "relpath", "call"),
+    [
+        ("cli_server_stdin", "sandboxes/cli/server.py",
+         lambda m: m._verify_with_upstream_runtime("CLI-01", {"raw_scenario": {}}, _LARGE_ANSWER)),
+        ("bugfind_server_stdin", "sandboxes/bugfind/server.py",
+         lambda m: m._verify_with_upstream_runtime("BF-01", _LARGE_ANSWER)),
+    ],
+)
+def test_upstream_verifier_inputs_travel_on_stdin(monkeypatch, name, relpath, call):
+    """#174: the answer goes to node on stdin; argv stays small. As an argument, a
+    >128 KiB answer failed execve with E2BIG and the attempt was scored server_error."""
+    server = _load(name, relpath)
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"], seen["input"] = argv, kwargs.get("input")
+        return subprocess.CompletedProcess(argv, 0, stdout='{"status": "pass"}\n', stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    call(server)
+
+    assert max(len(a) for a in seen["argv"]) < 4096
+    assert json.loads(seen["input"])[1] == _LARGE_ANSWER
+
+
+def test_argv_from_stdin_prelude_round_trips_large_input():
+    """The prelude rebuilds process.argv from stdin, so verifier snippets that read
+    process.argv[1..] see the same values, at any size."""
+    server = _load("cli_server_prelude", "sandboxes/cli/server.py")
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e",
+         server._ARGV_FROM_STDIN + "console.log(JSON.stringify(process.argv.slice(1)));"],
+        input=json.dumps(["CLI-01", _LARGE_ANSWER]),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(proc.stdout) == ["CLI-01", _LARGE_ANSWER]
+
+
 def test_cli_health_reports_static_ok():
     server = _load("cli_server_health", "sandboxes/cli/server.py")
 

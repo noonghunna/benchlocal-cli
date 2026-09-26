@@ -147,6 +147,29 @@ def _fail(scenario_id: str, mode: str, detail: str, trace: dict | None = None) -
     return {"passed": False, "failure_mode": mode, "detail": f"{scenario_id}: {detail}", "trace": trace or {}}
 
 
+# #174: verifier inputs travel on stdin, never argv. Linux caps a single argv
+# string at 128 KiB (MAX_ARG_STRLEN), so a long model answer passed as an argument
+# fails execve with E2BIG before node starts, and the attempt was scored
+# server_error. The prelude rebuilds process.argv from stdin, so the verifier
+# snippets keep reading process.argv[1..] unchanged.
+_ARGV_FROM_STDIN = (
+    "import { readFileSync } from 'node:fs';\n"
+    "process.argv = [process.argv[0], ...JSON.parse(readFileSync(0, 'utf8'))];\n"
+)
+
+
+def _run_node_module(js: str, args: list[str], timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["node", "--input-type=module", "-e", _ARGV_FROM_STDIN + js],
+        input=json.dumps(args),
+        cwd="/app",
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
 def _verify_with_upstream_runtime(scenario_id: str, answer: str) -> dict | None:
     js = """
       import('./verification/core.mjs').then(async (m) => {
@@ -158,14 +181,7 @@ def _verify_with_upstream_runtime(scenario_id: str, answer: str) -> dict | None:
       });
     """
     try:
-        proc = subprocess.run(
-            ["node", "--input-type=module", "-e", js, scenario_id, answer],
-            cwd="/app",
-            text=True,
-            capture_output=True,
-            timeout=20,
-            check=False,
-        )
+        proc = _run_node_module(js, [scenario_id, answer], 20)
     except FileNotFoundError:
         return None
     except subprocess.TimeoutExpired as exc:

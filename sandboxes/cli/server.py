@@ -282,15 +282,31 @@ def _run_workspace_command(command: str, timeout_seconds: int | float = 30) -> d
     }
 
 
-def _run_upstream_js(js: str, args: list[str], timeout: float = 30) -> dict:
-    proc = subprocess.run(
-        ["node", "--input-type=module", "-e", js, *args],
+# #174: verifier inputs travel on stdin, never argv. Linux caps a single argv
+# string at 128 KiB (MAX_ARG_STRLEN), so a long model answer passed as an argument
+# fails execve with E2BIG before node starts, and the attempt was scored
+# server_error. The prelude rebuilds process.argv from stdin, so the verifier
+# snippets keep reading process.argv[1..] unchanged.
+_ARGV_FROM_STDIN = (
+    "import { readFileSync } from 'node:fs';\n"
+    "process.argv = [process.argv[0], ...JSON.parse(readFileSync(0, 'utf8'))];\n"
+)
+
+
+def _run_node_module(js: str, args: list[str], timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["node", "--input-type=module", "-e", _ARGV_FROM_STDIN + js],
+        input=json.dumps(args),
         cwd="/app",
         text=True,
         capture_output=True,
         timeout=timeout,
         check=False,
     )
+
+
+def _run_upstream_js(js: str, args: list[str], timeout: float = 30) -> dict:
+    proc = _run_node_module(js, args, timeout)
     if not proc.stdout.strip():
         return {"status": "error", "summary": f"upstream verifier produced no JSON: {proc.stderr[-2000:]}"}
     return json.loads(proc.stdout.splitlines()[-1])
@@ -558,14 +574,7 @@ def _verify_with_upstream_runtime(scenario_id: str, scenario: dict, answer: str)
         """
         args = [scenario_id, answer]
     try:
-        proc = subprocess.run(
-            ["node", "--input-type=module", "-e", js, *args],
-            cwd="/app",
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        proc = _run_node_module(js, args, 30)
     except FileNotFoundError:
         return None
     except subprocess.TimeoutExpired as exc:
