@@ -333,6 +333,76 @@ def test_aider_progress_endpoint_accumulates_completed_exercises(tmp_path, monke
     assert any(item["passed"] is False for item in out["completed_exercises"])
 
 
+def test_aider_progress_finds_timestamped_run_dir(tmp_path, monkeypatch):
+    """#169: benchmark.py creates `<timestamp>--<run_name>`, not `<run_name>`;
+    live progress must find it the way the final result does."""
+    server = _server()
+    tmp_benchmarks = tmp_path / "tmp.benchmarks"
+    real = tmp_benchmarks / "2026-09-26-04-49-12--benchlocal-aider-polyglot-30-batch-cf874101"
+    _write_aider_result(real / "python" / "exercises" / "practice" / "two-sum", passed=True)
+    _write_aider_result(real / "go" / "exercises" / "practice" / "tree", passed=False)
+    monkeypatch.setattr(server, "_BATCH_PROGRESS_STATE", {
+        "active": True,
+        "run_name": "benchlocal-aider-polyglot-30-batch-cf874101",
+        "tmp_benchmarks": str(tmp_benchmarks),
+        "run_dir": None,
+        "completed_exercises": [],
+        "total_expected": 30,
+    })
+
+    out = server._resolve_progress()
+
+    assert out["completed_count"] == 2
+    assert out["run_dir"] == str(real)
+
+
+def test_aider_progress_is_live_during_verify_start(tmp_path, monkeypatch):
+    """#169, end to end through _verify_start: while benchmark.py is running and has
+    scored one exercise under its timestamped dir, /verify-progress reports it."""
+    server = _server()
+    aider_dir = tmp_path / "aider"
+    aider_dir.mkdir()
+    monkeypatch.setattr(server, "AIDER_DIR", aider_dir)
+    monkeypatch.setattr(server, "_detect_aider_git_contract", lambda: {"ok": True, "head": "abc123"})
+    monkeypatch.setattr(server, "_detect_benchmark_cli_signature", lambda: {"ok": True})
+    monkeypatch.setattr(
+        server,
+        "_exercise_count_status",
+        lambda: {"canonical_count": 30, "resolved_count": 30, "missing": [], "exact_match": True},
+    )
+    monkeypatch.setattr(server, "_stage_exercises_workspace", lambda _job_dir: None)
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+        pid = 12345
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(argv, **kwargs):
+        run_name = argv[2]  # python3 benchmark.py <run_name> ...
+        tmp_benchmarks = Path(kwargs["env"]["AIDER_BENCHMARK_DIR"])
+        exercise = tmp_benchmarks / f"2026-09-26-04-49-12--{run_name}" / "python" / "exercises" / "practice" / "two-sum"
+        _write_aider_result(exercise, passed=True)
+        seen["mid_run"] = server._resolve_progress()
+        return FakeProc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    server._verify_start(
+        {
+            "scenario_id": "aider-polyglot-30-batch",
+            "scenario": {"messages": []},
+            "model_endpoint": "http://host.docker.internal:8010/v1",
+            "model_name": "local-model",
+        }
+    )
+
+    assert seen["mid_run"]["active"] is True
+    assert seen["mid_run"]["completed_count"] == 1
+    assert [item["id"] for item in seen["mid_run"]["completed_exercises"]] == ["python/two-sum"]
+
+
 def test_aider_progress_endpoint_returns_final_state_after_subprocess_exits(monkeypatch):
     server = _server()
     final = [{"id": "python/two-sum", "passed": True, "duration_s": 10}]
