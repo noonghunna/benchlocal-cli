@@ -1488,19 +1488,21 @@ def _resolve_sandbox_log_dir(
     pack_ids: list[str],
     sandboxed_enabled: bool,
 ) -> str | None:
+    # #168: always absolute. The dir reaches `docker run -v` verbatim, and Docker
+    # reads a relative source as a named volume and refuses it (exit 125).
     if requested is not None:
         if requested.strip().lower() == "none":
             return None
-        return requested
+        return os.path.abspath(requested)
 
     if not sandboxed_enabled or not _pack_ids_include_sandboxed(pack_ids):
         return None
 
     if save_json:
-        return str(Path(save_json).parent / "sandbox-logs")
+        return os.path.abspath(Path(save_json).parent / "sandbox-logs")
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
-    return str(Path("benchlocal-runs") / timestamp / "sandbox-logs")
+    return os.path.abspath(Path("benchlocal-runs") / timestamp / "sandbox-logs")
 
 
 def main(argv: list[str] | None = None) -> int:
