@@ -1192,6 +1192,70 @@ def test_runner_passes_effort_control_to_aider_owned_model_calls():
     }
 
 
+_AIDER_META = {
+    "supports_sandboxed_only": True,
+    "default_max_seconds": 60,
+    "default_thinking": "off",
+    "sampling_defaults": {
+        "max_tokens": 256,
+        "temperature": 0.0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    },
+}
+_AIDER_SCENARIO = {
+    "id": "aider-polyglot-30-batch",
+    "pack_id": "aider-polyglot-30",
+    "messages": [{"role": "user", "content": "fix the project"}],
+    "raw_scenario": {"kind": "aider-polyglot-batch"},
+    "verifier": {"type": "_stub", "asserts": []},
+}
+
+
+@pytest.mark.parametrize(
+    ("thinking_enabled", "expected"),
+    [(True, True), (False, False), (None, False)],  # None → pack default_thinking "off"
+)
+def test_runner_sends_aider_enable_thinking_fragment_in_both_modes(thinking_enabled, expected):
+    """#172: under the enable_thinking control the fragment used to be skipped, and
+    the sandbox then wrote enable_thinking:false, so --enable-thinking ran with
+    thinking OFF. Both modes must now cross the sandbox protocol."""
+    runner = Runner(
+        endpoint="http://10.0.0.5:8001",
+        model="qwen",
+        enable_sandboxed_packs=True,
+        thinking_enabled=thinking_enabled,
+    )
+    runner._thinking_control_resolved = True  # keep the enable_thinking default; no /props probe
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["aider-polyglot-30"] = fake
+
+    runner.run_scenario(_AIDER_META, _AIDER_SCENARIO)
+
+    fragment = fake.start_kwargs["thinking_extra_body"]
+    assert fragment["chat_template_kwargs"]["enable_thinking"] is expected
+
+
+def test_runner_omits_empty_aider_fragment_without_reasoning_switch():
+    """Endpoints with no reasoning switch (e.g. cloud APIs) get no fragment, so aider
+    never sends them an empty chat_template_kwargs field."""
+    from benchlocal_cli.runner import THINKING_CONTROL_NONE
+
+    runner = Runner(
+        endpoint="http://10.0.0.5:8001",
+        model="gpt-x",
+        enable_sandboxed_packs=True,
+        thinking_enabled=True,
+    )
+    runner.thinking_control = THINKING_CONTROL_NONE
+    runner._thinking_control_resolved = True
+    fake = FakeHermesEarlyOutSandbox()
+    runner._sandbox_clients["aider-polyglot-30"] = fake
+
+    runner.run_scenario(_AIDER_META, _AIDER_SCENARIO)
+
+    assert "thinking_extra_body" not in fake.start_kwargs
+
+
 def test_runner_propagates_hermes_failure_mode_from_verify_start():
     runner = Runner(endpoint="http://localhost:8001", model="fake", enable_sandboxed_packs=True)
     fake = FakeHermesEarlyOutSandbox(

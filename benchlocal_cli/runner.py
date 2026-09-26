@@ -3020,10 +3020,14 @@ class Runner:
                     "model_api_key": self.api_key or "benchlocal-cli-aider-polyglot",  # forward the real key for cloud endpoints; placeholder for local
                     "sampling": dict(sampling),
                 }
-                if self.thinking_control != THINKING_CONTROL_ENABLE:
-                    start_kwargs["thinking_extra_body"] = _thinking_extra_body(
-                        sampling, self.thinking_control
-                    )
+                # #172/#173: aider makes its own model calls, so the resolved mode
+                # must cross the sandbox protocol for BOTH on and off (it used to be
+                # skipped for enable_thinking, and the sandbox then wrote a disable).
+                # An empty fragment is not sent, so endpoints without a reasoning
+                # switch (e.g. cloud APIs) never see a chat_template_kwargs field.
+                fragment = _thinking_extra_body(sampling, self.thinking_control)
+                if fragment.get("chat_template_kwargs") or THINKING_CONTROL_EFFORT in fragment:
+                    start_kwargs["thinking_extra_body"] = fragment
             if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:
                 start_payload = self._verify_aider_start_with_progress(sandbox_client, scenario, start_kwargs)
             else:

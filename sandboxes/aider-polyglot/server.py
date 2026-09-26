@@ -630,31 +630,31 @@ def _verify_start(req: dict) -> dict:
         # (org/model) are not litellm provider-qualified either.
         aider_model = _qualify_aider_model(model_name)
 
-        # Aider reads .aider.model.settings.yml from cwd (job_dir) and
-        # forwards extra_params to litellm as extra_body. The runner resolves
-        # the model-specific reasoning switch once and sends the complete
-        # fragment here. Older callers keep the historical Qwen-off default.
+        # #172/#173: the runner resolves the model's reasoning switch and sends
+        # the fragment for the requested mode (on or off). It rides aider's
+        # model settings as extra_params.extra_body, which litellm/the OpenAI SDK
+        # merge into the top level of each request. benchmark.py does NOT search
+        # cwd for .aider.model.settings.yml (that is the aider CLI's main()); it
+        # loads settings only via --read-model-settings, so the path is passed
+        # explicitly. No fragment → no settings → the endpoint's own default.
+        # (Before this, the file was written but never loaded, so every mode ran
+        # at the endpoint default.)
+        settings_args: list[str] = []
         thinking_extra_body = req.get("thinking_extra_body")
         if isinstance(thinking_extra_body, dict):
-            (job_dir / ".aider.model.settings.yml").write_text(
+            settings_path = job_dir / ".aider.model.settings.yml"
+            settings_path.write_text(
                 _model_settings_text(aider_model, edit_format, thinking_extra_body),
                 encoding="utf-8",
             )
-        elif os.environ.get("BENCHLOCAL_AIDER_ENABLE_THINKING") != "1":
-            (job_dir / ".aider.model.settings.yml").write_text(
-                _model_settings_text(
-                    aider_model,
-                    edit_format,
-                    {"chat_template_kwargs": {"enable_thinking": False}},
-                ),
-                encoding="utf-8",
-            )
+            settings_args = ["--read-model-settings", str(settings_path.resolve())]
 
         argv = _build_benchmark_args(
             run_name=run_name,
             model=aider_model,
             edit_format=edit_format,
             threads=int(os.environ.get("AIDER_BENCHMARK_THREADS", "1")),
+            extra_args=settings_args,
         )
 
         # Build env: pass model endpoint via BOTH OPENAI_BASE_URL and

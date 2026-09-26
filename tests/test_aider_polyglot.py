@@ -633,3 +633,88 @@ def test_link_or_copy_falls_back_on_cross_device(tmp_path, monkeypatch):
     server._link_or_copy(str(src), str(dst))
     assert dst.read_text() == "exercise content"
     assert src.stat().st_ino != dst.stat().st_ino  # copied, not linked
+
+
+# ============================================================================
+# #172/#173 — thinking fragment reaches benchmark.py via --read-model-settings
+# ============================================================================
+
+
+def _verify_start_capturing_popen(server, tmp_path, monkeypatch, req_extra: dict) -> dict:
+    """Run _verify_start with the real argv builder and a fake Popen that records
+    argv plus whether/what settings file existed at launch (the job dir is removed
+    after the run, so the file must be read while benchmark.py would be running)."""
+    aider_dir = tmp_path / "aider"
+    aider_dir.mkdir()
+    monkeypatch.setattr(server, "AIDER_DIR", aider_dir)
+    monkeypatch.setattr(server, "_detect_aider_git_contract", lambda: {"ok": True, "head": "abc123"})
+    monkeypatch.setattr(server, "_detect_benchmark_cli_signature", lambda: {"ok": True})
+    monkeypatch.setattr(
+        server,
+        "_exercise_count_status",
+        lambda: {"canonical_count": 30, "resolved_count": 30, "missing": [], "exact_match": True},
+    )
+    monkeypatch.setattr(server, "_stage_exercises_workspace", lambda _job_dir: None)
+    monkeypatch.setattr(server, "_walk_per_exercise_results", lambda _run_dir: {})
+
+    captured: dict = {}
+
+    class FakeProc:
+        returncode = 0
+        pid = 12345
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = list(argv)
+        job_dir = Path(kwargs["env"]["AIDER_BENCHMARK_DIR"]).parent
+        default_settings = job_dir / ".aider.model.settings.yml"
+        captured["settings_in_job_dir"] = default_settings.exists()
+        if "--read-model-settings" in argv:
+            path = Path(argv[argv.index("--read-model-settings") + 1])
+            captured["settings_path"] = path
+            captured["settings_text"] = path.read_text(encoding="utf-8")
+        return FakeProc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    server._verify_start(
+        {
+            "scenario_id": "aider-polyglot-30-batch",
+            "scenario": {"messages": []},
+            "model_endpoint": "http://host.docker.internal:8010/v1",
+            "model_name": "local-model",
+            **req_extra,
+        }
+    )
+    return captured
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_verify_start_passes_thinking_settings_to_benchmark(tmp_path, monkeypatch, enabled):
+    """#172/#173: benchmark.py loads model settings ONLY via --read-model-settings
+    (it does not search cwd like the aider CLI's main()), so the file must be passed
+    by absolute path — otherwise neither mode reaches the endpoint."""
+    server = _server()
+    captured = _verify_start_capturing_popen(
+        server,
+        tmp_path,
+        monkeypatch,
+        {"thinking_extra_body": {"chat_template_kwargs": {"enable_thinking": enabled}}},
+    )
+
+    assert captured["settings_path"].is_absolute()
+    assert "- name: openai/local-model" in captured["settings_text"]
+    expected = "true" if enabled else "false"
+    assert f'extra_body: {{"chat_template_kwargs":{{"enable_thinking":{expected}}}}}' in captured["settings_text"]
+
+
+def test_verify_start_without_fragment_uses_endpoint_default(tmp_path, monkeypatch):
+    """No fragment → no settings file and no flag: the endpoint's own default applies.
+    (Previously a disable was written here, which became the live #172 bug the moment
+    the file was actually loaded.)"""
+    server = _server()
+    captured = _verify_start_capturing_popen(server, tmp_path, monkeypatch, {})
+
+    assert "--read-model-settings" not in captured["argv"]
+    assert captured["settings_in_job_dir"] is False
