@@ -18,6 +18,7 @@ Failure modes (preserved from prior packs for back-compat):
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -137,7 +138,9 @@ _BATCH_PROGRESS_STATE: dict = {
 
 
 def _progress_items_from_run_dir(run_dir: Path) -> list[dict]:
-    per_exercise = _walk_per_exercise_results(run_dir) if run_dir.exists() else {}
+    # No exists() pre-check: on Python 3.11 it raises on EDEADLK (#170); the walker
+    # already returns {} for a missing dir.
+    per_exercise = _walk_per_exercise_results(run_dir)
     items = []
     for key, summary in sorted(
         _grade_aider_batch_result(per_exercise, DEFAULT_PASS_THRESHOLD)["per_exercise"].items()
@@ -158,14 +161,43 @@ def _set_progress_state(**updates) -> None:
         _BATCH_PROGRESS_STATE.update(updates)
 
 
+# #170: the job dir can live on a host bind mount (--sandbox-log-dir). On a
+# virtiofs mount (seen on Colima, vmType vz) a filesystem call made while
+# CMake is creating and deleting its build tree can fail with EDEADLK. These
+# helpers retry a transient OSError, then give up on that one entry instead of
+# raising: a flaky probe must never turn a batch into server_error.
+_FS_ATTEMPTS = 3
+_ABSENT_ERRNOS = {errno.ENOENT, errno.ENOTDIR}
+
+
+def _fs_retry(fn, what: str, default=None):
+    for attempt in range(_FS_ATTEMPTS):
+        try:
+            return fn()
+        except OSError as exc:
+            if exc.errno in _ABSENT_ERRNOS:
+                return default
+            if attempt == _FS_ATTEMPTS - 1:
+                sys.stderr.write(f"[aider-polyglot] skipping {what}: {exc}\n")
+                return default
+            time.sleep(0.05 * (attempt + 1))
+    return default
+
+
+def _subdirs(path: str) -> list:
+    """Immediate subdirectories of `path` (os.DirEntry), [] if unreadable."""
+    def _list():
+        with os.scandir(path) as entries:
+            return [e for e in entries if e.is_dir(follow_symlinks=False)]
+    return _fs_retry(_list, path, default=[])
+
+
 def _find_run_dir(tmp_benchmarks: Path, run_name: str) -> Path | None:
     """The run dir aider's benchmark.py actually creates under tmp.benchmarks:
     `<timestamp>--<run_name>`, not `<run_name>` itself (#169). Newest match wins.
     None until benchmark.py has created it."""
-    if not tmp_benchmarks.is_dir():
-        return None
-    matches = sorted(p for p in tmp_benchmarks.glob(f"*{run_name}*") if p.is_dir())
-    return matches[-1] if matches else None
+    matches = sorted(e.name for e in _subdirs(str(tmp_benchmarks)) if run_name in e.name)
+    return tmp_benchmarks / matches[-1] if matches else None
 
 
 def _resolve_progress() -> dict:
@@ -435,27 +467,31 @@ def _stage_exercises_workspace(stage_dir: Path) -> Path:
 # ============================================================================
 
 def _walk_per_exercise_results(run_dir: Path) -> dict[str, dict]:
-    """Walk tmp.benchmarks/<run>/<lang>/exercises/practice/<exercise>/.aider.results.json
-    and return {<lang>/<name>: {parsed json}}."""
+    """Read tmp.benchmarks/<run>/<lang>/exercises/practice/<exercise>/.aider.results.json
+    and return {<lang>/<name>: {parsed json}}.
+
+    #170: looks only at that exact depth. A recursive search (rglob) also
+    probed every directory of the cpp track's CMake build trees while they were
+    being built; on a virtiofs mount one probe raised EDEADLK and the uncaught
+    OSError failed the whole batch. Unreadable entries are skipped (after
+    retries) so the walk always returns what it can read."""
     out: dict[str, dict] = {}
-    if not run_dir.is_dir():
-        return out
-    for results_path in run_dir.rglob(".aider.results.json"):
-        try:
-            data = json.loads(results_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        # The exercise key is its path relative to the practice/ dir.
-        try:
-            rel = results_path.parent.relative_to(run_dir)
-            # Path looks like <lang>/exercises/practice/<exercise>; collapse.
-            parts = rel.parts
-            lang = parts[0] if parts else "?"
-            name = parts[-1] if parts else "?"
-            key = f"{lang}/{name}"
-        except ValueError:
-            key = str(results_path.parent)
-        out[key] = data
+    for lang in _subdirs(str(run_dir)):
+        practice = os.path.join(lang.path, "exercises", "practice")
+        for exercise in _subdirs(practice):
+            results_path = os.path.join(exercise.path, ".aider.results.json")
+
+            def _read(path: str = results_path) -> str:
+                with open(path, encoding="utf-8") as fh:
+                    return fh.read()
+
+            text = _fs_retry(_read, results_path)
+            if text is None:
+                continue  # not written yet, or unreadable after retries
+            try:
+                out[f"{lang.name}/{exercise.name}"] = json.loads(text)
+            except json.JSONDecodeError:
+                continue  # mid-write; the next poll or the final walk picks it up
     return out
 
 

@@ -788,3 +788,133 @@ def test_verify_start_without_fragment_uses_endpoint_default(tmp_path, monkeypat
 
     assert "--read-model-settings" not in captured["argv"]
     assert captured["settings_in_job_dir"] is False
+
+
+# ============================================================================
+# #170 — result walk on a flaky (virtiofs) mount
+# ============================================================================
+
+
+def _cmake_run_dir(tmp_path):
+    """A run dir shaped like a real batch: results at the exact depth, plus a cpp
+    exercise whose CMake build tree is still being written."""
+    run_dir = tmp_path / "2026-09-26-04-42-42--benchlocal-aider-polyglot-30-batch-a704d08f"
+    _write_aider_result(run_dir / "python" / "exercises" / "practice" / "dominoes", passed=True)
+    clock = run_dir / "cpp" / "exercises" / "practice" / "clock"
+    _write_aider_result(clock, passed=False)
+    (clock / "build" / "CMakeFiles" / "CMakeTmp" / "CMakeFiles" / "cmTC_70b13.dir").mkdir(parents=True)
+    return run_dir
+
+
+def _edeadlk_under_build_trees(monkeypatch) -> list[str]:
+    """Make every stat/scandir inside a CMake build tree fail the way the reporter's
+    virtiofs mount did (OSError EDEADLK), and record each probe. Recording keeps the
+    tests meaningful on Python 3.12+, whose glob swallows the error; the sandbox
+    image runs 3.11, where it escapes and fails the batch."""
+    import errno
+    import os
+
+    probed: list[str] = []
+
+    def _guard(real):
+        def wrapper(path, *args, **kwargs):
+            text = os.fspath(path) if not isinstance(path, int) else ""
+            if "/build/" in text or text.endswith("/build"):
+                probed.append(text)
+                raise OSError(errno.EDEADLK, "Resource deadlock avoided", text)
+            return real(path, *args, **kwargs)
+        return wrapper
+
+    for name in ("stat", "lstat", "scandir"):
+        monkeypatch.setattr(os, name, _guard(getattr(os, name)))
+    return probed
+
+
+def _patch_open(monkeypatch, fn) -> None:
+    """Route both builtins.open and io.open (what Path.read_text uses) through fn."""
+    import builtins
+    import io
+
+    monkeypatch.setattr(builtins, "open", fn)
+    monkeypatch.setattr(io, "open", fn)
+
+
+def test_result_walk_never_probes_build_trees(tmp_path, monkeypatch):
+    """#170: a recursive search probed CMake's build tree mid-build; on virtiofs one
+    probe raised EDEADLK and the whole batch became server_error."""
+    server = _server()
+    run_dir = _cmake_run_dir(tmp_path)
+    probed = _edeadlk_under_build_trees(monkeypatch)
+
+    results = server._walk_per_exercise_results(run_dir)
+
+    assert set(results) == {"python/dominoes", "cpp/clock"}
+    assert probed == []
+
+
+def test_result_walk_retries_a_transient_error(tmp_path, monkeypatch):
+    import builtins
+    import errno
+
+    server = _server()
+    run_dir = _cmake_run_dir(tmp_path)
+    monkeypatch.setattr(server.time, "sleep", lambda _s: None)
+    calls = {"n": 0}
+    real_open = builtins.open
+
+    def flaky_open(path, *args, **kwargs):
+        if str(path).endswith("dominoes/.aider.results.json") and calls["n"] == 0:
+            calls["n"] += 1
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided", str(path))
+        return real_open(path, *args, **kwargs)
+
+    _patch_open(monkeypatch, flaky_open)
+
+    results = server._walk_per_exercise_results(run_dir)
+
+    assert calls["n"] == 1
+    assert set(results) == {"python/dominoes", "cpp/clock"}
+
+
+def test_result_walk_skips_a_persistently_unreadable_entry(tmp_path, monkeypatch, capsys):
+    """One entry that never becomes readable costs that exercise, not the batch."""
+    import builtins
+    import errno
+
+    server = _server()
+    run_dir = _cmake_run_dir(tmp_path)
+    monkeypatch.setattr(server.time, "sleep", lambda _s: None)
+    real_open = builtins.open
+
+    def broken_open(path, *args, **kwargs):
+        if str(path).endswith("clock/.aider.results.json"):
+            raise OSError(errno.EDEADLK, "Resource deadlock avoided", str(path))
+        return real_open(path, *args, **kwargs)
+
+    _patch_open(monkeypatch, broken_open)
+
+    results = server._walk_per_exercise_results(run_dir)
+
+    assert set(results) == {"python/dominoes"}
+    assert "skipping" in capsys.readouterr().err
+
+
+def test_live_progress_survives_edeadlk_during_a_cpp_build(tmp_path, monkeypatch):
+    """#170 x #169: the live poll walks the mount every few seconds while CMake runs."""
+    server = _server()
+    run_dir = _cmake_run_dir(tmp_path)
+    probed = _edeadlk_under_build_trees(monkeypatch)
+    monkeypatch.setattr(server, "_BATCH_PROGRESS_STATE", {
+        "active": True,
+        "run_name": "benchlocal-aider-polyglot-30-batch-a704d08f",
+        "tmp_benchmarks": str(tmp_path),
+        "run_dir": None,
+        "completed_exercises": [],
+        "total_expected": 30,
+    })
+
+    out = server._resolve_progress()
+
+    assert out["completed_count"] == 2
+    assert out["run_dir"] == str(run_dir)
+    assert probed == []
