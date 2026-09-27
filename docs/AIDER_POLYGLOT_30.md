@@ -158,6 +158,13 @@ toolchains). On rigs with <30 GB free, run
 
 ## Known limitations
 
+- **virtiofs log mounts (e.g. Colima `mountType: virtiofs`)**: with
+  `--sandbox-log-dir` on, the job dir is a host bind mount, and CMake's build
+  tree inside it can intermittently hit `EDEADLK`. The batch survives (the
+  result walk only reads `<lang>/exercises/practice/<name>/.aider.results.json`
+  and retries or skips an unreadable entry, #170), but an affected cpp exercise
+  can still fail its build. `--sandbox-log-dir none` keeps the build tree off
+  the mount.
 - **Wall clock dominates**: `pass_rate` doesn't separate "model edits
   too slow" from "model edits incorrect". Use `inspect` to surface
   per-exercise duration if a regression looks latency-related.
