@@ -78,7 +78,9 @@ def _guess_provider(base_url: str, requested_provider: str) -> str:
 
 
 # Sampler keys the OpenAI SDK's `chat.completions.create()` accepts as keyword arguments.
-OPENAI_NATIVE_SAMPLER_KEYS = ("temperature", "top_p", "max_tokens")
+OPENAI_NATIVE_SAMPLER_KEYS = (
+    "temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty"
+)
 # Engine-side sampler keys (vLLM / SGLang / llama.cpp read them from the request body) that the SDK
 # does NOT accept as keyword arguments — they must travel in `extra_body`.
 EXTRA_BODY_SAMPLER_KEYS = ("top_k", "min_p", "repetition_penalty")
@@ -95,8 +97,9 @@ def _request_overrides(
     Hermes then gives up and returns `failed` without a single model call, and the scenario scored
     0 with no error visible (club-3090#1269: 0/20 at ~2.5 s, `usage.requests == 0` on every
     scenario, whenever a leg set top_k / min_p explicitly). So only the SDK-native keys go
-    top-level; top_k / min_p / repetition_penalty go in `extra_body`, where the SDK forwards them
-    verbatim. The generation config wins over a same-named key in the model's extraBody.
+    top-level (temperature, top_p, max_tokens, presence_penalty, frequency_penalty); top_k /
+    min_p / repetition_penalty go in `extra_body`, where the SDK forwards them verbatim. The
+    generation config wins over a same-named key in the model's extraBody.
 
     request_timeout_seconds is rejected the same way, so timeout enforcement stays at the verifier
     process level instead of being passed through as a model override.
