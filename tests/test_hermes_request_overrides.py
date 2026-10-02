@@ -9,6 +9,11 @@ up without a single model call (the usage proxy counted 0 requests on all 20 sce
 These tests pin both halves of the fix on the vendored runner (the file the sandbox build copies):
 only SDK-native keys may be top-level, engine sampler keys travel in `extra_body`, and a Hermes
 `failed` return is reported as `ok: False` with its error text.
+
+The penalty tests below pin a second, quieter drop: presence_penalty / frequency_penalty from
+`--extra-body` reached every runner-owned pack but never Hermes, because the sandbox server's
+generation filter and the runner's key lists both left them out. No error, no warning — the
+Hermes requests simply went out without them.
 """
 
 from __future__ import annotations
@@ -22,9 +27,26 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "vendor" / "HermesAgent-20" / "verification" / "agent-runner.py"
+SERVER = ROOT / "sandboxes" / "hermes" / "server.py"
 
 # The generation block of club-3090#1269's failing leg, verbatim.
 LEG_A = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "max_tokens": 4096}
+
+
+def _load_names(path: Path, wanted: set[str]) -> dict:
+    """Exec only the named top-level functions / assignments of `path`, without importing it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    nodes = [
+        node for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id in wanted for t in node.targets))
+    ]
+    ns = {"Dict": typing.Dict, "Any": typing.Any, "Optional": typing.Optional}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), ns)
+    missing = wanted - set(ns)
+    assert not missing, f"{path.name} is missing {missing}"
+    return ns
 
 
 def _load_overrides_fn():
@@ -76,7 +98,8 @@ def test_every_top_level_key_is_accepted_by_the_openai_sdk():
 
     accepted = set(inspect.signature(Completions.create).parameters)
     overrides = _load_overrides_fn()(
-        {**LEG_A, "repetition_penalty": 1.05}, {"chat_template_kwargs": {"enable_thinking": False}}
+        {**LEG_A, "repetition_penalty": 1.05, "presence_penalty": 1.5, "frequency_penalty": 0.5},
+        {"chat_template_kwargs": {"enable_thinking": False}},
     )
     rejected = sorted(k for k in overrides if k not in accepted)
     assert not rejected, f"openai {openai.__version__} rejects top-level {rejected}"
@@ -89,3 +112,34 @@ def test_hermes_failed_return_is_reported_not_dropped():
     assert 'hermes_failed = bool(result.get("failed"))' in src
     assert '"ok": not hermes_failed' in src
     assert '"error": (str(result.get("error")' in src
+
+
+def test_penalties_go_top_level():
+    """presence_penalty / frequency_penalty are declared keywords of `Completions.create`, so they
+    travel top-level like temperature — not in extra_body, and not dropped."""
+    overrides = _load_overrides_fn()({**LEG_A, "presence_penalty": 1.5, "frequency_penalty": 0.0}, None)
+    assert overrides["presence_penalty"] == 1.5
+    assert overrides["frequency_penalty"] == 0.0  # a falsy 0.0 is still an explicit setting
+    assert "presence_penalty" not in overrides["extra_body"]
+
+
+def test_server_filter_forwards_penalties():
+    """The sandbox server filters the runner's sampling before the agent runner sees it; a key it
+    drops never reaches the model (the original presence_penalty loss)."""
+    filt = _load_names(SERVER, {"_filter_generation"})["_filter_generation"]
+    out = filt({**LEG_A, "presence_penalty": 1.5, "frequency_penalty": 0.5, "seed": 7, "x": None})
+    assert out["presence_penalty"] == 1.5 and out["frequency_penalty"] == 0.5
+    assert "seed" not in out and "x" not in out
+    assert filt(None) == {} and filt({"presence_penalty": None}) == {}
+
+
+def test_server_filter_and_runner_name_the_same_keys():
+    """Drift guard: every key the server forwards must be one the runner sends, and every key the
+    runner sends must be one the server forwards — otherwise one side is silently dead."""
+    filt = _load_names(SERVER, {"_filter_generation"})["_filter_generation"]
+    runner = _load_names(RUNNER, {"OPENAI_NATIVE_SAMPLER_KEYS", "EXTRA_BODY_SAMPLER_KEYS"})
+    runner_keys = set(runner["OPENAI_NATIVE_SAMPLER_KEYS"]) | set(runner["EXTRA_BODY_SAMPLER_KEYS"])
+    probe = {k: 1 for k in runner_keys | {
+        "seed", "typical_p", "mirostat", "repeat_penalty", "logit_bias", "stop", "n",
+    }}
+    assert set(filt(probe)) == runner_keys

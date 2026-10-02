@@ -298,13 +298,17 @@ def _normalize_base_url(endpoint: str) -> str:
 
 
 def _filter_generation(sampling: dict | None) -> dict:
-    """Pass through only the sampling kwargs upstream's request_overrides
-    accepts — temperature, top_p, top_k, min_p, repetition_penalty, max_tokens.
-    Mirrors agent-runner.py's old filter logic so we send the same shape."""
+    """Pass through only the sampling kwargs the agent runner knows how to
+    send — temperature, top_p, top_k, min_p, repetition_penalty, max_tokens,
+    presence_penalty, frequency_penalty. Keep this list in step with the
+    runner's OPENAI_NATIVE_SAMPLER_KEYS + EXTRA_BODY_SAMPLER_KEYS: a key
+    dropped here never reaches the model, silently (presence_penalty was,
+    until club-3090's thinking-off sampling A/B needed it)."""
     out: dict = {}
     if not sampling:
         return out
-    for key in ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "max_tokens"):
+    for key in ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "max_tokens",
+                "presence_penalty", "frequency_penalty"):
         if key in sampling and sampling[key] is not None:
             out[key] = sampling[key]
     return out
