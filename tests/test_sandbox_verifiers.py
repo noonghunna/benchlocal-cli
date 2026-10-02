@@ -833,7 +833,11 @@ def test_hermes_translate_request_normalizes_endpoint_and_filters_generation():
         {**req, "preserve_reasoning_history": True}
     )["generation"]["preserve_reasoning_history"] is True
     assert "runId" in out and len(out["runId"]) > 0
-    assert out["model"]["extraBody"] == {"enable_thinking": True, "thinking_budget": 4096}
+    assert out["model"]["extraBody"] == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "enable_thinking": True,
+        "thinking_budget": 4096,
+    }
 
 
 def test_hermes_reasoning_policy_strips_only_outgoing_api_copy():
@@ -852,13 +856,8 @@ def test_hermes_reasoning_policy_strips_only_outgoing_api_copy():
     assert stored["reasoning"] == "private"
 
 
-@pytest.mark.parametrize(
-    ("thinking_enabled", "expected_budget"),
-    [(True, 4096), (False, 1)],
-)
-def test_hermes_config_emits_thinking_extra_body_for_all_models(
-    tmp_path, thinking_enabled, expected_budget
-):
+@pytest.mark.parametrize("thinking_enabled", [True, False])
+def test_hermes_config_emits_thinking_extra_body_for_all_models(tmp_path, thinking_enabled):
     server = _hermes_server()
     translated = server._translate_request(
         {
@@ -895,8 +894,18 @@ process.stdout.write(await readFile(`${home}/config.yaml`, "utf8"));
     )
     config = proc.stdout
     assert config.count("extra_body:") == 4
-    assert config.count("enable_thinking: true") == 4
-    assert config.count(f"thinking_budget: {expected_budget}") == 4
+    if thinking_enabled:
+        assert config.count('chat_template_kwargs: {"enable_thinking":true}') == 4
+        assert config.count("enable_thinking: true") == 4
+        assert config.count("thinking_budget: 4096") == 4
+    else:
+        # The switch vLLM / SGLang / llama.cpp read, and nothing else: no top-level
+        # enable_thinking of either value (thinking-only endpoints 400 on false, #86;
+        # vLLM / SGLang ignore true, so the template's default — thinking ON — ran)
+        # and no budget (budget-honoring endpoints truncate thinking to it, #129).
+        assert config.count('chat_template_kwargs: {"enable_thinking":false}') == 4
+        assert "enable_thinking: " not in config
+        assert "thinking_budget" not in config
 
 
 def test_hermes_normalize_base_url_ensures_v1_suffix():

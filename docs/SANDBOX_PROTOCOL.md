@@ -134,10 +134,13 @@ POST /verify-end       # explicit "model gave up" or runner hit turn limit
 
 The runner owns CLI-40 model turns in the normal benchmark path. Every request
 keeps the standard `max_tokens` and `chat_template_kwargs.enable_thinking`
-fields and also carries provider-native `enable_thinking` and
-`thinking_budget`. Thinking-only endpoints receive `enable_thinking: true`
-for both arms; the off arm uses `thinking_budget: 1`, while the on arm uses
-the configured thinking-token budget. Explicit `--extra-body` values win.
+fields. The on arm also carries the provider-native `enable_thinking: true`
+and `thinking_budget` (the configured thinking-token budget), which
+thinking-only endpoints read. The off arm sends
+`chat_template_kwargs.enable_thinking: false` only: the provider-native pair it
+used to carry (`enable_thinking: true, thinking_budget: 1`) contradicted it,
+and budget-honoring endpoints ran the model thinking-on, truncated to one token
+(#129). Explicit `--extra-body` values win.
 
 Each runner-owned model turn is capped by `--model-turn-timeout` (300 seconds
 by default), independently of the larger scenario timeout. The vendored direct
@@ -156,12 +159,20 @@ testing the *real* agent loop against the *real* model under test.
 The Hermes adapter writes the resolved thinking controls to `extra_body` for
 the primary model and every auxiliary model (`session_search`, `web_extract`,
 and `approval`). It also passes the primary model's `extra_body` directly to
-the programmatic `AIAgent` request path. Thinking-only endpoints cannot accept
-`enable_thinking: false`, so BenchLocal represents the off arm as
-`enable_thinking: true` with `thinking_budget: 1`; the on arm uses the requested
-budget.
-The decode-TPS probe uses the same one-token mapping so timeout calibration
-does not send a forbidden false value before a thinking-only run.
+the programmatic `AIAgent` request path. The controls match CLI-40's: the on
+arm sends `chat_template_kwargs.enable_thinking: true` plus the
+provider-native `enable_thinking: true` and the requested `thinking_budget`;
+the off arm sends `chat_template_kwargs.enable_thinking: false` only. The off
+arm never sends a top-level `enable_thinking`, because thinking-only endpoints
+reject a top-level `false` (#86). It used to send
+`enable_thinking: true, thinking_budget: 1` instead. vLLM and SGLang ignore
+those top-level fields, so the chat template's default (thinking on) ran on
+every "no-thinking" Hermes request against them.
+
+The decode-TPS probe still uses the one-token mapping
+(`chat_template_kwargs.enable_thinking: true` with `thinking_budget: 1`) so
+timeout calibration does not send a forbidden false value before a
+thinking-only run.
 
 
 If `model_endpoint` is missing from the request body, the sandbox returns

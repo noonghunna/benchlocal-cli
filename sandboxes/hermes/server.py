@@ -98,9 +98,9 @@ UPSTREAM_RAW_MAX_BYTES = 16384
 # upstream_status/upstream_score/etc. instead of grading.tool_event_count.
 SCHEMA_VERSION = "2"
 
-# Thinking-only endpoints reject enable_thinking=false. Hermes therefore
-# emulates its off arm with one reasoning token instead of sending false.
-THINKING_BUDGET_FLOOR = 1
+# Thinking-only endpoints reject a top-level enable_thinking=false (#86), so
+# the off arm never sends one: it rides chat_template_kwargs alone (see
+# _thinking_extra_body).
 DEFAULT_THINKING_BUDGET = 16384
 
 
@@ -319,8 +319,19 @@ def _thinking_extra_body(req: dict) -> dict:
 
     Thinking controls deliberately bypass _filter_generation: the pinned
     framework consumes them as extra_body, not generation overrides. New
-    runners provide the complete model-specific fragment; keep the legacy
-    budget-based shape for older callers and Qwen's existing behavior.
+    runners provide the complete model-specific fragment; otherwise build it
+    from the resolved mode:
+
+    - on: `chat_template_kwargs.enable_thinking: true` plus the provider-native
+      `enable_thinking: true` / `thinking_budget` pair that thinking-only
+      endpoints such as DashScope read (#86).
+    - off: `chat_template_kwargs.enable_thinking: false` ONLY — the switch
+      vLLM, SGLang and llama.cpp read, and what every runner-owned pack sends
+      for no-think since #129. The off arm used to be the near-off pair
+      `enable_thinking: true, thinking_budget: 1`, which those engines ignore
+      (the chat template's default, thinking ON, ran: 79-90 reasoning tokens
+      on HA-01 against a vLLM Qwen3.8) and which budget-honoring endpoints
+      run as thinking truncated to one token (#129).
     """
     resolved = req.get("thinking_extra_body")
     if isinstance(resolved, dict):
@@ -343,9 +354,12 @@ def _thinking_extra_body(req: dict) -> dict:
             else DEFAULT_THINKING_BUDGET
         )
 
+    if not enabled:
+        return {"chat_template_kwargs": {"enable_thinking": False}}
     return {
+        "chat_template_kwargs": {"enable_thinking": True},
         "enable_thinking": True,
-        "thinking_budget": budget if enabled else THINKING_BUDGET_FLOOR,
+        "thinking_budget": budget,
     }
 
 
