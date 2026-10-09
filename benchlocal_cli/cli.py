@@ -522,8 +522,9 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
              "Requires --previous-result to also be set. Blocked when sampling overrides "
-             "are active (non-canonical runs shouldn't gate CI), or when --max-tokens "
-             "or the thinking budget differs from the previous result's.",
+             "are active (non-canonical runs shouldn't gate CI), or when --max-tokens, "
+             "the thinking budget or the recorded --server-thinking-budget differs from "
+             "the previous result's.",
     )
     run.add_argument(
         "--strict-thinking",
@@ -2089,6 +2090,9 @@ def main(argv: list[str] | None = None) -> int:
                     # what RunResult will record: none when thinking is forced off
                     "thinking_max_tokens": (
                         None if args.thinking_override is False else effective_thinking_max
+                    ),
+                    "server_thinking_budget": (
+                        None if args.thinking_override is False else args.server_thinking_budget
                     ),
                 },
                 args.previous_result,

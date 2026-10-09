@@ -19,6 +19,7 @@ import pytest
 
 import benchlocal_cli.runner as runner_module
 from benchlocal_cli.cli import _parse_server_thinking_budget, main
+from benchlocal_cli.delta import budget_mismatch
 from benchlocal_cli.persistence import load_resume, result_from_journal
 from benchlocal_cli.runner import Runner
 
@@ -287,3 +288,112 @@ def test_retry_failed_keeps_the_baseline_budget(tmp_path, capsys):
         "--save-json", str(retry),
     ]) == 0
     assert json.loads(retry.read_text())["server_thinking_budget"] == 8192
+
+
+# ------------------------------------------------------------------ delta.budget_mismatch
+
+
+def _saved(tmp_path: Path, name: str, **fields) -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps({"schema_version": "1", "packs": [], **fields}))
+    return path
+
+
+def test_mismatch_when_both_recorded_and_different(tmp_path):
+    previous = _saved(tmp_path, "prev.json", server_thinking_budget=8192)
+    assert budget_mismatch({"server_thinking_budget": 4096}, previous) == (
+        "token budget differs (current server_thinking_budget=4096, "
+        "previous server_thinking_budget=8192)"
+    )
+    # 0 is a recorded budget, not a missing one
+    assert "current server_thinking_budget=0, previous server_thinking_budget=8192" in (
+        budget_mismatch({"server_thinking_budget": 0}, previous) or ""
+    )
+
+
+def test_no_mismatch_when_equal(tmp_path):
+    previous = _saved(tmp_path, "prev.json", server_thinking_budget=8192)
+    assert budget_mismatch({"server_thinking_budget": 8192}, previous) is None
+
+
+def test_no_mismatch_when_either_run_did_not_record_one(tmp_path):
+    old = _saved(tmp_path, "old.json")  # a result from before the field existed
+    assert budget_mismatch({"server_thinking_budget": 8192}, old) is None
+    recorded = _saved(tmp_path, "new.json", server_thinking_budget=8192)
+    assert budget_mismatch({}, recorded) is None
+
+
+def test_old_results_compare_exactly_as_before(tmp_path):
+    # Neither run recorded it: the existing budget comparisons are untouched.
+    previous = _saved(tmp_path, "prev.json", sampling_overrides={"max_tokens": 4096},
+                      thinking_max_tokens=16384)
+    assert budget_mismatch({"sampling_overrides": {"max_tokens": 4096},
+                            "thinking_max_tokens": 16384}, previous) is None
+    assert budget_mismatch({"sampling_overrides": {"max_tokens": 2048},
+                            "thinking_max_tokens": 16384}, previous) == (
+        "token budget differs (current max_tokens=2048, previous max_tokens=4096)"
+    )
+
+
+def test_named_alongside_the_other_budgets(tmp_path):
+    previous = _saved(tmp_path, "prev.json", sampling_overrides={"max_tokens": 4096},
+                      thinking_max_tokens=16384, server_thinking_budget=8192)
+    assert budget_mismatch({"sampling_overrides": {"max_tokens": 2048}, "thinking_max_tokens": 8192,
+                            "server_thinking_budget": 4096}, previous) == (
+        "token budget differs (current max_tokens=2048, previous max_tokens=4096; "
+        "current thinking_max_tokens=8192, previous thinking_max_tokens=16384; "
+        "current server_thinking_budget=4096, previous server_thinking_budget=8192)"
+    )
+
+
+def test_delta_warns_when_server_budgets_differ(tmp_path, capsys):
+    _run(tmp_path, capsys, "--server-thinking-budget", "8192", name="baseline.json")
+    rc, _out, _err, result = _run(
+        tmp_path, capsys, "--server-thinking-budget", "4096",
+        "--previous-result", str(tmp_path / "baseline.json"), name="again.json",
+    )
+    assert rc == 0
+    assert any(
+        "token budget differs (current server_thinking_budget=4096, "
+        "previous server_thinking_budget=8192); regressions and fixes may be budget effects" in w
+        for w in result["delta"]["warnings"]
+    )
+
+
+def test_delta_quiet_when_the_previous_result_has_no_server_budget(tmp_path, capsys):
+    _run(tmp_path, capsys, name="baseline.json")
+    rc, _out, _err, result = _run(
+        tmp_path, capsys, "--server-thinking-budget", "4096",
+        "--previous-result", str(tmp_path / "baseline.json"), name="again.json",
+    )
+    assert rc == 0
+    assert not any("token budget differs" in w for w in result["delta"]["warnings"])
+
+
+def test_exit_on_regression_refuses_a_different_server_budget(tmp_path, capsys):
+    _run(tmp_path, capsys, "--server-thinking-budget", "8192", name="baseline.json")
+    baseline = str(tmp_path / "baseline.json")
+    rc, _out, err, _ = _run(
+        tmp_path, capsys, "--server-thinking-budget", "4096",
+        "--previous-result", baseline, "--exit-on-regression", name="other.json",
+    )
+    assert rc == 1
+    assert ("token budget differs (current server_thinking_budget=4096, "
+            "previous server_thinking_budget=8192)") in err
+    rc, _out, err, _ = _run(
+        tmp_path, capsys, "--server-thinking-budget", "8192",
+        "--previous-result", baseline, "--exit-on-regression", name="same.json",
+    )
+    assert rc == 0, err
+
+
+def test_exit_on_regression_ignores_server_budgets_of_thinking_off_runs(tmp_path, capsys):
+    # Thinking off: the server budget never applied, so it is not recorded or compared.
+    _run(tmp_path, capsys, "--no-thinking", "--server-thinking-budget", "8192", name="baseline.json")
+    rc, _out, err, result = _run(
+        tmp_path, capsys, "--no-thinking", "--server-thinking-budget", "4096",
+        "--previous-result", str(tmp_path / "baseline.json"), "--exit-on-regression",
+        name="again.json",
+    )
+    assert rc == 0, err
+    assert not any("token budget differs" in w for w in result["delta"]["warnings"])
