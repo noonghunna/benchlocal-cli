@@ -362,6 +362,17 @@ _SAMPLING_KEYS = frozenset({
     "mirostat_tau", "mirostat_eta",
 })
 
+
+def distribution_overrides(overrides: dict | None) -> dict:
+    """The sampler part of the --temperature/--top-p/... overrides.
+
+    `--max-tokens` rides in the same `sampling_overrides` dict (#28), but it is
+    a length budget, not a sampling distribution. Counting it as one labelled a
+    budget-only run "NON-CANONICAL (sampling: max_tokens=4096)" and refused
+    --exit-on-regression for it (#187). Budgets are reported as budgets.
+    """
+    return {k: v for k, v in (overrides or {}).items() if k != "max_tokens"}
+
 DEFAULT_THINKING_SAMPLER = {
     "temperature": 1.0,
     "top_p": 0.95,
@@ -1196,12 +1207,20 @@ class Runner:
             total = sum(pack.total for pack in pack_results)
             passed = sum(pack.passed for pack in pack_results)
             finished_at = _utc_now()
-            # Tag non-canonical sampling runs
-            if self.sampling_overrides:
-                override_desc = ", ".join(f"{k}={v}" for k, v in self.sampling_overrides.items())
+            # Tag non-canonical sampling runs. A fixed --max-tokens is a budget,
+            # not a sampler (#187): it gets its own note, not this warning.
+            distribution = distribution_overrides(self.sampling_overrides)
+            if distribution:
+                override_desc = ", ".join(f"{k}={v}" for k, v in distribution.items())
                 warnings.append(
                     f"non-canonical sampling overrides active ({override_desc}) — "
                     f"results are NOT comparable to the default temp=0 baseline"
+                )
+            fixed_budget = self.sampling_overrides.get("max_tokens")
+            if fixed_budget is not None:
+                warnings.append(
+                    f"fixed token budget max_tokens={fixed_budget} replaces every pack's own "
+                    f"budget — compare only with runs at the same budget"
                 )
             if self._timeout_scaling_note:
                 warnings.append(self._timeout_scaling_note)

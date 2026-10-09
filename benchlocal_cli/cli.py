@@ -47,6 +47,7 @@ from benchlocal_cli.runner import (
     Runner,
     _SpendGuardExceeded,
     _utc_now,
+    distribution_overrides,
     list_packs,
     load_pack,
 )
@@ -418,7 +419,8 @@ def _parser() -> argparse.ArgumentParser:
     # default for the base/no-think arm; also becomes the thinking-arm budget
     # unless --thinking-max-tokens is given (which wins for that arm). Lets a
     # thinking-vs-no-think A/B be pinned symmetric with one flag (e.g.
-    # `--max-tokens 16384`). Tags the run non-canonical like other overrides.
+    # `--max-tokens 16384`). Reported as a TOKEN BUDGET in the header — a budget,
+    # not a sampling override (#187).
     run.add_argument("--max-tokens", type=int, default=None, help="override max_tokens / length budget for both arms (default: per-pack; thinking arm uses --thinking-max-tokens if set)")
     # v0.9.2: inherit sampling from server (#21) — omit all sampling params
     # from the request so the server applies its own configured defaults.
@@ -502,7 +504,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
              "Requires --previous-result to also be set. Blocked when sampling overrides "
-             "are active (non-canonical runs shouldn't gate CI).",
+             "are active (non-canonical runs shouldn't gate CI), or when --max-tokens "
+             "differs from the previous result's.",
     )
     run.add_argument(
         "--strict-thinking",
@@ -594,6 +597,12 @@ def _pack_line(pack: PackResult) -> str:
 def _token_budget_tag(result: RunResult) -> str:
     budget = result.token_budget
     if not isinstance(budget, dict) or budget.get("mode") != "derived":
+        # #187: a fixed --max-tokens replaces every pack's own budget. That
+        # conditions the score like a derived ceiling does, so it is reported
+        # here — as a budget, not as a sampling override.
+        fixed = (result.sampling_overrides or {}).get("max_tokens")
+        if isinstance(fixed, int):
+            return f" [TOKEN BUDGET: fixed {fixed:,} per answer]"
         return ""
     tps = budget.get("measured_tps")
     headroom = budget.get("headroom")
@@ -837,8 +846,11 @@ def _markdown(result: RunResult) -> str:
             canonical_tag = f" ⚠ NON-CANONICAL (sampling: server defaults — {sd_str})"
         else:
             canonical_tag = " ⚠ NON-CANONICAL (sampling: server defaults — value not exposed by endpoint)"
-    elif result.sampling_overrides:
-        override_str = ", ".join(f"{k}={v}" for k, v in result.sampling_overrides.items())
+    elif distribution_overrides(result.sampling_overrides):
+        # #187: a fixed --max-tokens is a budget; _token_budget_tag reports it.
+        override_str = ", ".join(
+            f"{k}={v}" for k, v in distribution_overrides(result.sampling_overrides).items()
+        )
         canonical_tag = f" ⚠ NON-CANONICAL (sampling: {override_str})"
 
     selection_tag = (
@@ -1150,7 +1162,7 @@ def _card_meta_lines(result: RunResult) -> list[str]:
         thinking += f" · reasoning effort: {effort}"
     rows.append(("Thinking", thinking))
 
-    overrides = {k: v for k, v in (result.sampling_overrides or {}).items() if k != "max_tokens"}
+    overrides = distribution_overrides(result.sampling_overrides)
     if result.sampling_source == "server":
         if result.server_defaults:
             values = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
@@ -1822,7 +1834,7 @@ def main(argv: list[str] | None = None) -> int:
         # distribution overrides (#21). --max-tokens is a length budget, not a
         # distribution param, and is preserved under --sampling-from-server, so
         # it's allowed alongside it.
-        _distribution_overrides = {k: v for k, v in sampling_overrides.items() if k != "max_tokens"}
+        _distribution_overrides = distribution_overrides(sampling_overrides)
         if args.sampling_from_server and _distribution_overrides:
             print(
                 "benchlocal-cli: --sampling-from-server is mutually exclusive with "
@@ -1973,8 +1985,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         on_progress_event = _sandbox_progress_event if args.progress else None
 
-        # Block --exit-on-regression when sampling is non-canonical
-        if args.exit_on_regression and (sampling_overrides or args.sampling_from_server):
+        # Block --exit-on-regression when sampling is non-canonical. A fixed
+        # --max-tokens is a budget, not a sampler (#187): it may gate CI, but
+        # only against a previous result at the same budget — otherwise a budget
+        # change would read as regressions (or fixes).
+        if args.exit_on_regression and (
+            distribution_overrides(sampling_overrides) or args.sampling_from_server
+        ):
             print(
                 "benchlocal-cli: --exit-on-regression is blocked when sampling overrides "
                 "or --sampling-from-server are active (non-canonical runs shouldn't gate CI). "
@@ -1982,6 +1999,20 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        if args.exit_on_regression and args.previous_result:
+            from benchlocal_cli import delta as delta_module
+
+            mismatch = delta_module.budget_mismatch(
+                {"sampling_overrides": sampling_overrides or None},
+                args.previous_result,
+            )
+            if mismatch:
+                print(
+                    f"benchlocal-cli: --exit-on-regression is blocked: {mismatch}. "
+                    "Re-run with the previous result's budget, or capture a new baseline.",
+                    file=sys.stderr,
+                )
+                return 1
 
         runner = Runner(
             endpoint=args.endpoint,
