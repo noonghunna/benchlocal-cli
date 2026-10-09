@@ -986,6 +986,7 @@ class Runner:
         server_defaults_source: str | None = None,
         run_meta: dict | None = None,
         thinking_sampler: dict | None = None,
+        server_thinking_budget: int | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
         on_progress_event: Callable[[dict], None] | None = None,
@@ -1123,6 +1124,9 @@ class Runner:
         self._supplied_server_defaults = dict(server_defaults) if server_defaults else None
         self._supplied_server_defaults_source = server_defaults_source
         self.run_meta = dict(run_meta) if run_meta else None
+        # The reasoning budget the server applies, as the caller resolved it.
+        # Recorded on the result only — no request ever carries it.
+        self.server_thinking_budget = server_thinking_budget
         self._sandbox_clients: dict[str, SandboxClient] = {}
         # Callbacks for incremental progress (#23)
         self._on_pack_complete = on_pack_complete
@@ -1282,6 +1286,9 @@ class Runner:
                     None if self.thinking_mode == "force-off" else self.thinking_sampler
                 ),
                 extra_body=dict(self.extra_body) if self.extra_body else None,
+                server_thinking_budget=(
+                    None if self.thinking_mode == "force-off" else self.server_thinking_budget
+                ),
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),

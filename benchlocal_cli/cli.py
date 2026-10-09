@@ -378,6 +378,24 @@ def _parser() -> argparse.ArgumentParser:
         help="max_tokens to request when thinking is enabled "
              "(default: --max-tokens if set, else 16384)",
     )
+    # A vLLM/SGLang compose can cap reasoning server-side (a budget chosen by
+    # effort). The caller resolves it and passes it here so the result records
+    # it and delta can flag two runs under different server budgets. Purely
+    # informational: no request ever carries it.
+    run.add_argument(
+        "--server-thinking-budget",
+        type=_parse_server_thinking_budget,
+        default=None,
+        metavar="N",
+        help=(
+            "record the reasoning budget (tokens) the SERVER applies, as the caller "
+            "resolved it from the serving config. Informational only: never sent and "
+            "changes no request. Stored as server_thinking_budget in the results JSON "
+            "(not on a --no-thinking run, where it has no effect), shown in the summary "
+            "header, and compared by --previous-result when both runs recorded one. "
+            "Non-negative integer."
+        ),
+    )
     run.add_argument(
         "--reasoning-effort",
         type=_parse_reasoning_effort,
@@ -610,6 +628,15 @@ def _token_budget_tag(result: RunResult) -> str:
     if isinstance(tps, (int, float)) and isinstance(headroom, (int, float)):
         detail = f"from clock x {float(tps):.1f} tok/s x {float(headroom):g}"
     return f" [TOKEN BUDGET: derived {detail}]"
+
+
+def _server_thinking_budget_tag(result: RunResult) -> str:
+    """The reasoning budget the server applied (--server-thinking-budget), when
+    the caller recorded one. Empty otherwise, so the default header is unchanged."""
+    budget = result.server_thinking_budget
+    if not isinstance(budget, int) or isinstance(budget, bool):
+        return ""
+    return f" [SERVER THINKING BUDGET: {budget:,}]"
 
 
 def _sandbox_progress_event(event: dict) -> None:
@@ -860,7 +887,7 @@ def _markdown(result: RunResult) -> str:
     # #145: a derived token ceiling conditions the score — say so in the
     # header, next to the other non-poolability tags. Empty when the ceiling
     # was fixed (the default), so the default markdown is unchanged.
-    budget_tag = _token_budget_tag(result)
+    budget_tag = _token_budget_tag(result) + _server_thinking_budget_tag(result)
     lines = [
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag}{budget_tag} ===",
         # club-3090#1396: rig facts the caller recorded; absent → no line (byte-stable default).
@@ -1448,6 +1475,16 @@ def _parse_reasoning_effort(value: str) -> str | float:
     return numeric
 
 
+def _parse_server_thinking_budget(value: str) -> int:
+    """A token count: digits only, so -1, 1.5, '' and 'abc' are refused."""
+    raw = value.strip()
+    if not (raw.isascii() and raw.isdigit()):
+        raise argparse.ArgumentTypeError(
+            f"must be a non-negative integer (a token count), got {value!r}"
+        )
+    return int(raw)
+
+
 def _load_thinking_sampler(value: str | None) -> dict | None:
     if not value:
         return None
@@ -1616,6 +1653,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.extra_body = json.dumps(config["extra_body"])
             if config.get("thinking_sampler") is not None:
                 args.thinking_sampler = json.dumps(config["thinking_sampler"])
+            # The server's reasoning budget is a fact about the server the run
+            # started on. Restored when not given; given again, it must match —
+            # one result cannot span two server budgets.
+            recorded_server_budget = config.get("server_thinking_budget")
+            if args.server_thinking_budget is None:
+                args.server_thinking_budget = recorded_server_budget
+            elif args.server_thinking_budget != recorded_server_budget:
+                recorded_desc = (
+                    "none recorded" if recorded_server_budget is None
+                    else str(recorded_server_budget)
+                )
+                raise ValueError(
+                    f"--resume: --server-thinking-budget {args.server_thinking_budget} differs "
+                    f"from the original run's ({recorded_desc}); a resumed run keeps one server "
+                    "configuration — resume on the original server, or start a new run"
+                )
             args.measured_tps = args.measured_tps or config.get("measured_tps")
             args.reference_tps = args.reference_tps or config.get("reference_tps")
             args.model_turn_timeout = float(
@@ -1720,6 +1773,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.thinking_sampler = json.dumps(baseline["thinking_sampler"])
             if args.extra_body is None and baseline.get("extra_body") is not None:
                 args.extra_body = json.dumps(baseline["extra_body"])
+            # The baseline's server reasoning budget, unless given again.
+            if (
+                args.server_thinking_budget is None
+                and baseline.get("server_thinking_budget") is not None
+            ):
+                args.server_thinking_budget = baseline["server_thinking_budget"]
             args.repeat = args.retry_failed
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):
@@ -1963,6 +2022,9 @@ def main(argv: list[str] | None = None) -> int:
             # thinking-validity check; journal-recovered runs must too.
             "synthetic_traffic": bool(args.mock_responses_from_json or args.negative_control),
         }
+        if args.server_thinking_budget is not None:
+            # Added only when supplied, so a run without it journals as before.
+            run_config["server_thinking_budget"] = args.server_thinking_budget
         if args.stream:
             # #157: added only when streaming, so a non-streamed run's saved
             # config stays byte-identical.
@@ -2085,6 +2147,7 @@ def main(argv: list[str] | None = None) -> int:
             server_defaults_source=supplied_defaults_source,
             run_meta=run_meta,
             thinking_sampler=effective_thinking_sampler,
+            server_thinking_budget=args.server_thinking_budget,
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,
             on_progress_event=on_progress_event,

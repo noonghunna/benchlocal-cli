@@ -279,6 +279,13 @@ class RunResult:
     # results JSON could not tell a canonical run from one that used either.
     thinking_sampler: dict | None = None
     extra_body: dict | None = None
+    # --server-thinking-budget: the reasoning budget the SERVER applies (e.g. a
+    # vLLM/SGLang compose that picks one by effort), as the caller resolved it.
+    # Informational only — never sent; recorded so two runs under different
+    # server budgets are not compared as if the model changed. None when not
+    # supplied or when thinking was forced off (no effect there, like
+    # thinking_max_tokens). 0 is a real value.
+    server_thinking_budget: int | None = None
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
@@ -347,6 +354,8 @@ class RunResult:
             out["thinking_sampler"] = self.thinking_sampler
         if self.extra_body is not None:
             out["extra_body"] = self.extra_body
+        if self.server_thinking_budget is not None:
+            out["server_thinking_budget"] = self.server_thinking_budget
         if self.selection is not None:
             out["selection"] = self.selection
         if self.token_budget is not None:
