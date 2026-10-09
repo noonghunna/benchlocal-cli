@@ -505,7 +505,7 @@ def _parser() -> argparse.ArgumentParser:
         help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
              "Requires --previous-result to also be set. Blocked when sampling overrides "
              "are active (non-canonical runs shouldn't gate CI), or when --max-tokens "
-             "differs from the previous result's.",
+             "or the thinking budget differs from the previous result's.",
     )
     run.add_argument(
         "--strict-thinking",
@@ -2022,7 +2022,13 @@ def main(argv: list[str] | None = None) -> int:
             from benchlocal_cli import delta as delta_module
 
             mismatch = delta_module.budget_mismatch(
-                {"sampling_overrides": sampling_overrides or None},
+                {
+                    "sampling_overrides": sampling_overrides or None,
+                    # what RunResult will record: none when thinking is forced off
+                    "thinking_max_tokens": (
+                        None if args.thinking_override is False else effective_thinking_max
+                    ),
+                },
                 args.previous_result,
             )
             if mismatch:

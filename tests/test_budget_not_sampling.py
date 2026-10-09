@@ -5,7 +5,8 @@ sampler: the run header said `⚠ NON-CANONICAL (sampling: max_tokens=4096)`, th
 run warned "non-canonical sampling overrides active", and --exit-on-regression
 refused the run. club-3090 passes --max-tokens 4096 on every default run, so all
 three fired on canonical runs. A budget is now reported as a budget, and the CI
-gate compares budgets instead of refusing them.
+gate compares budgets instead of refusing them — the answer budget and, when both
+runs think, the thinking budget.
 """
 
 from __future__ import annotations
@@ -93,7 +94,9 @@ def test_exit_on_regression_refuses_a_different_budget(tmp_path, capsys):
         "--previous-result", baseline, "--exit-on-regression", name="smaller.json",
     )
     assert rc == 1
-    assert "token budget differs (current max_tokens=2048, previous max_tokens=4096)" in err
+    # --max-tokens also sets the thinking budget, so both differences are named
+    assert ("token budget differs (current max_tokens=2048, previous max_tokens=4096; "
+            "current thinking_max_tokens=2048, previous thinking_max_tokens=4096)") in err
     rc, _out, err, _ = _run(
         tmp_path, capsys,
         "--previous-result", baseline, "--exit-on-regression", name="packbudgets.json",
@@ -121,6 +124,33 @@ def test_delta_warns_when_budgets_differ(tmp_path, capsys):
     )
     assert rc == 0
     assert any(
-        "token budget differs (current max_tokens=4096, previous pack budgets)" in w
+        "token budget differs (current max_tokens=4096, previous pack budgets; "
+        "current thinking_max_tokens=4096, previous thinking_max_tokens=16384)" in w
         for w in result["delta"]["warnings"]
     )
+
+
+def test_exit_on_regression_refuses_a_different_thinking_budget(tmp_path, capsys):
+    # Same answer budget, different thinking budget: the gate used to pass it.
+    _run(tmp_path, capsys, "--max-tokens", "4096", "--thinking-max-tokens", "16384", name="baseline.json")
+    rc, _out, err, _ = _run(
+        tmp_path, capsys, "--max-tokens", "4096", "--thinking-max-tokens", "8192",
+        "--previous-result", str(tmp_path / "baseline.json"), "--exit-on-regression",
+        name="lessthink.json",
+    )
+    assert rc == 1
+    assert ("token budget differs (current thinking_max_tokens=8192, "
+            "previous thinking_max_tokens=16384)") in err
+
+
+def test_thinking_budget_is_not_compared_when_a_run_does_not_think(tmp_path, capsys):
+    # A thinking-off run records no thinking budget; nothing to compare against.
+    _run(tmp_path, capsys, "--no-thinking", "--max-tokens", "4096",
+         "--thinking-max-tokens", "16384", name="baseline.json")
+    rc, _out, err, result = _run(
+        tmp_path, capsys, "--no-thinking", "--max-tokens", "4096", "--thinking-max-tokens", "8192",
+        "--previous-result", str(tmp_path / "baseline.json"), "--exit-on-regression",
+        name="again.json",
+    )
+    assert rc == 0, err
+    assert not any("token budget differs" in w for w in result["delta"]["warnings"])
