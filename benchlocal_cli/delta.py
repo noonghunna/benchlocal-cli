@@ -118,6 +118,33 @@ def load_previous_result(path: str | Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def _fixed_budget(result: dict) -> int | None:
+    value = (result.get("sampling_overrides") or {}).get("max_tokens")
+    return value if isinstance(value, int) else None
+
+
+def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
+    """Why two runs' token budgets differ, or None (#187).
+
+    Only the fixed --max-tokens override is compared: it replaces every pack's
+    own budget, so a delta across two different values measures the budget as
+    much as the model. A missing or unreadable previous result is not a
+    mismatch — the caller reports that on its own path.
+    """
+    try:
+        previous = load_previous_result(previous_path)
+    except (OSError, ValueError):
+        return None
+    cur, prev = _fixed_budget(current), _fixed_budget(previous)
+    if cur == prev:
+        return None
+
+    def _name(value: int | None) -> str:
+        return f"max_tokens={value}" if value is not None else "pack budgets"
+
+    return f"token budget differs (current {_name(cur)}, previous {_name(prev)})"
+
+
 def classify(current: dict, previous_path: str | Path) -> RunDelta:
     """Compare current run dict to a previously-saved RunResult JSON."""
     previous = load_previous_result(previous_path)
@@ -134,6 +161,10 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
             f"schema_version mismatch (current={current.get('schema_version')!r}, "
             f"previous={previous.get('schema_version')!r}); proceeding best-effort"
         )
+
+    mismatch = budget_mismatch(current, previous_path)
+    if mismatch:
+        delta.warnings.append(f"{mismatch}; regressions and fixes may be budget effects")
 
     current_map = _build_scenario_map(current.get("packs") or [])
     previous_map = _build_scenario_map(previous.get("packs") or [])
