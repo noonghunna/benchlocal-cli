@@ -272,6 +272,13 @@ class RunResult:
     # The thinking-mode completion budget (--thinking-max-tokens) the run applied to thinking-enabled
     # packs; None when thinking was forced off. Recorded so the Results Card can show it.
     thinking_max_tokens: int | None = None
+    # #188: the two sampler inputs the journal kept but the result dropped.
+    # --thinking-sampler replaces the thinking arms' sampler (None on a
+    # thinking-off run, where it has no effect); --extra-body is merged into
+    # every request, so sampler keys in it change what was sent. Without them a
+    # results JSON could not tell a canonical run from one that used either.
+    thinking_sampler: dict | None = None
+    extra_body: dict | None = None
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
@@ -336,6 +343,10 @@ class RunResult:
             out["run_meta"] = self.run_meta
         if self.thinking_max_tokens is not None:
             out["thinking_max_tokens"] = self.thinking_max_tokens
+        if self.thinking_sampler is not None:
+            out["thinking_sampler"] = self.thinking_sampler
+        if self.extra_body is not None:
+            out["extra_body"] = self.extra_body
         if self.selection is not None:
             out["selection"] = self.selection
         if self.token_budget is not None:

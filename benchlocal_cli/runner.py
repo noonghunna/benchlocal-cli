@@ -1278,6 +1278,10 @@ class Runner:
                 thinking_max_tokens=(
                     None if self.thinking_mode == "force-off" else self.thinking_max_tokens
                 ),
+                thinking_sampler=(
+                    None if self.thinking_mode == "force-off" else self.thinking_sampler
+                ),
+                extra_body=dict(self.extra_body) if self.extra_body else None,
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
