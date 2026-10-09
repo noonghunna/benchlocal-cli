@@ -276,6 +276,15 @@ def test_resume_refuses_a_budget_the_original_run_did_not_record(tmp_path, monke
     assert "differs from the original run's (none recorded)" in capsys.readouterr().err
 
 
+def test_resume_of_a_thinking_off_run_does_not_compare_it(tmp_path, monkeypatch, capsys):
+    # Never recorded on a thinking-off run, so a different value cannot mix anything.
+    sidecar, mock = _interrupted_journal(tmp_path, monkeypatch, "--no-thinking",
+                                         "--server-thinking-budget", "8192")
+    assert main(["run", "--resume", str(sidecar), "--mock-responses-from-json", str(mock),
+                 "--server-thinking-budget", "4096"]) == 0
+    assert "server_thinking_budget" not in json.loads((tmp_path / "r.json").read_text())
+
+
 def test_retry_failed_keeps_the_baseline_budget(tmp_path, capsys):
     # A wrong answer, so the retry has a failed scenario to re-run.
     rc, *_ = _run(tmp_path, capsys, "--server-thinking-budget", "8192", name="baseline.json",

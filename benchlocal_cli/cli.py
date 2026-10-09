@@ -1656,11 +1656,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.thinking_sampler = json.dumps(config["thinking_sampler"])
             # The server's reasoning budget is a fact about the server the run
             # started on. Restored when not given; given again, it must match —
-            # one result cannot span two server budgets.
+            # one result cannot span two server budgets. A thinking-off run never
+            # records it (no effect there), so there is nothing to mix.
             recorded_server_budget = config.get("server_thinking_budget")
             if args.server_thinking_budget is None:
                 args.server_thinking_budget = recorded_server_budget
-            elif args.server_thinking_budget != recorded_server_budget:
+            elif (
+                args.server_thinking_budget != recorded_server_budget
+                and str(config.get("thinking_mode") or "") != "force-off"
+            ):
                 recorded_desc = (
                     "none recorded" if recorded_server_budget is None
                     else str(recorded_server_budget)
