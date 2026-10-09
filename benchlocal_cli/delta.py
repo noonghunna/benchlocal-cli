@@ -123,26 +123,45 @@ def _fixed_budget(result: dict) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _thinking_budget(result: dict) -> int | None:
+    value = result.get("thinking_max_tokens")
+    return value if isinstance(value, int) else None
+
+
 def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
     """Why two runs' token budgets differ, or None (#187).
 
-    Only the fixed --max-tokens override is compared: it replaces every pack's
-    own budget, so a delta across two different values measures the budget as
-    much as the model. A missing or unreadable previous result is not a
-    mismatch — the caller reports that on its own path.
+    Two budgets are compared, because a delta across different values measures
+    the budget as much as the model:
+
+    - the fixed --max-tokens override, which replaces every pack's own answer
+      budget ("pack budgets" when absent);
+    - the thinking budget (--thinking-max-tokens, else --max-tokens, else
+      16384), recorded as thinking_max_tokens. Compared only when BOTH runs
+      recorded one: a thinking-off run records none, and a run that thought
+      against one that did not differs in thinking mode, not in budget.
+
+    A missing or unreadable previous result is not a mismatch — the caller
+    reports that on its own path.
     """
     try:
         previous = load_previous_result(previous_path)
     except (OSError, ValueError):
         return None
+    diffs = []
     cur, prev = _fixed_budget(current), _fixed_budget(previous)
-    if cur == prev:
+    if cur != prev:
+
+        def _name(value: int | None) -> str:
+            return f"max_tokens={value}" if value is not None else "pack budgets"
+
+        diffs.append(f"current {_name(cur)}, previous {_name(prev)}")
+    cur_t, prev_t = _thinking_budget(current), _thinking_budget(previous)
+    if cur_t is not None and prev_t is not None and cur_t != prev_t:
+        diffs.append(f"current thinking_max_tokens={cur_t}, previous thinking_max_tokens={prev_t}")
+    if not diffs:
         return None
-
-    def _name(value: int | None) -> str:
-        return f"max_tokens={value}" if value is not None else "pack budgets"
-
-    return f"token budget differs (current {_name(cur)}, previous {_name(prev)})"
+    return f"token budget differs ({'; '.join(diffs)})"
 
 
 def classify(current: dict, previous_path: str | Path) -> RunDelta:
