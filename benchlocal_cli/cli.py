@@ -1162,6 +1162,18 @@ def _card_meta_lines(result: RunResult) -> list[str]:
         sampling = ", ".join(f"{k}={v}" for k, v in overrides.items()) + " (overrides)"
     else:
         sampling = "pack defaults"
+    if result.sampling_source != "server":
+        # #188: --sampling-from-server strips every sampler key, so these only
+        # matter when the harness sent the sampler.
+        from benchlocal_cli.runner import _SAMPLING_KEYS
+
+        extra = {k: v for k, v in (result.extra_body or {}).items() if k in _SAMPLING_KEYS}
+        if extra:
+            sampling += " · extra-body " + ", ".join(f"{k}={v}" for k, v in extra.items())
+        if result.thinking_sampler:
+            sampling += " · thinking sampler " + ", ".join(
+                f"{k}={v}" for k, v in result.thinking_sampler.items()
+            )
     rows.append(("Sampling", sampling))
 
     answer = (result.sampling_overrides or {}).get("max_tokens")
@@ -1689,6 +1701,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             if baseline.get("sampling_source") == "server" and not explicit_distribution:
                 args.sampling_from_server = True
+            # #188: the baseline's --thinking-sampler / --extra-body, unless given
+            # again. Before they were recorded, a retry of a run that used either
+            # re-ran under a different sampler and classified the difference.
+            if args.thinking_sampler is None and baseline.get("thinking_sampler") is not None:
+                args.thinking_sampler = json.dumps(baseline["thinking_sampler"])
+            if args.extra_body is None and baseline.get("extra_body") is not None:
+                args.extra_body = json.dumps(baseline["extra_body"])
             args.repeat = args.retry_failed
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):

@@ -322,6 +322,11 @@ def _build_result(
             None if str(config.get("thinking_mode") or "") == "force-off"
             else config.get("thinking_max_tokens")
         ),
+        thinking_sampler=(
+            None if str(config.get("thinking_mode") or "") == "force-off"
+            else config.get("thinking_sampler")
+        ),
+        extra_body=config.get("extra_body") or None,
         token_budget=config.get("token_budget"),
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
@@ -407,6 +412,8 @@ def _infer_config(data: dict, source: Path) -> dict:
         "server_defaults_source": data.get("server_defaults_source"),
         "run_meta": data.get("run_meta"),
         "thinking_max_tokens": data.get("thinking_max_tokens"),
+        "thinking_sampler": data.get("thinking_sampler"),
+        "extra_body": data.get("extra_body"),
         "token_budget": data.get("token_budget"),
         "budget_from_timeout": (data.get("token_budget") or {}).get("mode") == "derived",
         "budget_headroom": (data.get("token_budget") or {}).get("headroom"),
