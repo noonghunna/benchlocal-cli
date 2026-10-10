@@ -18,7 +18,7 @@ from importlib import resources
 
 import httpx
 
-from benchlocal_cli import __version__
+from benchlocal_cli import __version__, runner_commit
 from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
 from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, config_for_pack
@@ -1255,6 +1255,7 @@ class Runner:
             return RunResult(
                 schema_version="1",
                 runner_version=__version__,
+                runner_commit=runner_commit(),
                 endpoint=self.endpoint,
                 model=self.model,
                 mode=mode,

@@ -298,6 +298,8 @@ def _build_result(
     result = RunResult(
         schema_version=str(config.get("schema_version") or "1"),
         runner_version=str(config.get("runner_version") or __version__),
+        # #194: no fallback to this process's commit: the journal says what ran.
+        runner_commit=config.get("runner_commit") or None,
         endpoint=str(config.get("endpoint") or ""),
         model=str(config.get("model") or ""),
         mode=str(config.get("mode") or "custom"),
@@ -398,6 +400,7 @@ def _infer_config(data: dict, source: Path) -> dict:
     return {
         "schema_version": str(data.get("schema_version") or "1"),
         "runner_version": str(data.get("runner_version") or __version__),
+        "runner_commit": data.get("runner_commit"),
         "endpoint": data.get("endpoint"),
         "model": data.get("model"),
         "mode": mode,
@@ -533,6 +536,17 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
     }
     config = dict(state.config)
     config["runner_version"] = new_result.runner_version
+    # #194: like runner_version, the resuming session's commit stamps the merged
+    # result; when both sessions recorded one and they differ, say so, since the
+    # rows then come from two versions of the harness.
+    previous_commit = config.get("runner_commit")
+    config["runner_commit"] = new_result.runner_commit
+    commit_warnings = (
+        [f"resumed on a different runner commit ({previous_commit} -> {new_result.runner_commit}); "
+         "scenario rows come from both"]
+        if previous_commit and new_result.runner_commit and previous_commit != new_result.runner_commit
+        else []
+    )
     # A resumed session that could not re-read the defaults (e.g. caller-supplied
     # values not passed again) keeps the ones the original session recorded.
     config["server_defaults"] = new_result.server_defaults or config.get("server_defaults")
@@ -582,6 +596,7 @@ def merge_resume(state: ResumeState, new_result: RunResult) -> RunResult:
         warnings=_unique_warnings(
             _strip_validity_warnings(previous_warnings, validity_pack_ids),
             _strip_validity_warnings(list(new_result.warnings), validity_pack_ids),
+            commit_warnings,
         ),
         pack_templates=templates,
         pack_durations=pack_durations,

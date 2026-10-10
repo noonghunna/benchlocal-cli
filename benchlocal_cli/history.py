@@ -75,7 +75,9 @@ def _row_from_run(run_dict: dict) -> dict[str, str]:
         "total": str(int(totals.get("total", 0) or 0)),
         "score": f"{float(totals.get('score', 0.0) or 0.0):.4f}",
         "runner_version": run_dict.get("runner_version", ""),
-        "git_commit": os.environ.get("BENCHLOCAL_GIT_COMMIT", ""),
+        # BENCHLOCAL_GIT_COMMIT still wins when set; otherwise the commit the run
+        # recorded (#194), empty for a run from a wheel or an older result.
+        "git_commit": os.environ.get("BENCHLOCAL_GIT_COMMIT") or run_dict.get("runner_commit") or "",
     }
     for pack in run_dict.get("packs") or []:
         pid = (pack.get("pack_id") or "").replace("-", "_")

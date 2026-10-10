@@ -179,6 +179,23 @@ def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
     return f"token budget differs ({'; '.join(diffs)})"
 
 
+def runner_mismatch(current: dict, previous: dict) -> str | None:
+    """Why two runs' harness code differs, or None (#194).
+
+    Compared only when BOTH runs recorded a runner_commit (they ran from git
+    checkouts), so results from before the field, or from a wheel install,
+    compare exactly as before. Then a different commit or version is named.
+    Informational: unlike a budget mismatch it does not stop a regression gate.
+    """
+    cur_c, prev_c = current.get("runner_commit"), previous.get("runner_commit")
+    if not (isinstance(cur_c, str) and cur_c and isinstance(prev_c, str) and prev_c):
+        return None
+    cur_v, prev_v = current.get("runner_version"), previous.get("runner_version")
+    if cur_c == prev_c and cur_v == prev_v:
+        return None
+    return f"runner differs (current {cur_v} @ {cur_c}, previous {prev_v} @ {prev_c})"
+
+
 def classify(current: dict, previous_path: str | Path) -> RunDelta:
     """Compare current run dict to a previously-saved RunResult JSON."""
     previous = load_previous_result(previous_path)
@@ -199,6 +216,9 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
     mismatch = budget_mismatch(current, previous_path)
     if mismatch:
         delta.warnings.append(f"{mismatch}; regressions and fixes may be budget effects")
+    runner = runner_mismatch(current, previous)
+    if runner:
+        delta.warnings.append(f"{runner}; regressions and fixes may be harness effects")
 
     current_map = _build_scenario_map(current.get("packs") or [])
     previous_map = _build_scenario_map(previous.get("packs") or [])
