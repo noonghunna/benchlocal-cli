@@ -67,7 +67,7 @@ Use the canonical temp-0 default for regression tracking and cross-model ranking
 | **BugFind-15** | **Execution-backed** — candidate-fix verifier sandbox | ✅ sandboxed v0.4 verifier |
 | **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ✅ sandboxed v0.4 verifier |
 | **CLI-40** | **Linux exec sandbox** — command verifier sandbox | ✅ sandboxed v0.4 verifier |
-| **AiderPolyglot-30** | **Multi-language edit/test harness** — wraps upstream `Aider-AI/aider` `benchmark.py` over 30 curated exercises (cpp / go / java / js / python / rust, 5 each) | ✅ sandboxed v0.9 (single-scoreboard) |
+| **AiderPolyglot-30** | **Multi-language edit/test harness** — wraps upstream `Aider-AI/aider` `benchmark.py` over 30 curated exercises (cpp / go / java / js / python / rust, 5 each); effective ceiling 29/30, since aider hides `Cargo.toml` from the model and `rust/decimal` needs crates ([details](docs/AIDER_POLYGLOT_30.md#known-limitations), #182) | ✅ sandboxed v0.9 (single-scoreboard) |
 | **HumanEval+-30** | **Execution-backed code reasoning** — HumanEval+ functional tests via the `code-reasoning` sandbox | ✅ sandboxed reasoning subset |
 | **LiveCodeBench-v6-30** | **Execution-backed code reasoning** — public LCB functional tests via the `code-reasoning` sandbox | ✅ sandboxed reasoning subset |
 | **GSM-Symbolic-30** | Deterministic — `answer_match` exact numeric final-answer scoring | ✅ reasoning subset |
