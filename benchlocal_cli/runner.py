@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 
 import httpx
@@ -301,7 +301,7 @@ def _thinking_extra_body(sampling: dict, control: str) -> dict:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _duration_between(started_at: str | None, finished_at: str | None) -> float | None:

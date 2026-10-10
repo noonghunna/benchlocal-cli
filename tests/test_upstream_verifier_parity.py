@@ -306,15 +306,6 @@ def test_so04_so12_upstream_half_matches_recorded_upstream_verdict(case, monkeyp
     assert evaluation.passed == (case["upstream_status"] == "pass")
 
 
-def test_so04_without_tomllib_falls_back_to_upstream(monkeypatch):
-    """Python 3.10 has no tomllib: SO-04 is then upstream's check alone, and says so."""
-    monkeypatch.setattr(struct_output_upstream, "tomllib", None)
-    assert _port("SO-04")(_SO04_BASE).passed
-    fallback = _port("SO-04")(_SO04_TABLES)
-    assert not fallback.passed
-    assert "no tomllib" in fallback.summary
-
-
 def _scenario(pack_id: str, scenario_id: str) -> dict:
     return next(s for s in load_pack(pack_id)[1] if s["id"] == scenario_id)
 
