@@ -286,6 +286,11 @@ class RunResult:
     # supplied or when thinking was forced off (no effect there, like
     # thinking_max_tokens). 0 is a real value.
     server_thinking_budget: int | None = None
+    # #194: the commit the runner ran from (`<short sha>[+dirty]`) when it ran
+    # from a git checkout. runner_version only changes in the release bump, so
+    # between releases it names the last release, not the code. None when not a
+    # checkout (a wheel or site-packages install), which keeps the JSON unchanged.
+    runner_commit: str | None = None
     # Ordered, pack-qualified IDs for targeted runs. Optional/additive so schema
     # version 1 readers remain compatible with ordinary and historical results.
     selection: list[str] | None = None
@@ -313,6 +318,7 @@ class RunResult:
         out = {
             "schema_version": self.schema_version,
             "runner_version": self.runner_version,
+            **({"runner_commit": self.runner_commit} if self.runner_commit else {}),
             "endpoint": self.endpoint,
             "model": self.model,
             "mode": self.mode,

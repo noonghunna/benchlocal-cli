@@ -39,7 +39,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchlocal_cli import __version__
+from benchlocal_cli import __version__, runner_commit
 from benchlocal_cli.runner import (
     DEFAULT_MODEL_TURN_TIMEOUT_S,
     PACK_MODES,
@@ -1261,6 +1261,8 @@ def _card_shows_usage(result: RunResult) -> bool:
 def _results_card_markdown(result: RunResult) -> str:
     """Render the stable, paste-ready Results Card v2 shape (#114)."""
     version = result.runner_version.removeprefix("v")
+    if result.runner_commit:  # #194: between releases the version alone names the last release
+        version += f" ({result.runner_commit})"
     context = _card_meta_lines(result)
     usage = _card_shows_usage(result)
     lines = [
@@ -1969,6 +1971,7 @@ def main(argv: list[str] | None = None) -> int:
         run_config = {
             "schema_version": "1",
             "runner_version": __version__,
+            **({"runner_commit": runner_commit()} if runner_commit() else {}),
             "endpoint": args.endpoint,
             "model": args.model,
             "mode": mode,
