@@ -96,6 +96,27 @@ than bending `/verify-start` into a batch protocol.
   `23/30 → 20/30 (-10pp)`) — not just threshold flips, since `pass_rate`
   is first-class on `ScenarioResult`
 
+## Retry budget (`--aider-tries`)
+
+aider's `benchmark.py` gives each exercise **2 tries** by default (`--tries`), and
+its public leaderboard runs that default. A retry sees the previous attempt's test
+failures, so the budget moves the score more than anything else measured on this
+pack: 16/30 → 20/30 from 2 to 4 tries on one model, with sampling, edit format and
+thinking held fixed (#184).
+
+- `benchlocal-cli run --pack aider-polyglot-30 --aider-tries 4 …` passes `--tries 4`;
+  without the flag the argv is unchanged (no `--tries`), so default runs are as before.
+- The batch time cap (`AIDER_BENCHMARK_TIMEOUT_S` and the runner's read timeout)
+  scales by `N / 2`, so a 4-try batch isn't killed at the 2-try clock.
+- The sandbox echoes the budget it ran as `tries_budget` (with `tries_budget_source`)
+  in the batch trace; the result records `aider_tries` when the flag was given.
+- **Not leaderboard-comparable** when N ≠ 2. `--previous-result` warns and
+  `--exit-on-regression` refuses across different budgets; a result without
+  `aider_tries` ran 2.
+- An image built before #184 would ignore the request and run 2 tries. The runner
+  reads `/health` (`supports_tries`) and refuses `--aider-tries` against such an
+  image before the batch starts — rebuild with `bash tools/build-sandboxes.sh aider-polyglot`.
+
 ## Running
 
 ```bash

@@ -87,6 +87,11 @@ _LITELLM_PROVIDERS = {
 # Default edit format. `whole` is the broadest model-compat choice; the
 # runner can override via raw_scenario / sampling_overrides.
 DEFAULT_EDIT_FORMAT = "whole"
+# #184: benchmark.py's own --tries default, and what aider's public leaderboard
+# runs. A run asks for another budget with the request's `aider_tries`
+# (`benchlocal-cli run --aider-tries N`); nothing else sets it, so the value
+# echoed in every trace as `tries_budget` is the whole story.
+AIDER_DEFAULT_TRIES = 2
 
 
 def _model_settings_text(
@@ -255,6 +260,7 @@ def _exercise_count_status() -> dict:
 # ============================================================================
 
 REQUIRED_BENCHMARK_FLAGS = (
+    "--tries",
     "--num-tests",
     "--keywords",
     "--model",
@@ -363,6 +369,7 @@ def _build_benchmark_args(
     edit_format: str = DEFAULT_EDIT_FORMAT,
     threads: int = 1,
     num_tests: int | None = None,
+    tries: int = AIDER_DEFAULT_TRIES,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """Build the argv for `python benchmark/benchmark.py ...`. Pure function;
@@ -385,9 +392,22 @@ def _build_benchmark_args(
     ]
     if num_tests is not None:
         argv.extend(["--num-tests", str(num_tests)])
+    # #184: only a non-default budget is passed, so the default argv is the
+    # same as it always was.
+    if tries != AIDER_DEFAULT_TRIES:
+        argv.extend(["--tries", str(tries)])
     if extra_args:
         argv.extend(extra_args)
     return argv
+
+
+def _resolve_tries(req: dict) -> tuple[int, str]:
+    """(tries budget, where it came from) for one batch (#184): the request's
+    `aider_tries` when it is a positive integer, else aider's default."""
+    value = req.get("aider_tries")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value, "request"
+    return AIDER_DEFAULT_TRIES, "default"
 
 
 def _qualify_aider_model(model_name: str) -> str:
@@ -671,6 +691,7 @@ def _verify_start(req: dict) -> dict:
             (scenario.get("raw_scenario") or {}).get("default_pass_threshold")
             or DEFAULT_PASS_THRESHOLD
         )
+        tries, tries_source = _resolve_tries(req)
         # litellm (which aider uses under the hood) requires a provider
         # prefix in the model name to route to OpenAI-compatible custom
         # endpoints. Without `openai/`, litellm tries to resolve the model
@@ -706,6 +727,7 @@ def _verify_start(req: dict) -> dict:
             model=aider_model,
             edit_format=edit_format,
             threads=int(os.environ.get("AIDER_BENCHMARK_THREADS", "1")),
+            tries=tries,
             extra_args=settings_args,
         )
 
@@ -825,6 +847,8 @@ def _verify_start(req: dict) -> dict:
                     "polyglot_pinned_commit": POLYGLOT_PINNED_COMMIT,
                     "edit_format": edit_format,
                     "threshold": threshold,
+                    "tries_budget": tries,
+                    "tries_budget_source": tries_source,
                     "timed_out": True,
                     "found_count": partial_found,
                     "canonical_total_count": canonical_total,
@@ -853,6 +877,8 @@ def _verify_start(req: dict) -> dict:
                     "schema_version": SCHEMA_VERSION,
                     "elapsed_s": elapsed,
                     "returncode": proc.returncode,
+                    "tries_budget": tries,
+                    "tries_budget_source": tries_source,
                     "stderr_tail": (stderr or "")[-2000:],
                     "stdout_tail": (stdout or "")[-1000:],
                 },
@@ -881,6 +907,8 @@ def _verify_start(req: dict) -> dict:
                 "polyglot_pinned_commit": POLYGLOT_PINNED_COMMIT,
                 "edit_format": edit_format,
                 "threshold": threshold,
+                "tries_budget": tries,
+                "tries_budget_source": tries_source,
                 "found_count": graded["found_count"],
                 "missing_results": graded["missing_results"],
                 "extra_results": graded["extra_results"],
@@ -926,6 +954,10 @@ def _resolve_health() -> dict:
         "subprocess_timeout_s": SUBPROCESS_TIMEOUT_S,
         "default_edit_format": DEFAULT_EDIT_FORMAT,
         "default_pass_threshold": DEFAULT_PASS_THRESHOLD,
+        # #184: the runner refuses --aider-tries against an image without this,
+        # which would otherwise run aider's default and say nothing.
+        "supports_tries": True,
+        "default_tries": AIDER_DEFAULT_TRIES,
     }
 
 

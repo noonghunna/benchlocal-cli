@@ -38,6 +38,9 @@ class EpisodeCap:
     env_name: str          # container-side env var that carries the cap
     default_s: float       # the built-in guard, for the log line
     override_env: str | None = None  # runner-side env that overrides it verbatim
+    # #184: aider only — the cap is multiplied by tries / 2 for a retry budget
+    # above aider's default, since each extra try can re-run an exercise.
+    tries_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,8 @@ class SandboxConfig:
 # it (never lower it below this default). request_timeout_s tracks the inner
 # cap plus headroom so the outer HTTP read doesn't fire before the inner kill.
 _AIDER_DEFAULT_BATCH_TIMEOUT_S = 3600.0
+# #184: aider's benchmark.py --tries default (and its public leaderboard's).
+_AIDER_DEFAULT_TRIES = 2
 _AIDER_REQUEST_TIMEOUT_HEADROOM_S = 300.0
 
 # #149: hermes per-scenario episode cap (container-side HERMES_SUBPROCESS_TIMEOUT_S).
@@ -156,11 +161,14 @@ def resolve_episode_cap(
     batch_timeout_s: float | None = None,
     timeout_per_case: float | None = None,
     environ: dict[str, str] | None = None,
+    aider_tries: int | None = None,
 ) -> EpisodeCap | None:
     """#149: resolve the in-container cap for an agent-owned pack, or None.
 
     - aider-polyglot-30: `batch_timeout_s` (the per-case budget, explicit or
-      auto-scaled — #3) floors the 3600s batch default.
+      auto-scaled — #3) floors the 3600s batch default; a retry budget above
+      aider's default of 2 (#184) multiplies it by `aider_tries / 2`, or a
+      4-try batch would be cut at the 2-try clock and read as a weaker model.
     - hermesagent-20: an explicit `timeout_per_case` floors the 300s episode
       default; BENCHLOCAL_HERMES_SUBPROCESS_TIMEOUT_S overrides both verbatim.
     - anything else: None — the runner owns the model calls, so the runner-side
@@ -173,11 +181,13 @@ def resolve_episode_cap(
         if batch_timeout_s and float(batch_timeout_s) > inner:
             inner = float(batch_timeout_s)
             source = "budget"
+        scale = max(1.0, (aider_tries or _AIDER_DEFAULT_TRIES) / _AIDER_DEFAULT_TRIES)
         return EpisodeCap(
-            seconds=inner,
+            seconds=inner * scale,
             source=source,
             env_name="AIDER_BENCHMARK_TIMEOUT_S",
             default_s=_AIDER_DEFAULT_BATCH_TIMEOUT_S,
+            tries_scale=scale,
         )
     if pack_id == "hermesagent-20":
         override = env.get(_HERMES_SUBPROCESS_TIMEOUT_ENV)
@@ -755,6 +765,7 @@ class SandboxClient:
         thinking_budget: int | None = None,
         thinking_extra_body: dict | None = None,
         preserve_reasoning_history: bool | None = None,
+        aider_tries: int | None = None,
     ) -> dict:
         """Initialize a sandbox-owned multi-turn scenario state.
 
@@ -783,7 +794,29 @@ class SandboxClient:
             payload["thinking_extra_body"] = dict(thinking_extra_body)
         if preserve_reasoning_history is not None:
             payload["preserve_reasoning_history"] = preserve_reasoning_history
+        if aider_tries is not None:
+            payload["aider_tries"] = aider_tries  # #184
         return self._post("/verify-start", payload)
+
+    def health(self) -> dict:
+        """The sandbox's /health body (#184: read for capabilities, e.g. whether
+        the aider image honours `aider_tries`). Raises RuntimeError when it can't
+        be read; `start()` only checks the status code."""
+        if self.config.network_isolated:
+            status, body = self._exec_http("/health", None, timeout_s=10.0)
+        else:
+            try:
+                response = httpx.get(f"http://127.0.0.1:{self.config.host_port}/health", timeout=10.0)
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"sandbox {self.config.pack_id} /health unreadable: {exc}") from exc
+            status, body = response.status_code, response.text
+        try:
+            data = json.loads(body) if status == 200 else None
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            raise RuntimeError(f"sandbox {self.config.pack_id} /health returned HTTP {status}, not a JSON object")
+        return data
 
     def verify_multiturn_turn(self, scenario_state_id: str, model_response: dict) -> dict:
         """Advance one multi-turn step; returns next prompt or final result."""
@@ -888,6 +921,7 @@ def config_for_pack(
     *,
     batch_timeout_s: float | None = None,
     timeout_per_case: float | None = None,
+    aider_tries: int | None = None,
 ) -> SandboxConfig:
     config = SANDBOX_REGISTRY[pack_id]
     base = config.image_name.split(":", 1)[0]
@@ -897,7 +931,8 @@ def config_for_pack(
     if pack_id != "aider-polyglot-30" and batch_timeout_s and batch_timeout_s > request_timeout_s:
         request_timeout_s = float(batch_timeout_s)
     episode_cap = resolve_episode_cap(
-        pack_id, batch_timeout_s=batch_timeout_s, timeout_per_case=timeout_per_case
+        pack_id, batch_timeout_s=batch_timeout_s, timeout_per_case=timeout_per_case,
+        aider_tries=aider_tries,
     )
 
     if pack_id == "aider-polyglot-30":

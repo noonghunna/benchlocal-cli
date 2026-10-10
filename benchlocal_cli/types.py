@@ -286,6 +286,11 @@ class RunResult:
     # supplied or when thinking was forced off (no effect there, like
     # thinking_max_tokens). 0 is a real value.
     server_thinking_budget: int | None = None
+    # #184: aider-polyglot-30's retry budget (benchmark.py --tries) when the run
+    # asked for one with --aider-tries and the aider pack ran. None means
+    # aider's default of 2 — every result from before the flag ran 2 — which
+    # keeps the JSON of default runs unchanged.
+    aider_tries: int | None = None
     # #194: the commit the runner ran from (`<short sha>[+dirty]`) when it ran
     # from a git checkout. runner_version only changes in the release bump, so
     # between releases it names the last release, not the code. None when not a
@@ -362,6 +367,8 @@ class RunResult:
             out["extra_body"] = self.extra_body
         if self.server_thinking_budget is not None:
             out["server_thinking_budget"] = self.server_thinking_budget
+        if self.aider_tries is not None:
+            out["aider_tries"] = self.aider_tries
         if self.selection is not None:
             out["selection"] = self.selection
         if self.token_budget is not None:
