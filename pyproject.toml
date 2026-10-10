@@ -11,14 +11,13 @@ authors = [
     { name = "noonghunna" },
 ]
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["llm", "benchmark", "evaluation", "tool-calling", "instruction-following", "structured-output", "benchlocal"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Testing",
@@ -63,7 +62,7 @@ include-package-data = true
 benchlocal_cli = ["packs/*.jsonl"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]

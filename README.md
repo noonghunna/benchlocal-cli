@@ -204,6 +204,8 @@ docs/
 
 ## Quick start
 
+Requires **Python 3.11+** (the StructOutput SO-04 scorer parses TOML with the standard library's `tomllib`; #200). On a system whose `python3` is older (Ubuntu 22.04 ships 3.10), install with a newer interpreter — e.g. `uv tool install --python 3.12 git+https://github.com/noonghunna/benchlocal-cli.git`, or create a venv from `uv python install 3.12` / deadsnakes.
+
 ```bash
 # install
 pip install -e .

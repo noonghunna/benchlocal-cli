@@ -36,7 +36,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from benchlocal_cli import __version__, runner_commit
@@ -1581,7 +1581,7 @@ def _resolve_sandbox_log_dir(
     if save_json:
         return os.path.abspath(Path(save_json).parent / "sandbox-logs")
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%SZ")
     return os.path.abspath(Path("benchlocal-runs") / timestamp / "sandbox-logs")
 
 

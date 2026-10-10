@@ -20,14 +20,10 @@ That is upstream's contract, reproduced as is.
 from __future__ import annotations
 
 import re
+import tomllib  # stdlib from 3.11, the minimum (#200), so SO-04 scores alike on every Python
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
-
-try:  # stdlib from Python 3.11; on 3.10 SO-04 keeps upstream's regex check alone
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised by monkeypatching in tests
-    tomllib = None
 
 from benchlocal_cli.scoring import mermaid_flowchart
 from benchlocal_cli.scoring._js import DOT, S, js_round, normalize_line_endings, trim
@@ -106,8 +102,6 @@ def _toml_structure(text: str) -> tuple[bool, bool]:
     """(parseable, correct) from the parsed TOML: package and dependencies tables,
     in whatever form TOML allows. A single code fence is unwrapped first; upstream
     lets a fenced answer pass with discipline 1."""
-    if tomllib is None:
-        return False, False
     fence = _FENCE_RE.match(text)
     try:
         doc = tomllib.loads(fence.group(1) if fence else text)
@@ -140,8 +134,6 @@ def _toml(text: str) -> tuple[int, int, str]:
         if correct
         else "TOML sections or dependency definitions were incomplete."
     )
-    if not correct and tomllib is None:
-        summary += " (Structural check unavailable: Python 3.10 has no tomllib; upstream's regex check only.)"
     return p, c, summary
 
 
