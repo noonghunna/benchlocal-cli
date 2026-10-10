@@ -9,6 +9,48 @@ the same content per-version.
 
 ---
 
+## v0.11.0 — 2026-10-10
+
+
+### ✨ Features
+
+- feat(delta): compare the server's reasoning budget before gating a regression ([9ff2cb6](https://github.com/noonghunna/benchlocal-cli/commit/9ff2cb63b8cd296d83c2200ef02b6d94552ecec9))
+- feat(run): record the server's reasoning budget with --server-thinking-budget ([148de34](https://github.com/noonghunna/benchlocal-cli/commit/148de34b199076069d99ec354b9a0a032652bb98))
+- feat(report): settings table above the Results Card (model, rig, thinking, sampling, max tokens) ([1509fd1](https://github.com/noonghunna/benchlocal-cli/commit/1509fd1bd0520acb17c7b5a2eeaf7b12c5ead98e))
+- feat(report): Tokens out and Time columns in the Results Card ([af681f7](https://github.com/noonghunna/benchlocal-cli/commit/af681f7f2c67862be49dacc41fce04d3ccf89e22))
+- feat(report): record the sampling in effect and the rig with the results ([ec67171](https://github.com/noonghunna/benchlocal-cli/commit/ec671712430bd1cbd2ebf66c9cd37312858be2c3))
+
+
+### 🐛 Bug fixes
+
+- fix(run): a resume of a thinking-off run does not compare the server budget ([2f116de](https://github.com/noonghunna/benchlocal-cli/commit/2f116debe1636c1b818c7db0320fa144126c7e55))
+- fix(delta): compare the thinking budget too before gating a regression ([0283d52](https://github.com/noonghunna/benchlocal-cli/commit/0283d52278a9d3a920b4a8bdde2f6ce46ab1c40f))
+- fix(report): record --thinking-sampler and --extra-body in the results JSON (#188) ([cefaf08](https://github.com/noonghunna/benchlocal-cli/commit/cefaf0871ef4c8651769b1534bda605e97dbd03a))
+- fix(report): a fixed --max-tokens is a budget, not a sampling override (#187) ([44bf857](https://github.com/noonghunna/benchlocal-cli/commit/44bf857ba3694c9ab206e1e5a245c32c8787b79f))
+- fix(hermes): turn thinking off with chat_template_kwargs, like every other pack ([5058b3a](https://github.com/noonghunna/benchlocal-cli/commit/5058b3a4a38ad23af09d7746a8166a79e257e728))
+- fix(hermes): forward presence_penalty / frequency_penalty to the model ([9bf4136](https://github.com/noonghunna/benchlocal-cli/commit/9bf41364fe7a809144db289dfcc0fdef70be3399))
+- fix(aider-polyglot): result walk can't fail a batch on a flaky mount (#170) ([b637782](https://github.com/noonghunna/benchlocal-cli/commit/b63778223808d5e4fae84ea72bc03d46593fbc47))
+- fix(tools): smoke-test all five sandbox images, and check /health says ok (#171) ([2c62958](https://github.com/noonghunna/benchlocal-cli/commit/2c62958757c65b08515765843b9c5597708c415c))
+- fix(aider-polyglot): live /verify-progress finds aider's timestamped run dir (#169) ([7f40566](https://github.com/noonghunna/benchlocal-cli/commit/7f405666c9f3cad3774e496965e364c3ba283645))
+- fix(aider-polyglot): make the thinking switch actually reach the endpoint (#172, #173) ([4416018](https://github.com/noonghunna/benchlocal-cli/commit/4416018645c4048a528450bc2d3c48bf8f6aa79d))
+- fix(sandbox): pass verifier inputs to node on stdin, not argv (#174) ([0ced0db](https://github.com/noonghunna/benchlocal-cli/commit/0ced0db45094ebf2858a55bf4c3702b119082070))
+- fix(sandbox): absolute sandbox log dir, and show Docker's reason on start failure (#168) ([3eab6f2](https://github.com/noonghunna/benchlocal-cli/commit/3eab6f23fb4cc1e18c79f53e9be364359170a4d1))
+- fix(hermes): send top_k/min_p/repetition_penalty in extra_body; surface Hermes failures ([fb6c630](https://github.com/noonghunna/benchlocal-cli/commit/fb6c6305f6b89b2147134432c96b8b6e188b24ec))
+- fix(hermes): count the agent's own model calls via a usage proxy in the sandbox ([fb2e6fe](https://github.com/noonghunna/benchlocal-cli/commit/fb2e6feb56e8792fec57ece90b0b62629b751498))
+
+
+### 📝 Documentation
+
+- docs(readme): document --server-thinking-budget ([29fc239](https://github.com/noonghunna/benchlocal-cli/commit/29fc2399960433b0b65b2777dc839ce7c9054cdd))
+
+
+### 🧹 Refactoring + maintenance
+
+- chore(release): bump version 0.10.0 -> 0.11.0 ([5f07f27](https://github.com/noonghunna/benchlocal-cli/commit/5f07f2732af62a541531f1cbed5e5dd2ffcc2e24))
+
+
+
+[Install: `pip install git+https://github.com/noonghunna/benchlocal-cli.git@v0.11.0`] · [Full diff](https://github.com/noonghunna/benchlocal-cli/compare/v0.10.0...v0.11.0)
 ## v0.10.0 — 2026-09-23
 
 
