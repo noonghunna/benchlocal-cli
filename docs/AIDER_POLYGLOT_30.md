@@ -59,7 +59,7 @@ editor like Cursor / Continue / aider itself."
 | Python | bowling | medium | state machine |
 | Python | book-store | medium | optimization |
 | Rust | acronym | easy | string |
-| Rust | decimal | hard | arbitrary precision |
+| Rust | decimal | hard | arbitrary precision — effectively unpassable, see [Known limitations](#known-limitations) |
 | Rust | dot-dsl | medium | DSL parsing |
 | Rust | doubly-linked-list | hard | lifetimes |
 | Rust | bowling | medium | state machine |
@@ -179,6 +179,25 @@ toolchains). On rigs with <30 GB free, run
 
 ## Known limitations
 
+- **`rust/decimal` caps the pack at 29/30 (#182).** The exercise's reference
+  solution (`.meta/example.rs`) uses the `num-bigint` and `num-traits` crates,
+  listed in `.meta/Cargo-example.toml`, while the exercise's own `Cargo.toml`
+  declares no dependencies. With those crates declared, the reference passes all
+  44 tests in the sandbox image, which can fetch them. But aider's `benchmark.py`
+  removes `Cargo.toml` (and `CMakeLists.txt`) from the files the model may edit
+  (`ignore_files`), so the model cannot declare them: the only passing answer is
+  arbitrary-precision arithmetic written by hand in plain Rust. In practice
+  `rust/decimal` passed in 0 of the 37 batches we have results for (to
+  2026-10-10). aider's public leaderboard runs the same `benchmark.py`, so it hits
+  the same wall.
+  - **Effect:** one exercise every model fails, so comparisons between runs and
+    between models are unaffected; the absolute ceiling is 29/30 (96.7%), not
+    30/30. The 50% pass threshold is not affected in practice.
+  - **Why it is kept:** swapping the exercise or adding the crates would make
+    scores incomparable with every existing result and depart from aider's
+    method. Revisit when the 30-exercise set is next revised.
+  - The other 29 reference solutions pass their tests in the image (checked
+    2026-10-10).
 - **virtiofs log mounts (e.g. Colima `mountType: virtiofs`)**: with
   `--sandbox-log-dir` on, the job dir is a host bind mount, and CMake's build
   tree inside it can intermittently hit `EDEADLK`. The batch survives (the
