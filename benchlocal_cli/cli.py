@@ -1548,6 +1548,19 @@ def _pack_ids_include_sandboxed(pack_ids: list[str]) -> bool:
     return False
 
 
+def _installed_pack_versions(pack_ids) -> dict:
+    """A result-shaped {"packs": [...]} naming the installed version of each pack,
+    for delta.pack_version_mismatch() before a run has produced its own (#198)."""
+    packs = []
+    for pack_id in pack_ids:
+        try:
+            meta, _ = load_pack(pack_id)
+        except Exception:
+            continue
+        packs.append({"pack_id": pack_id, "version": meta.get("version")})
+    return {"packs": packs}
+
+
 def _resolve_sandbox_log_dir(
     *,
     requested: str | None,
@@ -1678,6 +1691,27 @@ def main(argv: list[str] | None = None) -> int:
                     f"--resume: --server-thinking-budget {args.server_thinking_budget} differs "
                     f"from the original run's ({recorded_desc}); a resumed run keeps one server "
                     "configuration — resume on the original server, or start a new run"
+                )
+            # #198: the merged result is labelled with the installed packs, so rows
+            # scored by an older pack version would be relabelled — even in a pack
+            # the resume doesn't touch. One scorer per pack, as for the server budget.
+            from benchlocal_cli.persistence import recorded_pack_versions
+
+            recorded = recorded_pack_versions(resume_state)
+            installed = {
+                pack["pack_id"]: pack["version"]
+                for pack in _installed_pack_versions(recorded)["packs"]
+            }
+            stale = [
+                f"{pack_id} {', '.join(sorted(versions))} (installed {installed[pack_id]})"
+                for pack_id, versions in sorted(recorded.items())
+                if pack_id in installed and versions != {installed[pack_id]}
+            ]
+            if stale:
+                raise ValueError(
+                    f"--resume: rows were scored by a different pack version ({'; '.join(stale)}); "
+                    "a resumed run keeps one scorer per pack — finish it with the benchlocal "
+                    "version that started it, or start a new run"
                 )
             args.measured_tps = args.measured_tps or config.get("measured_tps")
             args.reference_tps = args.reference_tps or config.get("reference_tps")
@@ -1872,6 +1906,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             if retry_failed_context is not None:
                 retry_failed_context["selection"] = list(selection_ids or [])
+                # #198: a baseline failure that passes under a newer scorer would
+                # read as "flaky". `rescore` brings the baseline to the installed packs.
+                from benchlocal_cli import delta as delta_module
+
+                versions = delta_module.pack_version_mismatch(
+                    _installed_pack_versions(pack_ids), baseline
+                )
+                if versions:
+                    raise ValueError(
+                        f"--retry-failed: {versions}; a retry would count scorer changes as "
+                        "flaky — rescore the baseline with the installed packs first "
+                        "(benchlocal-cli rescore)"
+                    )
 
         # --full implies sandboxed packs by default; --no-sandboxed-packs opts out.
         # --sandboxed-only also implies sandbox is enabled (no point otherwise).
@@ -2113,6 +2160,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"benchlocal-cli: --exit-on-regression is blocked: {mismatch}. "
                     "Re-run with the previous result's budget, or capture a new baseline.",
+                    file=sys.stderr,
+                )
+                return 1
+            # #198: a scenario that flips because its scorer changed is not a
+            # regression. `rescore` re-grades the previous result with the
+            # installed packs and relabels it, which clears this.
+            try:
+                previous = delta_module.load_previous_result(args.previous_result)
+            except (OSError, ValueError):
+                previous = None  # reported on the delta path
+            versions = (
+                delta_module.pack_version_mismatch(_installed_pack_versions(pack_ids), previous)
+                if previous is not None else None
+            )
+            if versions:
+                print(
+                    f"benchlocal-cli: --exit-on-regression is blocked: {versions}. "
+                    "Rescore the previous result with the installed packs "
+                    "(benchlocal-cli rescore), or capture a new baseline.",
                     file=sys.stderr,
                 )
                 return 1

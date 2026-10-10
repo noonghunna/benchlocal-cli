@@ -506,6 +506,30 @@ def load_resume(path: str | Path) -> ResumeState:
     )
 
 
+def recorded_pack_versions(state: ResumeState) -> dict[str, set[str]]:
+    """{pack_id: the pack versions that scored the rows a resume keeps} (#198).
+
+    A journal is read record by record: rebuilding it into a result labels every
+    pack with the version installed NOW (_aggregate_pack loads the pack), which
+    is exactly the difference this has to see. A saved result keeps its labels.
+    """
+    versions: dict[str, set[str]] = {}
+
+    def _add(pack: object) -> None:
+        if isinstance(pack, dict):
+            pack_id, version = pack.get("pack_id"), pack.get("version")
+            if isinstance(pack_id, str) and pack_id and isinstance(version, str) and version:
+                versions.setdefault(pack_id, set()).add(version)
+
+    if str(state.source_path).endswith(".partial.jsonl"):
+        for record in _read_journal(state.source_path):
+            _add(record.get("pack"))
+    else:
+        for pack in state.previous_result.get("packs") or []:
+            _add(pack)
+    return versions
+
+
 def finalize_completed_journal(state: ResumeState) -> dict:
     result = json.loads(json.dumps(state.previous_result))
     result["warnings"] = [

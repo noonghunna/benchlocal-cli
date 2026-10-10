@@ -142,6 +142,7 @@ def rescore_result(path: str, args: Any) -> int:
     rescored = 0
     skipped: dict[str, int] = {}
     sandboxed_packs: list[str] = []
+    version_changes: dict[str, dict] = {}
     for pack in data.get("packs", []):
         if not isinstance(pack, dict):
             continue
@@ -168,6 +169,7 @@ def rescore_result(path: str, args: Any) -> int:
             for scenario in current_scenarios
             if isinstance(scenario, dict)
         }
+        pack_scored = pack_skipped = 0
         try:
             for run in pack.get("scenarios", []):
                 if not isinstance(run, dict):
@@ -180,12 +182,27 @@ def rescore_result(path: str, args: Any) -> int:
                 )
                 if did_score:
                     rescored += 1
-                elif reason:
-                    skipped[reason] = skipped.get(reason, 0) + 1
+                    pack_scored += 1
+                else:
+                    pack_skipped += 1
+                    if reason:
+                        skipped[reason] = skipped.get(reason, 0) + 1
         finally:
             if sandbox_client is not None:
                 sandbox_client.stop()
         _recompute_pack(pack)
+        # #198: the scores now come from the installed pack's scorer, so the label
+        # must too, or a later delta compares two scorers under one version. A pack
+        # only partly re-graded keeps its label (no single scorer produced it) and
+        # is recorded as partial.
+        old_version, new_version = pack.get("version"), pack_meta.get("version")
+        if pack_scored and isinstance(new_version, str) and new_version and new_version != old_version:
+            change: dict = {"from": old_version, "to": new_version}
+            if pack_skipped:
+                change["partial"] = True
+            else:
+                pack["version"] = new_version
+            version_changes[pack_id] = change
 
     _recompute_totals(data)
     data["rescored"] = {
@@ -195,6 +212,8 @@ def rescore_result(path: str, args: Any) -> int:
         "pack_filter": args.pack,
         "sandboxed_packs": sandboxed_packs,
     }
+    if version_changes:
+        data["rescored"]["pack_versions"] = version_changes
 
     if args.in_place and args.output:
         raise ValueError("use either --in-place or --output, not both")
