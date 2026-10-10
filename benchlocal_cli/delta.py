@@ -128,6 +128,11 @@ def _thinking_budget(result: dict) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _server_thinking_budget(result: dict) -> int | None:
+    value = result.get("server_thinking_budget")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
     """Why two runs' token budgets differ, or None (#187).
 
@@ -140,6 +145,11 @@ def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
       16384), recorded as thinking_max_tokens. Compared only when BOTH runs
       recorded one: a thinking-off run records none, and a run that thought
       against one that did not differs in thinking mode, not in budget.
+    - the reasoning budget the server applied (--server-thinking-budget,
+      informational — never sent), recorded as server_thinking_budget. Same
+      rule: compared only when BOTH runs recorded one, so results from before
+      the field existed, or from a caller that did not supply it, compare
+      exactly as before.
 
     A missing or unreadable previous result is not a mismatch — the caller
     reports that on its own path.
@@ -159,6 +169,11 @@ def budget_mismatch(current: dict, previous_path: str | Path) -> str | None:
     cur_t, prev_t = _thinking_budget(current), _thinking_budget(previous)
     if cur_t is not None and prev_t is not None and cur_t != prev_t:
         diffs.append(f"current thinking_max_tokens={cur_t}, previous thinking_max_tokens={prev_t}")
+    cur_s, prev_s = _server_thinking_budget(current), _server_thinking_budget(previous)
+    if cur_s is not None and prev_s is not None and cur_s != prev_s:
+        diffs.append(
+            f"current server_thinking_budget={cur_s}, previous server_thinking_budget={prev_s}"
+        )
     if not diffs:
         return None
     return f"token budget differs ({'; '.join(diffs)})"
