@@ -6,8 +6,10 @@ grades them with deterministic validators that fill three axes (parseable,
 correctness, discipline, each 0-2); lib/benchmark.ts then scores
 ``round((p*0.4 + c*0.35 + d*0.25) / 2 * 100)`` and calls >= 85 a pass. These are
 line-for-line ports; parity with the vendored JavaScript is asserted by
-tests/test_upstream_verifier_parity.py. One deliberate deviation: SO-11 is judged
-against its prompt rather than one textual rendering (see _SO11_STEPS).
+tests/test_upstream_verifier_parity.py. Three deliberate deviations: SO-11 is judged
+against its prompt rather than one textual rendering (see _SO11_STEPS), and SO-04 /
+SO-12 also accept any rendering whose parsed structure meets the prompt (#183, see
+_toml and _html). All three accept every answer upstream accepts.
 
 The validators run their regexes on the normalized answer itself, NOT on the
 contents of a code fence: a fenced answer only earns discipline 1 here, and the
@@ -20,6 +22,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from html.parser import HTMLParser
+
+try:  # stdlib from Python 3.11; on 3.10 SO-04 keeps upstream's regex check alone
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by monkeypatching in tests
+    tomllib = None
 
 from benchlocal_cli.scoring import mermaid_flowchart
 from benchlocal_cli.scoring._js import DOT, S, js_round, normalize_line_endings, trim
@@ -69,7 +77,16 @@ def _graded(parseable: bool, correctness: bool) -> tuple[int, int]:
     return (2 if parseable else 0), (2 if correctness else 1 if parseable else 0)
 
 
-def _toml(text: str) -> tuple[int, int, str]:
+# Deliberate deviation (#183): SO-04 also judged by its parsed structure. Prompt:
+# "package name "my_cli", version "0.1.0", edition "2021", authors list with
+# "Alice <alice@example.com>". Dependencies section: serde version "1.0" with
+# features ["derive"], clap version "4.5"." Upstream matches one rendering:
+# a literal `[dependencies]` header, `clap = "4.5"`, a one-line authors array,
+# serde's version before its features. So `[dependencies.serde]` tables (the
+# usual Cargo form for a dependency with features), `clap = { version = "4.5" }`
+# or a multi-line authors array fail. An answer passes when either upstream's
+# check or the parsed TOML accepts it, so every answer upstream passes still does.
+def _toml_upstream(text: str) -> tuple[bool, bool]:
     parseable = _has(r"\[package\]", text) and _has(r"\[dependencies\]", text)
     correct = parseable and all(
         _has(p, text)
@@ -82,12 +99,49 @@ def _toml(text: str) -> tuple[int, int, str]:
             rf'(version{S}*={S}*"1\.0"[\s\S]*features{S}*={S}*\["derive"\])',
         )
     )
-    p, c = _graded(parseable, correct)
+    return parseable, correct
+
+
+def _toml_structure(text: str) -> tuple[bool, bool]:
+    """(parseable, correct) from the parsed TOML: package and dependencies tables,
+    in whatever form TOML allows. A single code fence is unwrapped first; upstream
+    lets a fenced answer pass with discipline 1."""
+    if tomllib is None:
+        return False, False
+    fence = _FENCE_RE.match(text)
+    try:
+        doc = tomllib.loads(fence.group(1) if fence else text)
+    except tomllib.TOMLDecodeError:
+        return False, False
+    package, deps = doc.get("package"), doc.get("dependencies")
+    if not isinstance(package, dict) or not isinstance(deps, dict):
+        return False, False
+    serde, clap = deps.get("serde"), deps.get("clap")
+    correct = (
+        package.get("name") == "my_cli"
+        and package.get("version") == "0.1.0"
+        and package.get("edition") == "2021"
+        and package.get("authors") == ["Alice <alice@example.com>"]
+        and isinstance(serde, dict)
+        and serde.get("version") == "1.0"
+        and serde.get("features") == ["derive"]
+        and (clap == "4.5" or (isinstance(clap, dict) and clap.get("version") == "4.5"))
+    )
+    return True, correct
+
+
+def _toml(text: str) -> tuple[int, int, str]:
+    up_parseable, up_correct = _toml_upstream(text)
+    st_parseable, st_correct = _toml_structure(text)
+    correct = up_correct or st_correct
+    p, c = _graded(up_parseable or st_parseable, correct)
     summary = (
         "TOML package metadata and dependencies were valid."
         if correct
         else "TOML sections or dependency definitions were incomplete."
     )
+    if not correct and tomllib is None:
+        summary += " (Structural check unavailable: Python 3.10 has no tomllib; upstream's regex check only.)"
     return p, c, summary
 
 
@@ -281,7 +335,120 @@ def _mermaid(text: str) -> tuple[int, int, str]:
     return p, c, summary
 
 
-def _html(text: str) -> tuple[int, int, str]:
+# Deliberate deviation (#183): SO-12 also judged by its parsed element tree.
+# Prompt: "Headers: Quarter, Revenue, Growth. Data: Q1 $1.2M +5%, Q2 $1.4M
+# +16.7%, Q3 $1.1M -21.4%, Q4 $1.8M +63.6%. Use thead, tbody, and th elements
+# properly. Add a caption "2025 Quarterly Revenue"." Upstream matches tags
+# without attributes (`<table>`, `<th>Quarter</th>`, `<td>Q1</td>`), so
+# `<th scope="col">`, `<table class="...">` or a row header `<th scope="row">Q1</th>`
+# fails. An answer passes when either upstream's check or the parsed table
+# accepts it, so every answer upstream passes still does.
+_SO12_CAPTION = "2025 Quarterly Revenue"
+_SO12_HEADERS = ["Quarter", "Revenue", "Growth"]
+_SO12_ROWS = [
+    ["Q1", "$1.2M", "+5%"],
+    ["Q2", "$1.4M", "+16.7%"],
+    ["Q3", "$1.1M", "-21.4%"],
+    ["Q4", "$1.8M", "+63.6%"],
+]
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+_CELL_TAGS = {"td", "th"}
+_SECTION_TAGS = {"thead", "tbody", "tfoot"}
+
+
+@dataclass
+class _Element:
+    tag: str
+    children: list
+    closed: bool = False
+
+    def text(self) -> str:
+        parts = [c if isinstance(c, str) else c.text() for c in self.children]
+        return " ".join(" ".join(parts).split())
+
+    def elements(self, tag: str) -> list:
+        return [c for c in self.children if isinstance(c, _Element) and c.tag == tag]
+
+
+class _TreeBuilder(HTMLParser):
+    """Element tree, attributes dropped. Table end tags HTML lets an author omit
+    (`</td>`, `</th>`, `</tr>`, `</thead>`, `</tbody>`) are closed implicitly."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root = _Element("#root", [])
+        self._stack = [self.root]
+
+    def _close_while(self, tags: set[str]) -> None:
+        while len(self._stack) > 1 and self._stack[-1].tag in tags:
+            self._stack.pop().closed = True
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _CELL_TAGS:
+            self._close_while(_CELL_TAGS)
+        elif tag == "tr":
+            self._close_while(_CELL_TAGS | {"tr"})
+        elif tag in _SECTION_TAGS:
+            self._close_while(_CELL_TAGS | {"tr"} | _SECTION_TAGS)
+        element = _Element(tag, [])
+        self._stack[-1].children.append(element)
+        if tag not in _VOID_TAGS:
+            self._stack.append(element)
+
+    def handle_startendtag(self, tag, attrs):
+        self._stack[-1].children.append(_Element(tag, [], closed=True))
+
+    def handle_endtag(self, tag):
+        if any(element.tag == tag for element in self._stack[1:]):
+            while True:
+                element = self._stack.pop()
+                element.closed = True
+                if element.tag == tag:
+                    break
+
+    def handle_data(self, data):
+        self._stack[-1].children.append(data)
+
+
+def _subsequence(wanted: list, got: list) -> bool:
+    """Every item of `wanted` appears in `got`, in order (extras allowed, as upstream)."""
+    remaining = iter(got)
+    return all(any(item == candidate for candidate in remaining) for item in wanted)
+
+
+def _html_structure(text: str) -> tuple[bool, bool]:
+    """(parseable, correct) from the element tree: the answer is one closed table
+    (a single code fence is unwrapped, as for SO-04), with the caption as its child,
+    the headers as th cells in its thead, and the four data rows in order in its
+    tbody (td or th cells: a th row header is proper use of th). Text around the
+    table makes it unparseable here: html.parser reads any prose, and a table quoted
+    inside leaked reasoning is not an answer."""
+    fence = _FENCE_RE.match(text)
+    builder = _TreeBuilder()
+    builder.feed(fence.group(1) if fence else text)
+    builder.close()
+    top = [node for node in builder.root.children if not (isinstance(node, str) and not node.strip())]
+    if len(top) != 1 or not isinstance(top[0], _Element) or top[0].tag != "table" or not top[0].closed:
+        return False, False
+    table = top[0]
+    captions = table.elements("caption")
+    head_cells = [
+        cell.text() for section in table.elements("thead") for row in section.elements("tr")
+        for cell in row.elements("th")
+    ]
+    body_rows = [
+        [cell.text() for cell in row.children if isinstance(cell, _Element) and cell.tag in _CELL_TAGS]
+        for section in table.elements("tbody") for row in section.elements("tr")
+    ]
+    correct = (
+        any(caption.text() == _SO12_CAPTION for caption in captions)
+        and _subsequence(_SO12_HEADERS, head_cells)
+        and _subsequence(_SO12_ROWS, body_rows)
+    )
+    return True, correct
+
+
+def _html_upstream(text: str) -> tuple[bool, bool]:
     parseable = _has(r"<table>[\s\S]*</table>", text)
     correct = (
         parseable
@@ -293,7 +460,14 @@ def _html(text: str) -> tuple[int, int, str]:
             text,
         )
     )
-    p, c = _graded(parseable, correct)
+    return parseable, correct
+
+
+def _html(text: str) -> tuple[int, int, str]:
+    up_parseable, up_correct = _html_upstream(text)
+    st_parseable, st_correct = _html_structure(text)
+    correct = up_correct or st_correct
+    p, c = _graded(up_parseable or st_parseable, correct)
     summary = (
         "HTML table used the semantic wrappers and data cells correctly."
         if correct
