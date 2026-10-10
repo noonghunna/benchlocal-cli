@@ -427,7 +427,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     # v0.9.1: opt-in sampling overrides (#19) — evaluate models at their
     # recommended temperature. Default behavior (per-pack temp=0) unchanged.
-    # Any override tags the run as non-canonical in output + saved JSON.
+    # Any override is recorded in the saved JSON and labelled [SAMPLING: …] in the header.
     run.add_argument("--temperature", type=float, default=None, help="override sampling temperature (default: per-pack, usually 0)")
     run.add_argument("--top-p", type=float, default=None, help="override top-p / nucleus sampling (default: per-pack)")
     run.add_argument("--top-k", type=int, default=None, help="override top-k sampling (default: per-pack)")
@@ -522,7 +522,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit code 3 when --previous-result delta has any regressions. CI-friendly. "
              "Requires --previous-result to also be set. Blocked when sampling overrides "
-             "are active (non-canonical runs shouldn't gate CI), or when --max-tokens, "
+             "or --sampling-from-server are active (sampled runs aren't deterministic), "
+             "or when --max-tokens, "
              "the thinking budget or the recorded --server-thinking-budget differs from "
              "the previous result's.",
     )
@@ -864,22 +865,24 @@ def _markdown(result: RunResult) -> str:
     if result.delta is not None:
         delta_pack_index = {p["pack_id"]: p for p in result.delta.get("by_pack") or []}
 
-    # v0.9.1/#21: non-canonical banner when sampling is non-default
-    canonical_tag = ""
+    # v0.9.1/#21: label the sampler when it is not the packs' own. #192: a label,
+    # not a verdict — server sampling is what club-3090 runs by default. The
+    # pack sampler stays unlabelled, so the default header is unchanged.
+    sampling_tag = ""
     if result.sampling_source == "server":
         if result.server_defaults:
             sd_str = ", ".join(f"{k}={v}" for k, v in result.server_defaults.items())
             if result.server_defaults_source and result.server_defaults_source != "GET /props":
                 sd_str += f"; {result.server_defaults_source}"
-            canonical_tag = f" ⚠ NON-CANONICAL (sampling: server defaults — {sd_str})"
+            sampling_tag = f" [SAMPLING: server defaults — {sd_str}]"
         else:
-            canonical_tag = " ⚠ NON-CANONICAL (sampling: server defaults — value not exposed by endpoint)"
+            sampling_tag = " [SAMPLING: server defaults — not exposed by the endpoint]"
     elif distribution_overrides(result.sampling_overrides):
         # #187: a fixed --max-tokens is a budget; _token_budget_tag reports it.
         override_str = ", ".join(
             f"{k}={v}" for k, v in distribution_overrides(result.sampling_overrides).items()
         )
-        canonical_tag = f" ⚠ NON-CANONICAL (sampling: {override_str})"
+        sampling_tag = f" [SAMPLING: {override_str}]"
 
     selection_tag = (
         f" [PARTIAL SELECTION: {len(result.selection)} scenarios]"
@@ -890,7 +893,7 @@ def _markdown(result: RunResult) -> str:
     # was fixed (the default), so the default markdown is unchanged.
     budget_tag = _token_budget_tag(result) + _server_thinking_budget_tag(result)
     lines = [
-        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){canonical_tag}{selection_tag}{budget_tag} ===",
+        f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){sampling_tag}{selection_tag}{budget_tag} ===",
         # club-3090#1396: rig facts the caller recorded; absent → no line (byte-stable default).
         *([f"rig: {_run_meta_str(result.run_meta)}"] if result.run_meta else []),
         "",
@@ -2071,7 +2074,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         on_progress_event = _sandbox_progress_event if args.progress else None
 
-        # Block --exit-on-regression when sampling is non-canonical. A fixed
+        # Block --exit-on-regression under a sampled run: it isn't deterministic,
+        # so a scenario flip is not evidence of a regression. A fixed
         # --max-tokens is a budget, not a sampler (#187): it may gate CI, but
         # only against a previous result at the same budget — otherwise a budget
         # change would read as regressions (or fixes).
@@ -2080,8 +2084,9 @@ def main(argv: list[str] | None = None) -> int:
         ):
             print(
                 "benchlocal-cli: --exit-on-regression is blocked when sampling overrides "
-                "or --sampling-from-server are active (non-canonical runs shouldn't gate CI). "
-                "Run without overrides for the reproducible baseline.",
+                "or --sampling-from-server are active: sampled runs are not deterministic, "
+                "so a regression gate needs the packs' fixed sampler (drop "
+                "--sampling-from-server / the sampler overrides).",
                 file=sys.stderr,
             )
             return 1

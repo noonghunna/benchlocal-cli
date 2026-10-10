@@ -250,8 +250,8 @@ class RunResult:
     tokens: dict | None = None
     # v0.9.1: CLI-level sampling overrides (--temperature, --top-p, etc.).
     # None means the run used the pack's default sampling (canonical).
-    # Non-None means the run traded reproducibility for recommended-temp
-    # evaluation; results should NOT be compared to the temp=0 baseline.
+    # Non-None names the sampler the run used instead (#192): compare it only
+    # with runs under the same sampler, not with the pack-sampler baseline.
     sampling_overrides: dict | None = None
     # v0.9.2: --sampling-from-server (#21): "server" when sampling was
     # inherited from the serving config; None otherwise. Mutually exclusive

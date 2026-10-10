@@ -110,7 +110,7 @@ def test_absent_flags_leave_output_and_json_unchanged(tmp_path, capsys, no_props
     assert saved.get("run_meta") is None and saved.get("server_defaults") is None
     out = capsys.readouterr().out
     assert "\nrig:" not in out
-    assert "value not exposed by endpoint" in out  # the pre-#1396 wording, unchanged when nothing was supplied
+    assert "not exposed by the endpoint" in out  # nothing supplied: the label says so (#192 wording)
 
 
 # ------------------------------------------------------------------ resume

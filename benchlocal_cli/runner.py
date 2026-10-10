@@ -1108,7 +1108,7 @@ class Runner:
         self.retry_runaways = bool(retry_runaways)
         self.inline_retries_enabled = bool(inline_retries_enabled)
         # CLI-level sampling overrides (--temperature, --top-p, etc.).
-        # When set, the run is tagged as non-canonical in the output.
+        # When set, the run is labelled [SAMPLING: …] in the output.
         self.sampling_overrides = sampling_overrides or {}
         # --sampling-from-server (#21): omit sampling params from requests
         # so the server applies its own configured defaults. Mutually
@@ -1211,14 +1211,14 @@ class Runner:
             total = sum(pack.total for pack in pack_results)
             passed = sum(pack.passed for pack in pack_results)
             finished_at = _utc_now()
-            # Tag non-canonical sampling runs. A fixed --max-tokens is a budget,
-            # not a sampler (#187): it gets its own note, not this warning.
+            # Name a sampler that is not the packs' own (#192: a label, not a
+            # verdict). A fixed --max-tokens is a budget, not a sampler (#187):
+            # it gets its own note, not this one.
             distribution = distribution_overrides(self.sampling_overrides)
             if distribution:
                 override_desc = ", ".join(f"{k}={v}" for k, v in distribution.items())
                 warnings.append(
-                    f"non-canonical sampling overrides active ({override_desc}) — "
-                    f"results are NOT comparable to the default temp=0 baseline"
+                    f"sampling: {override_desc} — compare only with runs under the same sampler"
                 )
             fixed_budget = self.sampling_overrides.get("max_tokens")
             if fixed_budget is not None:
@@ -1244,13 +1244,13 @@ class Runner:
                     if self._server_defaults_source and self._server_defaults_source != "GET /props":
                         sd_desc += f"; {self._server_defaults_source}"
                     warnings.append(
-                        f"sampling inherited from server ({sd_desc}) — "
-                        f"results are NOT comparable to the default temp=0 baseline"
+                        f"sampling: server defaults ({sd_desc}) — "
+                        f"compare only with runs under the same sampler"
                     )
                 else:
                     warnings.append(
-                        "sampling inherited from server (value not exposed by endpoint) — "
-                        "results are NOT comparable to the default temp=0 baseline"
+                        "sampling: server defaults (not exposed by the endpoint) — "
+                        "compare only with runs under the same sampler"
                     )
             return RunResult(
                 schema_version="1",
@@ -1411,7 +1411,7 @@ class Runner:
         """Query the server for its effective sampling defaults (#21).
 
         llama.cpp: GET /props → default_generation_settings.params
-        vLLM: no clean endpoint; returns None (tagged as 'value not exposed').
+        vLLM: no clean endpoint; returns None (labelled 'not exposed by the endpoint').
         """
         import sys
         endpoint = self.endpoint.rstrip("/")
