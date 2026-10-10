@@ -56,7 +56,7 @@ benchlocal-cli run "$MODE" \
 
 echo
 echo "Run saved to: $JSON_OUT"
-echo "For delta vs previous run, use: benchlocal-cli run $MODE --previous-result $JSON_OUT --emit-delta"
+echo "For delta vs previous run, use: benchlocal-cli run $MODE --previous-result $JSON_OUT"
 ```
 
 For a full run that includes execution-backed packs, build the sandbox images once and add `--enable-sandboxed-packs`:
