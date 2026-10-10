@@ -228,6 +228,34 @@ def pack_version_mismatch(current: dict, previous: dict) -> str | None:
     return f"pack version differs ({'; '.join(diffs)})"
 
 
+# aider's benchmark.py --tries default, and what every aider result before
+# --aider-tries ran (#184).
+AIDER_DEFAULT_TRIES = 2
+
+
+def effective_aider_tries(result: dict) -> int | None:
+    """The retry budget a result's aider-polyglot-30 batch ran under, or None
+    when it ran no aider scenarios. No `aider_tries` field means aider's
+    default of 2: the field is only written when --aider-tries was given (#184)."""
+    ran = any(
+        isinstance(pack, dict) and pack.get("pack_id") == "aider-polyglot-30" and pack.get("scenarios")
+        for pack in result.get("packs") or []
+    )
+    if not ran:
+        return None
+    value = result.get("aider_tries")
+    return value if isinstance(value, int) and not isinstance(value, bool) else AIDER_DEFAULT_TRIES
+
+
+def describe_aider_tries_mismatch(current: int | None, previous: int | None) -> str | None:
+    """Name two different aider retry budgets, or None when they match or
+    either run had no aider scenarios (#184). A retry consumes the previous
+    failure's output, so the budget moves the score (16/30 -> 20/30 from 2 to 4)."""
+    if current is None or previous is None or current == previous:
+        return None
+    return f"aider retry budget differs (current aider_tries={current}, previous aider_tries={previous})"
+
+
 def classify(current: dict, previous_path: str | Path) -> RunDelta:
     """Compare current run dict to a previously-saved RunResult JSON."""
     previous = load_previous_result(previous_path)
@@ -254,6 +282,9 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
     packs = pack_version_mismatch(current, previous)
     if packs:
         delta.warnings.append(f"{packs}; regressions and fixes may be scorer effects")
+    tries = describe_aider_tries_mismatch(effective_aider_tries(current), effective_aider_tries(previous))
+    if tries:
+        delta.warnings.append(f"{tries}; regressions and fixes may be retry-budget effects")
 
     current_map = _build_scenario_map(current.get("packs") or [])
     previous_map = _build_scenario_map(previous.get("packs") or [])

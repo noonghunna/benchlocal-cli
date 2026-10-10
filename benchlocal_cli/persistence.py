@@ -333,6 +333,12 @@ def _build_result(
             None if str(config.get("thinking_mode") or "") == "force-off"
             else config.get("server_thinking_budget")
         ),
+        # #184: only when the aider pack has rows, as on a live run.
+        aider_tries=(
+            config.get("aider_tries")
+            if any(pack.pack_id == "aider-polyglot-30" and pack.scenarios for pack in packs)
+            else None
+        ),
         token_budget=config.get("token_budget"),
         selection=config.get("result_selection"),
         pass_at_k=_combine_pass_at_k(packs),
@@ -422,6 +428,7 @@ def _infer_config(data: dict, source: Path) -> dict:
         "thinking_sampler": data.get("thinking_sampler"),
         "extra_body": data.get("extra_body"),
         "server_thinking_budget": data.get("server_thinking_budget"),
+        "aider_tries": data.get("aider_tries"),
         "token_budget": data.get("token_budget"),
         "budget_from_timeout": (data.get("token_budget") or {}).get("mode") == "derived",
         "budget_headroom": (data.get("token_budget") or {}).get("headroom"),

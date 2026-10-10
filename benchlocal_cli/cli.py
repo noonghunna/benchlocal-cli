@@ -396,6 +396,23 @@ def _parser() -> argparse.ArgumentParser:
             "Non-negative integer."
         ),
     )
+    # #184: aider-polyglot-30's retry budget. benchmark.py defaults to --tries 2,
+    # and so does aider's public leaderboard; the budget moves the score
+    # (16/30 -> 20/30 from 2 to 4 on one model), so it is recorded and compared.
+    run.add_argument(
+        "--aider-tries",
+        type=_parse_aider_tries,
+        default=None,
+        metavar="N",
+        help=(
+            "aider-polyglot-30 only: give each exercise N tries (aider benchmark.py --tries; "
+            "default 2, which aider's public leaderboard uses, so any other value is not "
+            "leaderboard-comparable). The batch time cap scales by N/2. Stored as aider_tries "
+            "in the results JSON and shown in the summary header; --previous-result warns and "
+            "--exit-on-regression refuses when two aider runs had different budgets. Needs an "
+            "aider-polyglot image built with #184 (tools/build-sandboxes.sh aider-polyglot)."
+        ),
+    )
     run.add_argument(
         "--reasoning-effort",
         type=_parse_reasoning_effort,
@@ -639,6 +656,15 @@ def _server_thinking_budget_tag(result: RunResult) -> str:
     if not isinstance(budget, int) or isinstance(budget, bool):
         return ""
     return f" [SERVER THINKING BUDGET: {budget:,}]"
+
+
+def _aider_tries_tag(result: RunResult) -> str:
+    """aider-polyglot-30's retry budget when --aider-tries set one (#184).
+    Empty otherwise, so the default header is unchanged."""
+    tries = result.aider_tries
+    if not isinstance(tries, int) or isinstance(tries, bool):
+        return ""
+    return f" [AIDER TRIES: {tries}]"
 
 
 def _sandbox_progress_event(event: dict) -> None:
@@ -891,7 +917,7 @@ def _markdown(result: RunResult) -> str:
     # #145: a derived token ceiling conditions the score — say so in the
     # header, next to the other non-poolability tags. Empty when the ceiling
     # was fixed (the default), so the default markdown is unchanged.
-    budget_tag = _token_budget_tag(result) + _server_thinking_budget_tag(result)
+    budget_tag = _token_budget_tag(result) + _server_thinking_budget_tag(result) + _aider_tries_tag(result)
     lines = [
         f"=== benchlocal-cli --{result.mode}  (endpoint: {result.endpoint}, model: {result.model}, thinking={thinking}, {result.started_at}){sampling_tag}{selection_tag}{budget_tag} ===",
         # club-3090#1396: rig facts the caller recorded; absent → no line (byte-stable default).
@@ -1491,6 +1517,14 @@ def _parse_server_thinking_budget(value: str) -> int:
     return int(raw)
 
 
+def _parse_aider_tries(value: str) -> int:
+    """A positive whole number of tries: 0, -1, 1.5 and 'abc' are refused."""
+    raw = value.strip()
+    if not (raw.isascii() and raw.isdigit()) or int(raw) < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer (tries per exercise), got {value!r}")
+    return int(raw)
+
+
 def _load_thinking_sampler(value: str | None) -> dict | None:
     if not value:
         return None
@@ -1713,6 +1747,17 @@ def main(argv: list[str] | None = None) -> int:
                     "a resumed run keeps one scorer per pack — finish it with the benchlocal "
                     "version that started it, or start a new run"
                 )
+            # #184: the aider retry budget, like the server budget — restored when
+            # not given, and given again it must match (absent counts as aider's 2).
+            recorded_tries = config.get("aider_tries")
+            if args.aider_tries is None:
+                args.aider_tries = recorded_tries
+            elif args.aider_tries != (recorded_tries or 2):
+                raise ValueError(
+                    f"--resume: --aider-tries {args.aider_tries} differs from the original run's "
+                    f"({recorded_tries if recorded_tries is not None else 'none recorded, i.e. 2'}); "
+                    "a resumed run keeps one retry budget — resume with the same value, or start a new run"
+                )
             args.measured_tps = args.measured_tps or config.get("measured_tps")
             args.reference_tps = args.reference_tps or config.get("reference_tps")
             args.model_turn_timeout = float(
@@ -1823,6 +1868,9 @@ def main(argv: list[str] | None = None) -> int:
                 and baseline.get("server_thinking_budget") is not None
             ):
                 args.server_thinking_budget = baseline["server_thinking_budget"]
+            # #184: the baseline's aider retry budget, unless given again.
+            if args.aider_tries is None and baseline.get("aider_tries") is not None:
+                args.aider_tries = baseline["aider_tries"]
             args.repeat = args.retry_failed
         # #65: --reasoning is a deprecated alias for --reasoning-packs.
         if getattr(args, "reasoning", False):
@@ -2083,6 +2131,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.server_thinking_budget is not None:
             # Added only when supplied, so a run without it journals as before.
             run_config["server_thinking_budget"] = args.server_thinking_budget
+        if args.aider_tries is not None:
+            run_config["aider_tries"] = args.aider_tries  # #184, same rule
         if args.stream:
             # #157: added only when streaming, so a non-streamed run's saved
             # config stays byte-identical.
@@ -2182,6 +2232,19 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
+            # #184: a retry budget is a score lever, not a model change.
+            tries = delta_module.describe_aider_tries_mismatch(
+                (args.aider_tries or delta_module.AIDER_DEFAULT_TRIES)
+                if "aider-polyglot-30" in pack_ids else None,
+                delta_module.effective_aider_tries(previous) if previous is not None else None,
+            )
+            if tries:
+                print(
+                    f"benchlocal-cli: --exit-on-regression is blocked: {tries}. "
+                    "Re-run with the previous result's --aider-tries, or capture a new baseline.",
+                    file=sys.stderr,
+                )
+                return 1
 
         runner = Runner(
             endpoint=args.endpoint,
@@ -2230,6 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
             run_meta=run_meta,
             thinking_sampler=effective_thinking_sampler,
             server_thinking_budget=args.server_thinking_budget,
+            aider_tries=args.aider_tries,
             on_pack_complete=on_pack_complete,
             on_scenario_complete=on_scenario_complete,
             on_progress_event=on_progress_event,

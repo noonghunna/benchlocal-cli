@@ -987,6 +987,7 @@ class Runner:
         run_meta: dict | None = None,
         thinking_sampler: dict | None = None,
         server_thinking_budget: int | None = None,
+        aider_tries: int | None = None,
         on_pack_complete: Callable[[PackResult], None] | None = None,
         on_scenario_complete: Callable[[ScenarioRun, int, int], None] | None = None,
         on_progress_event: Callable[[dict], None] | None = None,
@@ -1127,6 +1128,8 @@ class Runner:
         # The reasoning budget the server applies, as the caller resolved it.
         # Recorded on the result only — no request ever carries it.
         self.server_thinking_budget = server_thinking_budget
+        # #184: aider-polyglot-30's retry budget; None = aider's default of 2.
+        self.aider_tries = aider_tries
         self._sandbox_clients: dict[str, SandboxClient] = {}
         # Callbacks for incremental progress (#23)
         self._on_pack_complete = on_pack_complete
@@ -1290,6 +1293,7 @@ class Runner:
                 server_thinking_budget=(
                     None if self.thinking_mode == "force-off" else self.server_thinking_budget
                 ),
+                aider_tries=self._recorded_aider_tries(pack_results, warnings),
                 token_budget=self._token_budget_report,
                 selection=selection_ids,
                 pass_at_k=_combine_pass_at_k(pack_results),
@@ -1300,6 +1304,33 @@ class Runner:
             self._stop_sandboxes()
             signal.signal(signal.SIGINT, old_sigint)
             signal.signal(signal.SIGTERM, old_sigterm)
+
+    def _recorded_aider_tries(self, pack_results: list[PackResult], warnings: list[str]) -> int | None:
+        """#184: the retry budget to record — None unless --aider-tries was given
+        and the aider pack ran. The sandbox echoes the budget it used as the
+        trace's `tries_budget`; a different echo is recorded as what ran, and
+        warned about (the capability check should make that impossible)."""
+        if self.aider_tries is None:
+            return None
+        runs = [
+            run for pack in pack_results
+            if pack.pack_id == "aider-polyglot-30" and not pack.skipped
+            for run in pack.scenarios
+        ]
+        if not runs:
+            return None
+        echoes = {
+            ((run.result.verifier_trace or {}).get("trace") or {}).get("tries_budget")
+            for run in runs
+        } - {None}  # a batch that failed before it started echoes nothing
+        if echoes and echoes != {self.aider_tries}:
+            ran = ", ".join(str(e) for e in sorted(echoes))
+            warnings.append(
+                f"aider-polyglot-30: asked for --aider-tries {self.aider_tries} but the "
+                f"sandbox ran tries_budget {ran}; the result records what ran"
+            )
+            return next(iter(echoes)) if len(echoes) == 1 else None
+        return self.aider_tries
 
     def _run_tokens(self, pack_results: list[PackResult]) -> dict | None:
         """#147: the per-pack rollups summed, plus the spend guard's counter.
@@ -1476,6 +1507,7 @@ class Runner:
                         # hermes episode cap — see resolve_episode_cap for why
                         # the auto-scaled budget deliberately does not.
                         timeout_per_case=self.timeout_per_case,
+                        aider_tries=self.aider_tries if pack_id == "aider-polyglot-30" else None,
                     ),
                     model_endpoint=self.endpoint,
                 )
@@ -1487,6 +1519,8 @@ class Runner:
                     if self.sandbox_log_dir else None
                 )
                 client.start(run_dir=run_dir)
+                if pack_id == "aider-polyglot-30" and self.aider_tries is not None:
+                    self._require_aider_tries_support(client)
                 self._sandbox_clients[pack_id] = client
                 self._announce_sandbox_clocks(pack_id, client.config, meta, warnings)
             except Exception as exc:
@@ -1501,6 +1535,22 @@ class Runner:
                 )
                 warnings.append(msg)
                 print(f"⚠️  {msg}", file=sys.stderr, flush=True)
+
+    def _require_aider_tries_support(self, client: SandboxClient) -> None:
+        """#184: an image built before --aider-tries ignores the field and runs
+        aider's default of 2 tries, which would then be recorded as the budget
+        asked for. Refuse it before the batch, not after an hour of it."""
+        try:
+            supported = bool(client.health().get("supports_tries"))
+        except RuntimeError:
+            supported = False
+        if not supported:
+            client.stop()
+            raise RuntimeError(
+                f"the aider-polyglot image does not support --aider-tries {self.aider_tries} "
+                "(it predates benchlocal-cli #184 and would run aider's default of 2); "
+                "rebuild it with `bash tools/build-sandboxes.sh aider-polyglot`"
+            )
 
     def _announce_sandbox_clocks(
         self, pack_id: str, config: SandboxConfig, meta: dict, warnings: list[str]
@@ -1553,6 +1603,8 @@ class Runner:
                 origin += f" or {cap.override_env}"
             if explicit is None and budget > cap.seconds:
                 origin += f"; auto-scaled per-case budget {budget:.0f}s does not apply"
+        if cap.tries_scale != 1.0:
+            origin += f"; scaled by {cap.tries_scale:g} for --aider-tries {self.aider_tries}"
         print(
             f"[runner] {pack_id} clocks: {unit} {cap.seconds:.0f}s ({origin}), "
             f"verify-start read {config.request_timeout_s:.0f}s, "
@@ -3059,6 +3111,9 @@ class Runner:
                 fragment = _thinking_extra_body(sampling, self.thinking_control)
                 if fragment.get("chat_template_kwargs") or THINKING_CONTROL_EFFORT in fragment:
                     start_kwargs["thinking_extra_body"] = fragment
+                # #184: absent unless asked for, so a default run's request is unchanged.
+                if self.aider_tries is not None:
+                    start_kwargs["aider_tries"] = self.aider_tries
             if pack_id == "aider-polyglot-30" and self._on_progress_event is not None:
                 start_payload = self._verify_aider_start_with_progress(sandbox_client, scenario, start_kwargs)
             else:
