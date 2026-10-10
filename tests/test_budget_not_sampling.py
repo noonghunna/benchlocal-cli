@@ -49,29 +49,29 @@ def test_budget_only_run_is_a_budget_not_non_canonical(tmp_path, capsys):
     rc, out, _err, result = _run(tmp_path, capsys, "--max-tokens", "4096")
     assert rc == 0
     header = _header(out)
-    assert "NON-CANONICAL" not in header
+    assert "[SAMPLING" not in header
     assert "[TOKEN BUDGET: fixed 4,096 per answer]" in header
     warnings = " | ".join(result.get("warnings") or [])
-    assert "non-canonical sampling overrides" not in warnings
+    assert "sampling: max_tokens" not in warnings
     assert "fixed token budget max_tokens=4096" in warnings
 
 
-def test_sampler_override_still_non_canonical_without_the_budget(tmp_path, capsys):
+def test_sampler_override_still_labelled_without_the_budget(tmp_path, capsys):
     rc, out, _err, result = _run(tmp_path, capsys, "--temperature", "0.7", "--max-tokens", "4096")
     assert rc == 0
     header = _header(out)
-    assert "⚠ NON-CANONICAL (sampling: temperature=0.7)" in header
+    assert "[SAMPLING: temperature=0.7]" in header
     assert "max_tokens=4096)" not in header  # the budget is not listed as a sampler...
     assert "[TOKEN BUDGET: fixed 4,096 per answer]" in header  # ...it is listed as a budget
     warnings = " | ".join(result.get("warnings") or [])
-    assert "non-canonical sampling overrides active (temperature=0.7)" in warnings
+    assert "sampling: temperature=0.7 — compare only with runs under the same sampler" in warnings
 
 
 def test_canonical_run_has_neither_tag(tmp_path, capsys):
     rc, out, _err, _result = _run(tmp_path, capsys)
     assert rc == 0
     header = _header(out)
-    assert "NON-CANONICAL" not in header and "TOKEN BUDGET" not in header
+    assert "[SAMPLING" not in header and "TOKEN BUDGET" not in header
 
 
 def test_exit_on_regression_gates_at_the_same_budget(tmp_path, capsys):
