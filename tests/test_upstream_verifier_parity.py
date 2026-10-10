@@ -9,10 +9,12 @@ cases where JS and Python semantics differ (BOM, NBSP, CRLF, U+2028, fullwidth
 digits, emoji first letters, ".03", "4.5.1") — plus real saved model answers.
 Each case records the score and status the vendored upstream graders produced.
 
-IF-11 and SO-11 deliberately deviate from upstream (see the audit doc): for them
-the corpus is a superset check — every answer upstream passes must still pass —
-and DEVIATION_CASES pin answers the prompt allows but upstream rejects (must now
-pass) and answers the prompt does not allow (must still fail).
+IF-11, SO-11, SO-04 and SO-12 deliberately deviate from upstream (see the audit
+doc): for them the corpus is a superset check — every answer upstream passes must
+still pass — and DEVIATION_CASES pin answers the prompt allows but upstream rejects
+(must now pass) and answers the prompt does not allow (must still fail). SO-04 and
+SO-12 keep upstream's check as one half of an either-or, so that half is still held
+to the recorded upstream verdicts, and their corpus flips are pinned case by case.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ PORTED = {
     "instructfollow-15": ["IF-05", "IF-06", "IF-07", "IF-08", "IF-09", "IF-11", "IF-13"],
     "structoutput-15": ["SO-04", "SO-05", "SO-06", "SO-09", "SO-11", "SO-12", "SO-15"],
 }
-DEVIATED = {"IF-11", "SO-11"}
+DEVIATED = {"IF-11", "SO-11", "SO-04", "SO-12"}
 VACUOUS_PATTERNS = {".+", ".*", "[\\s\\S]+", "[\\s\\S]*", "^.+$", "(?s).+"}
 
 
@@ -93,7 +95,7 @@ def test_recorded_verdicts_match_live_upstream():
     assert not drifted
 
 
-# --- deliberate deviations: IF-11 and SO-11 ----------------------------------
+# --- deliberate deviations: IF-11, SO-11, SO-04 and SO-12 --------------------
 
 _IF11_OK = [("I", "a. Choose fiber often.", "b. Drink water daily."),
             ("II", "a. Get sleep nightly.", "b. Add greens weekly."),
@@ -114,6 +116,46 @@ _SO11_BASE = """flowchart TD
     E --> F[Show success page]
     C -->|No| G[Show error message]
     G --> A"""
+
+_SO04_BASE = """[package]
+name = "my_cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alice <alice@example.com>"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+clap = "4.5"
+"""
+
+# #183's reported rendering: dependency tables, the usual Cargo form with features.
+_SO04_TABLES = """[package]
+name = "my_cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alice <alice@example.com>"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.clap]
+version = "4.5"
+"""
+
+_SO12_BASE = """<table>
+  <caption>2025 Quarterly Revenue</caption>
+  <thead>
+    <tr><th>Quarter</th><th>Revenue</th><th>Growth</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Q1</td><td>$1.2M</td><td>+5%</td></tr>
+    <tr><td>Q2</td><td>$1.4M</td><td>+16.7%</td></tr>
+    <tr><td>Q3</td><td>$1.1M</td><td>-21.4%</td></tr>
+    <tr><td>Q4</td><td>$1.8M</td><td>+63.6%</td></tr>
+  </tbody>
+</table>"""
+_SO12_SCOPED = _SO12_BASE.replace("<th>", '<th scope="col">')
 
 # (id, label, answer, must_pass). must_pass=True rows are answers the prompt
 # allows that upstream rejects (asserted against live upstream below).
@@ -174,6 +216,45 @@ DEVIATION_CASES = [
     ("SO-11", "fenced", "```mermaid\n" + _SO11_BASE + "\n```", False),
     ("SO-11", "prose_before", "Here is the flowchart:\n" + _SO11_BASE, False),
     ("SO-11", "invalid_arrow_syntax", _SO11_BASE.replace("D --> E", "D => E"), False),
+    # SO-04 — prompt: package name/version/edition/authors; serde 1.0 with
+    # features ["derive"], clap 4.5. Any TOML rendering of that structure.
+    ("SO-04", "dependency_tables", _SO04_TABLES, True),
+    ("SO-04", "dependency_tables_fenced", "```toml\n" + _SO04_TABLES + "\n```", True),
+    ("SO-04", "features_before_version", _SO04_BASE.replace(
+        'serde = { version = "1.0", features = ["derive"] }', 'serde = { features = ["derive"], version = "1.0" }'), True),
+    ("SO-04", "multiline_authors", _SO04_BASE.replace(
+        'authors = ["Alice <alice@example.com>"]', 'authors = [\n    "Alice <alice@example.com>",\n]'), True),
+    ("SO-04", "clap_inline_table", _SO04_BASE.replace('clap = "4.5"', 'clap = { version = "4.5" }'), True),
+    ("SO-04", "tables_serde_wrong_version", _SO04_TABLES.replace('version = "1.0"', 'version = "1.1"'), False),
+    ("SO-04", "tables_serde_no_features", _SO04_TABLES.replace('features = ["derive"]\n', ""), False),
+    ("SO-04", "tables_serde_extra_feature", _SO04_TABLES.replace('["derive"]', '["derive", "rc"]'), False),
+    ("SO-04", "tables_clap_wrong_version", _SO04_TABLES.replace('version = "4.5"', 'version = "4.6"'), False),
+    ("SO-04", "tables_missing_clap", _SO04_TABLES.replace('\n\n[dependencies.clap]\nversion = "4.5"', ""), False),
+    ("SO-04", "tables_wrong_edition", _SO04_TABLES.replace('edition = "2021"', 'edition = "2018"'), False),
+    ("SO-04", "tables_two_authors", _SO04_TABLES.replace('"Alice <alice@example.com>"]', '"Alice <alice@example.com>", "Bob"]'), False),
+    ("SO-04", "tables_package_nested", _SO04_TABLES.replace("[package]", "[toml.package]"), False),
+    ("SO-04", "tables_invalid_toml", _SO04_TABLES.replace('edition = "2021"', "edition = 2021 2022"), False),
+    ("SO-04", "tables_prose_before", "Here is the TOML:\n" + _SO04_TABLES, False),
+    # SO-12 — prompt: headers Quarter/Revenue/Growth as th in thead, the four
+    # data rows in tbody, caption "2025 Quarterly Revenue". Attributes are allowed.
+    ("SO-12", "th_scope_col", _SO12_SCOPED, True),
+    ("SO-12", "table_class", _SO12_BASE.replace("<table>", '<table class="revenue">'), True),
+    ("SO-12", "td_attribute", _SO12_BASE.replace("<td>+5%</td>", '<td class="up">+5%</td>'), True),
+    ("SO-12", "th_row_headers", _SO12_BASE.replace("<td>Q", '<th scope="row">Q').replace(
+        "Q1</td>", "Q1</th>").replace("Q2</td>", "Q2</th>").replace("Q3</td>", "Q3</th>").replace("Q4</td>", "Q4</th>"), True),
+    ("SO-12", "scoped_fenced", "```html\n" + _SO12_SCOPED + "\n```", True),
+    ("SO-12", "omitted_end_tags", _SO12_SCOPED.replace("</td>", "").replace("</th>", "").replace("</tr>", ""), True),
+    ("SO-12", "scoped_missing_q3_row", _SO12_SCOPED.replace("    <tr><td>Q3</td><td>$1.1M</td><td>-21.4%</td></tr>\n", ""), False),
+    ("SO-12", "scoped_wrong_q3_growth", _SO12_SCOPED.replace("-21.4%", "-12.4%"), False),
+    ("SO-12", "scoped_wrong_header", _SO12_SCOPED.replace(">Quarter<", ">Qtr<"), False),
+    ("SO-12", "scoped_headers_as_td", _SO12_SCOPED.replace('<th scope="col">', "<td>").replace("</th>", "</td>"), False),
+    ("SO-12", "scoped_no_thead", _SO12_SCOPED.replace("  <thead>\n", "").replace("  </thead>\n", ""), False),
+    ("SO-12", "scoped_no_caption", _SO12_SCOPED.replace("  <caption>2025 Quarterly Revenue</caption>\n", ""), False),
+    ("SO-12", "scoped_caption_in_thead", _SO12_SCOPED.replace("  <caption>2025 Quarterly Revenue</caption>\n", "").replace(
+        "<thead>\n", "<thead>\n    <caption>2025 Quarterly Revenue</caption>\n"), False),
+    ("SO-12", "scoped_unclosed_table", _SO12_SCOPED.replace("</table>", ""), False),
+    ("SO-12", "scoped_inside_prose", "The user wants a table. Here it is:\n" + _SO12_SCOPED + "\nThat is the table.", False),
+    ("SO-12", "scoped_two_tables", _SO12_SCOPED + "\n" + _SO12_SCOPED, False),
 ]
 
 
@@ -197,6 +278,41 @@ def test_deviation_cases_that_now_pass_are_rejected_by_live_upstream():
     the deviation merely happens to agree with."""
     rows = [{"id": sid, "answer": answer} for sid, _label, answer, must_pass in DEVIATION_CASES if must_pass]
     assert all(result["status"] != "pass" for result in _run_upstream(rows))
+
+
+# SO-04 / SO-12 corpus answers upstream does not pass that the structural check
+# does — each read by hand: correct for the prompt in a rendering upstream rejects.
+_SO04_SO12_NEW_PASSES = {
+    ("SO-04", "saved_fail_6"),  # clap = { version = "4.5" }
+    ("SO-12", "table_attr"),  # <table border="1">
+    ("SO-12", "saved_fail_0"),  # <th>Q1</th> row headers in tbody
+    ("SO-12", "saved_fail_4"),  # <th scope="row">Q1</th> row headers in tbody
+}
+
+
+@pytest.mark.parametrize("case", [c for c in CORPUS if c["id"] in {"SO-04", "SO-12"}], ids=_case_id)
+def test_so04_so12_corpus_flips_only_where_pinned(case):
+    expected = case["upstream_status"] == "pass" or (case["id"], case["label"]) in _SO04_SO12_NEW_PASSES
+    assert _port(case["id"])(case["answer"]).passed is expected
+
+
+@pytest.mark.parametrize("case", [c for c in CORPUS if c["id"] in {"SO-04", "SO-12"}], ids=_case_id)
+def test_so04_so12_upstream_half_matches_recorded_upstream_verdict(case, monkeypatch):
+    """With the structural half switched off, SO-04 / SO-12 are the exact ports again."""
+    monkeypatch.setattr(struct_output_upstream, "_toml_structure", lambda text: (False, False))
+    monkeypatch.setattr(struct_output_upstream, "_html_structure", lambda text: (False, False))
+    evaluation = _port(case["id"])(case["answer"])
+    assert evaluation.score == case["upstream_score"]
+    assert evaluation.passed == (case["upstream_status"] == "pass")
+
+
+def test_so04_without_tomllib_falls_back_to_upstream(monkeypatch):
+    """Python 3.10 has no tomllib: SO-04 is then upstream's check alone, and says so."""
+    monkeypatch.setattr(struct_output_upstream, "tomllib", None)
+    assert _port("SO-04")(_SO04_BASE).passed
+    fallback = _port("SO-04")(_SO04_TABLES)
+    assert not fallback.passed
+    assert "no tomllib" in fallback.summary
 
 
 def _scenario(pack_id: str, scenario_id: str) -> dict:
