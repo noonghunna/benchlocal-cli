@@ -11,6 +11,7 @@ Per Codex review of the v0.8 brief:
   (the cli.py callsite handles that) — preserves byte-stable output for
   pinned downstream parsers (#4)
 - Schema-version mismatch produces a warning, not a refusal (#9)
+- A pack-version mismatch warns here; --exit-on-regression refuses it (#198)
 """
 
 from __future__ import annotations
@@ -196,6 +197,37 @@ def runner_mismatch(current: dict, previous: dict) -> str | None:
     return f"runner differs (current {cur_v} @ {cur_c}, previous {prev_v} @ {prev_c})"
 
 
+def _pack_versions(result: dict) -> dict[str, str]:
+    """{pack_id: version} for every pack the result recorded a version for."""
+    versions: dict[str, str] = {}
+    for pack in result.get("packs") or []:
+        if not isinstance(pack, dict):
+            continue
+        pack_id, version = pack.get("pack_id"), pack.get("version")
+        if isinstance(pack_id, str) and pack_id and isinstance(version, str) and version:
+            versions[pack_id] = version
+    return versions
+
+
+def pack_version_mismatch(current: dict, previous: dict) -> str | None:
+    """Which packs the two runs scored with different pack versions, or None (#198).
+
+    A pack's version moves when its scenarios or its scorer change (#183 took
+    StructOutput-15 to 2.1.0 for two scorer fixes), so a delta across it measures
+    the scorer as much as the model. Only packs both runs recorded a version for
+    are compared; a pack only one run has is new or dropped, not a mismatch.
+    """
+    cur, prev = _pack_versions(current), _pack_versions(previous)
+    diffs = [
+        f"{pack_id} current {cur[pack_id]}, previous {prev[pack_id]}"
+        for pack_id in sorted(cur.keys() & prev.keys())
+        if cur[pack_id] != prev[pack_id]
+    ]
+    if not diffs:
+        return None
+    return f"pack version differs ({'; '.join(diffs)})"
+
+
 def classify(current: dict, previous_path: str | Path) -> RunDelta:
     """Compare current run dict to a previously-saved RunResult JSON."""
     previous = load_previous_result(previous_path)
@@ -219,6 +251,9 @@ def classify(current: dict, previous_path: str | Path) -> RunDelta:
     runner = runner_mismatch(current, previous)
     if runner:
         delta.warnings.append(f"{runner}; regressions and fixes may be harness effects")
+    packs = pack_version_mismatch(current, previous)
+    if packs:
+        delta.warnings.append(f"{packs}; regressions and fixes may be scorer effects")
 
     current_map = _build_scenario_map(current.get("packs") or [])
     previous_map = _build_scenario_map(previous.get("packs") or [])
