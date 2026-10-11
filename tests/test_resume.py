@@ -181,3 +181,42 @@ def test_resume_complete_sidecar_finalizes_without_model_call(
         "score": 1.0,
         "total": 4,
     }
+
+
+def test_resume_from_result_json_restores_the_recorded_repeat(tmp_path, monkeypatch, capsys):
+    """A `--repeat N` run that stopped before its later repeats ran (an
+    endpoint-down stop during repeat 1 writes the final JSON and removes the
+    journal) must resume all N repeats. The repeat count used to be inferred
+    from the highest repeat_index present, so this resume read as complete
+    and repeats 2..N were silently dropped."""
+    monkeypatch.setattr("benchlocal_cli.runner.time.perf_counter", lambda: 1.0)
+    result_path = tmp_path / "stopped.json"
+    assert main(_base_args(tmp_path, result_path)) == 0  # --repeat 2
+    capsys.readouterr()
+
+    # What the stopped run left behind: only repeat 1 was scored.
+    stopped = json.loads(result_path.read_text())
+    assert stopped["repeat"] == 2
+    for pack in stopped["packs"]:
+        pack["scenarios"] = [row for row in pack["scenarios"] if row["repeat_index"] == 1]
+    result_path.write_text(json.dumps(stopped))
+
+    assert main(["run", "--resume", str(result_path),
+                 "--mock-responses-from-json", str(tmp_path / "mock.json")]) == 0
+    assert "no scenarios remain" not in capsys.readouterr().out
+
+    resumed = json.loads(result_path.read_text())
+    assert resumed["repeat"] == 2
+    assert sorted(
+        (row["id"], row["repeat_index"]) for row in resumed["packs"][0]["scenarios"]
+    ) == [("SO-01", 1), ("SO-01", 2), ("SO-04", 1), ("SO-04", 2)]
+
+
+def test_infer_config_falls_back_to_repeat_index_for_older_results():
+    from benchlocal_cli.persistence import _infer_config
+
+    rows = [{"id": "SO-01", "repeat_index": 1}, {"id": "SO-01", "repeat_index": 3}]
+    older = {"mode": "custom", "packs": [{"pack_id": "structoutput-15", "scenarios": rows}]}
+    assert _infer_config(older, Path("old.json"))["repeat"] == 3
+    assert _infer_config({**older, "repeat": 5}, Path("new.json"))["repeat"] == 5
+    assert _infer_config({**older, "repeat": True}, Path("bad.json"))["repeat"] == 3

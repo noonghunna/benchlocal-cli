@@ -392,15 +392,24 @@ def _infer_config(data: dict, source: Path) -> dict:
         present_pack_ids = [str(pack.get("pack_id")) for pack in packs if pack.get("pack_id")]
         pack_ids = list(PACK_MODES.get(mode) or present_pack_ids)
         target_selection, _target_by_pack = selection_for_packs(pack_ids)
-    repeat = max(
-        (
-            int(run.get("repeat_index") or 1)
-            for pack in packs
-            for run in pack.get("scenarios") or []
-            if isinstance(run, dict)
-        ),
-        default=1,
-    )
+    # The result records the run's --repeat; trust it. Inferring it from the
+    # highest repeat_index present undercounts any run that stopped before its
+    # later repeats ran — e.g. an endpoint-down stop during repeat 1 of a
+    # `--repeat 3` baseline — and the resume would then silently drop repeats
+    # 2..N. The inference stays only for results that predate the field.
+    recorded_repeat = data.get("repeat")
+    if isinstance(recorded_repeat, int) and not isinstance(recorded_repeat, bool) and recorded_repeat >= 1:
+        repeat = recorded_repeat
+    else:
+        repeat = max(
+            (
+                int(run.get("repeat_index") or 1)
+                for pack in packs
+                for run in pack.get("scenarios") or []
+                if isinstance(run, dict)
+            ),
+            default=1,
+        )
     thinking_mode = str(data.get("thinking_mode") or "pack-defaults")
     thinking_override = True if thinking_mode == "force-on" else False if thinking_mode == "force-off" else None
     return {
