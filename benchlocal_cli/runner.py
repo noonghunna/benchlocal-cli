@@ -21,7 +21,7 @@ import httpx
 from benchlocal_cli import __version__, runner_commit
 from benchlocal_cli.diagnostics import combine_runaway, pack_diagnostics, runaway_summary
 from benchlocal_cli.thinking_validity import thinking_validity_for_packs
-from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, config_for_pack
+from benchlocal_cli.sandbox import SandboxClient, SandboxConfig, SandboxTransportError, config_for_pack
 from benchlocal_cli.streaming import StreamStall, post_chat_streaming
 from benchlocal_cli.scoring.common import content_with_source, sanitize_response_text_fields
 from benchlocal_cli.types import (
@@ -753,6 +753,21 @@ def classify_server_error(status_code: int, raw_response: dict | None) -> tuple[
     if len(message) > _ENGINE_MESSAGE_DETAIL_CHARS:
         message = message[: _ENGINE_MESSAGE_DETAIL_CHARS - 1] + "…"
     return "model_output_unparseable", f"HTTP {status_code}: engine rejected model output — {message}"
+
+
+def _sandbox_transport_failure(scenario_id: str, exc: Exception) -> ScenarioResult:
+    """A sandbox verifier call that produced no verdict, as one infra failure.
+
+    `server_error` is already an infra mode: it takes the inline infra retry
+    and counts toward the endpoint-down streak, and the sandboxes use it for
+    their own internal failures, so triage reads it the same way.
+    """
+    return ScenarioResult(
+        scenario_id,
+        False,
+        "server_error",
+        f"sandbox verifier call failed, no verdict: {exc}",
+    )
 
 
 def _latency(values: list[float]) -> dict[str, float | None]:
@@ -2717,11 +2732,16 @@ class Runner:
             and scenario.get("pack_id") in self._sandbox_clients
         )
         if sandboxed_path:
-            result = self._sandbox_clients[scenario["pack_id"]].verify(
-                scenario,
-                raw_response,
-                request["messages"],
-            )
+            try:
+                result = self._sandbox_clients[scenario["pack_id"]].verify(
+                    scenario,
+                    raw_response,
+                    request["messages"],
+                )
+            except SandboxTransportError as exc:
+                # The verifier never answered: score this scenario as infra
+                # and keep the run going, instead of losing every result.
+                result = _sandbox_transport_failure(scenario["id"], exc)
         else:
             module_name = scenario.get("verifier", {}).get("type") or meta.get("verifier_module")
             module = importlib.import_module(f"benchlocal_cli.scoring.{module_name}")
@@ -3051,6 +3071,9 @@ class Runner:
         state_id: str | None = None
         ended = False
         truncated_turn: int | None = None
+        result: ScenarioResult | None = None
+        final_payload: dict | None = None
+        history: list[dict] = []
 
         try:
             start_kwargs: dict = {}
@@ -3185,8 +3208,6 @@ class Runner:
             history = list(start_payload.get("prompt") or scenario.get("messages", []))
             tools = start_payload.get("tools") if isinstance(start_payload.get("tools"), list) else []
             max_turns = self._max_turns_for(scenario)
-            result: ScenarioResult | None = None
-            final_payload: dict | None = None
 
             for _turn in range(1, max_turns + 1):
                 request_history = (
@@ -3301,6 +3322,10 @@ class Runner:
                         f"{result.failure_mode}: {result.detail}"
                     ),
                 )
+        except SandboxTransportError as exc:
+            # A start/turn/end call never got a verdict back. Score this
+            # scenario as infra and keep the run going.
+            result = _sandbox_transport_failure(scenario["id"], exc)
         finally:
             if state_id and not ended:
                 with suppress(Exception):

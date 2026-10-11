@@ -16,6 +16,15 @@ import httpx
 from benchlocal_cli.types import ScenarioResult
 
 
+class SandboxTransportError(RuntimeError):
+    """A verifier call that never produced a verdict: the container is gone,
+    the exec transport failed, the HTTP read timed out, or the reply was not a
+    JSON object. Distinct from a verdict the verifier returned (including its
+    own `server_error`), so the runner can score the one scenario as an infra
+    failure and keep the run going instead of aborting it. Subclasses
+    RuntimeError so existing `except RuntimeError` callers are unaffected."""
+
+
 @dataclass(frozen=True)
 class EpisodeCap:
     """#149: the in-container wall clock that actually bounds an agent-owned
@@ -624,7 +633,7 @@ class SandboxClient:
         failure (container gone, exec refused, malformed envelope).
         """
         if not self._container_id:
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} is not running (no container id)"
             )
         stdin = b"" if payload is None else json.dumps(payload).encode("utf-8")
@@ -640,27 +649,27 @@ class SandboxClient:
                 timeout=timeout_s + _EXEC_TRANSPORT_OVERHEAD_S,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} exec transport timed out on {path}"
             ) from exc
         except OSError as exc:  # includes FileNotFoundError (docker not installed)
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} exec transport failed on {path}: {exc}"
             ) from exc
         if proc.returncode != 0:
             stderr = proc.stderr.decode("utf-8", "replace").strip()
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} exec transport failed on {path} "
                 f"(exit {proc.returncode}): {stderr}"
             )
         try:
             envelope = json.loads(proc.stdout.decode("utf-8", "replace"))
         except ValueError as exc:
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} exec transport returned non-JSON on {path}"
             ) from exc
         if envelope.get("error"):
-            raise RuntimeError(
+            raise SandboxTransportError(
                 f"sandbox {self.config.pack_id} exec transport error on {path}: "
                 f"{envelope['error']}"
             )
@@ -855,25 +864,30 @@ class SandboxClient:
             # container's own loopback via `docker exec`.
             status, body = self._exec_http(path, payload, timeout_s=timeout)
             if status != 200:
-                raise RuntimeError(
+                raise SandboxTransportError(
                     f"sandbox {self.config.pack_id} returned HTTP {status} for {path}"
                 )
             try:
                 data = json.loads(body)
             except ValueError as exc:
-                raise RuntimeError(
+                raise SandboxTransportError(
                     f"sandbox {self.config.pack_id} returned non-JSON for {path}"
                 ) from exc
         else:
-            response = httpx.post(
-                f"http://127.0.0.1:{self.config.host_port}{path}",
-                json=payload,
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
+            try:
+                response = httpx.post(
+                    f"http://127.0.0.1:{self.config.host_port}{path}",
+                    json=payload,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise SandboxTransportError(
+                    f"sandbox {self.config.pack_id} {path} failed: {type(exc).__name__}: {exc}"
+                ) from exc
         if not isinstance(data, dict):
-            raise RuntimeError(f"sandbox {self.config.pack_id} returned non-object JSON")
+            raise SandboxTransportError(f"sandbox {self.config.pack_id} returned non-object JSON")
         return data
 
     def __enter__(self) -> SandboxClient:
