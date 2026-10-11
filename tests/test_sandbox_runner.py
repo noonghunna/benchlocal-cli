@@ -983,7 +983,22 @@ def test_open_pack_keeps_published_port_and_no_network_flag(pack_id):
 
     assert "--network" not in argv
     assert "-p" in argv
-    assert f"{config.host_port}:9000" in argv
+    assert f"127.0.0.1:{config.host_port}:9000" in argv
+
+
+@pytest.mark.parametrize("pack_id", _OPEN_PACKS)
+def test_open_pack_publishes_on_loopback_only(pack_id):
+    """The runner always dials 127.0.0.1, so the published port is bound there.
+    A bare `PORT:9000` would make Docker listen on every host interface, which
+    puts a verifier that executes submitted code on the LAN during a bench."""
+    from benchlocal_cli.sandbox import SandboxClient, config_for_pack
+
+    config = config_for_pack(pack_id)
+    argv = SandboxClient(config)._build_docker_run_argv("test-name", None)
+
+    published = argv[argv.index("-p") + 1]
+    assert published == f"127.0.0.1:{config.host_port}:9000"
+    assert f"{config.host_port}:9000" not in argv  # no all-interfaces binding
 
 
 def test_isolation_and_host_gateway_are_mutually_exclusive():

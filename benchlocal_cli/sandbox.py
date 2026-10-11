@@ -586,7 +586,11 @@ class SandboxClient:
                 )
             cmd.extend(["--network", "none"])
         else:
-            cmd.extend(["-p", f"{self.config.host_port}:9000"])
+            # Loopback only. The runner is the only client and always dials
+            # 127.0.0.1 (see _post/start/health); a bare `-p PORT:9000` makes
+            # Docker bind every host interface, putting a verifier that runs
+            # submitted code on the LAN for the length of the bench.
+            cmd.extend(["-p", f"127.0.0.1:{self.config.host_port}:9000"])
         # Optional bind-mounts (Hermes maps hermes-agent install + uv python tree).
         for host_path, container_path in self.config.host_mounts:
             cmd.extend(["-v", f"{host_path}:{container_path}:ro"])

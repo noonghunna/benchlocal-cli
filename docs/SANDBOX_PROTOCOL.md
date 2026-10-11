@@ -211,9 +211,11 @@ Python, Perl, and Ruby are allowed; upstream CLI is a shell-task environment wit
 | `network_isolated` | Packs | `docker run` | Transport |
 | --- | --- | --- | --- |
 | `True` | `cli-40`, `humaneval-plus-30`, `lcb-v6-30` | `--network none`, no `-p` | `docker exec` → container loopback `127.0.0.1:9000` |
-| `False` | `bugfind-15`, `hermesagent-20`, `aider-polyglot-30` | `-p <host_port>:9000` | `httpx` → `127.0.0.1:<host_port>` |
+| `False` | `bugfind-15`, `hermesagent-20`, `aider-polyglot-30` | `-p 127.0.0.1:<host_port>:9000` | `httpx` → `127.0.0.1:<host_port>` |
 
 Isolated containers have no interface but `lo`: no route, no DNS, no egress. Verified by probing from inside a running container, not by reading the argv — see `test_isolated_sandbox_container_really_has_no_network`.
+
+Published ports are bound to `127.0.0.1` only. The runner is the sole client and always dials loopback, while a bare `-p <host_port>:9000` makes Docker listen on every host interface, exposing a verifier that runs submitted code to the local network for the length of the bench.
 
 The published port is dropped for isolated packs because Docker **silently discards `-p` on a container with no network** (`NetworkSettings.Ports` comes back empty), so publishing one would put a claim in the argv that the daemon ignores. `docker exec` enters the container's network namespace and reaches the still-listening server over its own loopback, which needs no network of any kind — so isolation costs nothing at the protocol level. This closes the parity gap this document previously recorded; note that the Unix-domain-socket alternative does *not* work on Docker Desktop for macOS (bind-mounted sockets are not connectable across the VM boundary), whereas the `docker exec` transport is portable.
 
