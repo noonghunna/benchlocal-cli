@@ -62,7 +62,7 @@ Use the canonical temp-0 default for regression tracking and cross-model ranking
 | **ToolCall-15** | Deterministic — per-scenario asserts on JSON tool-calls | ✅ vendor-generated |
 | **InstructFollow-15** | Deterministic — constraint validators; 7 scenarios run ports of upstream's evaluators, IF-11 with a documented prompt-faithful deviation (v2.0.0, #143) | ✅ vendor-generated |
 | **StructOutput-15** | Deterministic — JSON / CSV / markdown / YAML-lite validate; TOML / SQL / ICS / XML / HTML / BSON run ports of upstream's validators, and the Mermaid flowchart is judged against its prompt (v2.0.0, #143); the TOML and HTML answers are also judged by their parsed structure (v2.1.0, #183) | ✅ vendor-generated |
-| **ReasonMath-15** | Deterministic — numeric/string/regex compare | ✅ vendor-generated |
+| **ReasonMath-15** | Deterministic — numeric/string/regex compare; the RM-04 and RM-06 final answers are judged by meaning, not an exact string list (v1.1.0, #207) | ✅ vendor-generated |
 | **DataExtract-15** | Deterministic — JSON field-match | ✅ vendor-generated |
 | **BugFind-15** | **Execution-backed** — candidate-fix verifier sandbox | ✅ sandboxed v0.4 verifier |
 | **HermesAgent-20** | **Multi-tool harness** — browser/cron/memory/artifact mocks | ✅ sandboxed v0.4 verifier |

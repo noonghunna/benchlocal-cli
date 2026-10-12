@@ -188,6 +188,27 @@ Scenario field reference:
 {"kind": "regex_match", "pattern": "x = -?\\d+"}
 ```
 
+The generated ReasonMath-15 pack uses the two-axis form of `exact_string`:
+
+```json
+{"kind": "exact_string", "value": "switch=75%; stay=25%",
+ "canonical_answer": "ANSWER: switch=75%; stay=25%",
+ "accepted_answers": ["ANSWER: switch=3/4; stay=1/4"],
+ "partial_answers": [],
+ "checkpoints": ["p(c_2 | h) = 3/4"],
+ "answer_matcher": {"kind": "labelled_values",
+                    "values": [{"label": "\\bswitch", "value": "3/4"},
+                               {"label": "\\bstay", "value": "1/4"}]}}
+```
+
+The last line starting `ANSWER: ` passes in either of two cases:
+- It equals `canonical_answer` or an `accepted_answers` entry. The comparison ignores case, whitespace runs, spacing around `;` / `=` / `:`, and a trailing period.
+- The optional `answer_matcher` accepts it. Its patterns run on the lowercased line.
+  - `labelled_values`: each `;`-separated part is `label=value` or `label: value`. Each `values[].label` regex must match exactly one part, and every number in that part must equal `value` exactly, as a fraction, decimal or percentage.
+  - `no_solution_claim`: `claim` matches and `negation` doesn't. It fails if all `order_items` appear in one run separated only by non-letters.
+
+An unknown matcher kind is a `verifier_fail`. `checkpoints` feed the diagnostic trace axis only (#207).
+
 ### `verifier.type = "data_extract"`
 
 ```json

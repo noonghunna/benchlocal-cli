@@ -381,6 +381,27 @@ const RM_ACCEPTED_ANSWER_OVERRIDES = {
   ],
 };
 
+// #207: the accepted-answer lists above never caught up with how models
+// phrase these two answers, so both are also judged by meaning
+// (scoring/reason_math.py). Patterns run on the lowercased final line.
+const RM_ANSWER_MATCHERS = {
+  // Correct when the line says no valid order exists and does not also give one.
+  "RM-04": {
+    kind: "no_solution_claim",
+    claim: "\\binconsistent\\b|\\bunsat(?:isfiable)?\\b|\\bcontradictory\\b|\\bno (?:valid |consistent |possible )?(?:solution|order|ordering|arrangement)s?\\b",
+    negation: "\\b(?:not|never|isn't|aren't)\\s+(?:\\w+\\s+)?inconsistent\\b",
+    order_items: ["red", "blue", "green", "yellow", "white"],
+  },
+  // label=value or label: value, each value bound to its label; 3/4 == 0.75 == 75%.
+  "RM-06": {
+    kind: "labelled_values",
+    values: [
+      { label: "\\bswitch", value: "3/4" },
+      { label: "\\bstay", value: "1/4" },
+    ],
+  },
+};
+
 function rmAsserts(spec) {
   const acceptedAnswers = [
     ...(spec.acceptedAnswers || []),
@@ -393,6 +414,7 @@ function rmAsserts(spec) {
     accepted_answers: [...new Set(acceptedAnswers)],
     partial_answers: spec.partialAnswers || [],
     checkpoints: spec.checkpoints || [],
+    ...(RM_ANSWER_MATCHERS[spec.id] ? { answer_matcher: RM_ANSWER_MATCHERS[spec.id] } : {}),
   }];
 }
 

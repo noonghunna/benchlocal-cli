@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from fractions import Fraction
 
 from benchlocal_cli.scoring.common import content, content_channels_with_sources, result
 from benchlocal_cli.types import ScenarioResult
@@ -24,8 +25,102 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def _norm_answer(s: str) -> str:
+    """``_norm`` plus the spellings a final line varies in without changing
+    meaning: spacing around ``;``, ``=`` and ``:``, and a trailing period.
+    Applied to both sides of the comparison, so an answer that matched before
+    still matches (#207)."""
+    s = _norm(s)
+    s = re.sub(r"\s*;\s*", "; ", s)
+    s = re.sub(r"\s*=\s*", "=", s)
+    s = re.sub(r"\s*:\s*", ": ", s)
+    return re.sub(r"[\s.]+$", "", s)
+
+
 def _norm_checkpoint_label(value: str) -> str:
     return _norm(value.replace("_", " "))
+
+
+# A number in an answer value: a fraction (3/4), a percentage (75%) or a
+# decimal (0.75). Compared exactly, as Fractions, so 3/4 == 0.75 == 75% but
+# 75.5% or 13/4 never matches 3/4 by containment.
+_VALUE_NUMBER = re.compile(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?|\.\d+)\s*(%)?")
+
+
+def _value_numbers(text: str) -> list[Fraction]:
+    numbers = []
+    for match in _VALUE_NUMBER.finditer(text):
+        numerator, denominator, plain, percent = match.groups()
+        if numerator is not None:
+            if Fraction(denominator) == 0:
+                return []
+            numbers.append(Fraction(numerator) / Fraction(denominator))
+        else:
+            value = Fraction(plain)
+            numbers.append(value / 100 if percent else value)
+    return numbers
+
+
+def _labelled_values(matcher: dict, payload: str) -> bool:
+    """Each ``;``-separated part is ``label=value`` or ``label: value``. Every
+    expected value must be claimed by exactly one part whose label matches only
+    that value's pattern, and every number in the part's value must equal it."""
+    expected = matcher["values"]
+    text = re.sub(r"[\s.]+$", "", _norm(payload))
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    if len(parts) != len(expected):
+        return False
+    claimed: set[int] = set()
+    for part in parts:
+        separator = "=" if "=" in part else ":" if ":" in part else None
+        if separator is None:
+            return False
+        label, value = part.split(separator, 1)
+        label = label.replace("_", " ")
+        owners = [i for i, field in enumerate(expected) if re.search(field["label"], label)]
+        if len(owners) != 1 or owners[0] in claimed:
+            return False
+        numbers = _value_numbers(value)
+        target = _value_numbers(str(expected[owners[0]]["value"]))
+        if not numbers or len(target) != 1 or any(number != target[0] for number in numbers):
+            return False
+        claimed.add(owners[0])
+    return len(claimed) == len(expected)
+
+
+def _lists_full_order(text: str, items: list[str]) -> bool:
+    """True when the items appear as one run separated only by non-letters
+    (``white, red, green, blue, yellow``; ``red -> blue -> …``) and the run
+    names every item, i.e. the answer commits to an arrangement."""
+    pattern = r"\b(" + "|".join(re.escape(item) for item in items) + r")\b"
+    run: set[str] = set()
+    previous_end = None
+    for match in re.finditer(pattern, text):
+        if previous_end is not None and re.search(r"[a-z]", text[previous_end:match.start()]):
+            run = set()
+        run.add(match.group(1))
+        previous_end = match.end()
+        if run >= set(items):
+            return True
+    return False
+
+
+def _no_solution_claim(matcher: dict, payload: str) -> bool:
+    """The answer states that no valid solution exists and does not also give
+    one."""
+    text = _norm(payload)
+    if not re.search(matcher["claim"], text):
+        return False
+    if matcher.get("negation") and re.search(matcher["negation"], text):
+        return False
+    items = [str(item).lower() for item in matcher.get("order_items", [])]
+    return not (items and _lists_full_order(text, items))
+
+
+_ANSWER_MATCHERS = {
+    "labelled_values": _labelled_values,
+    "no_solution_claim": _no_solution_claim,
+}
 
 
 def _answer_line(text: str) -> str:
@@ -66,13 +161,17 @@ def _answer_axis(assertion: dict, raw_answer: str) -> tuple[int, str | None]:
         return 0, 'Missing final "ANSWER: " line.'
 
     canonical_answer = assertion.get("canonical_answer") or f"ANSWER: {assertion['value'].strip()}"
-    normalized = _norm(answer_line)
-    canonical = _norm(canonical_answer)
-    accepted = [_norm(value) for value in assertion.get("accepted_answers", [])]
-    partial = [_norm(value) for value in assertion.get("partial_answers", [])]
+    normalized = _norm_answer(answer_line)
+    canonical = _norm_answer(canonical_answer)
+    accepted = [_norm_answer(value) for value in assertion.get("accepted_answers", [])]
+    partial = [_norm_answer(value) for value in assertion.get("partial_answers", [])]
 
     if normalized == canonical or normalized in accepted:
         return 2, None
+
+    matcher = assertion.get("answer_matcher")
+    if matcher and _ANSWER_MATCHERS[matcher["kind"]](matcher, _answer_payload(answer_line)):
+        return 2, f"Accepted by the {matcher['kind']} answer matcher."
 
     if _try_single_value_match(canonical_answer, answer_line):
         return 2, None
@@ -161,6 +260,9 @@ def score_scenario(scenario: dict, response: dict) -> ScenarioResult:
                 return result(scenario, False, "wrong_answer", f"expected {target} within {tol}")
         elif kind == "exact_string":
             if any(key in assertion for key in ("canonical_answer", "accepted_answers", "partial_answers", "checkpoints")):
+                matcher_kind = (assertion.get("answer_matcher") or {}).get("kind")
+                if "answer_matcher" in assertion and matcher_kind not in _ANSWER_MATCHERS:
+                    return result(scenario, False, "verifier_fail", f"unknown reason_math answer_matcher: {matcher_kind}")
                 answer_points, answer_note = _answer_axis(assertion, text)
                 trace_points, trace_note, matched_sources = _trace_axis(assertion, trace_text, trace_channels)
                 score = round(100 * (0.7 * (answer_points / 2) + 0.3 * (trace_points / 2)))
