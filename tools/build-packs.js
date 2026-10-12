@@ -392,7 +392,8 @@ const RM_ANSWER_MATCHERS = {
     negation: "\\b(?:not|never|isn't|aren't)\\s+(?:\\w+\\s+)?inconsistent\\b",
     order_items: ["red", "blue", "green", "yellow", "white"],
   },
-  // label=value or label: value, each value bound to its label; 3/4 == 0.75 == 75%.
+  // label=value or label: value pairs (`;`, or `,` on a line with no `;`), each
+  // value bound to its label; 3/4 == 0.75 == 75%.
   "RM-06": {
     kind: "labelled_values",
     values: [

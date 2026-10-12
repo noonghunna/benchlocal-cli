@@ -90,9 +90,13 @@ RM06_CORRECT = [
     "ANSWER: switch_to_door_2 = 3/4; stay_with_door_1 = 1/4",
     "ANSWER: switching=3/4; staying=1/4",
     "ANSWER: stay=25%; switch=75%",
-    # Labelled colon forms (maintainer decision on #207).
+    # Labelled colon forms and comma-separated pairs (maintainer decisions on #207).
     "ANSWER: Switch to Door 2: 3/4; Stay with Door 1: 1/4",
     "ANSWER: Switch: 3/4; Stay: 1/4",
+    "ANSWER: switch to Door 2: 3/4, stay with Door 1: 1/4",
+    "ANSWER: switching=3/4, staying=1/4",
+    # A `;` line keeps `;` as the separator, so a trailing comma clause is part of a value.
+    "ANSWER: switch=3/4; stay=1/4, as computed above",
 ]
 
 RM06_WRONG = [
@@ -112,18 +116,18 @@ RM06_WRONG = [
     "ANSWER: switch=3/4; switch=1/4",
     "ANSWER: switch or stay=3/4; stay=1/4",
     "ANSWER: switch=; stay=1/4",
+    "ANSWER: switch=1/4, stay=3/4",
+    "ANSWER: switch=3/4, stay=1/4, host=1/3",
 ]
 
-# Right numbers, but not label=value / label: value pairs separated by `;`.
-# Kept failing by design (#207): bare values carry no labels; prose and
-# comma-separated pairs are outside the prompt's key=value format.
+# Right numbers, but not label=value / label: value pairs. Kept failing by
+# design (#207): bare values carry no labels, and prose is outside the
+# prompt's key=value format.
 RM06_OUT_OF_FORMAT = [
     "ANSWER: 0.75; 0.25",
     "ANSWER: Probability of winning if you switch to Door 2 is 3/4; probability of winning if you stay with Door 1 is 1/4.",
     "ANSWER: Switching wins with probability \\(3/4\\); staying wins with probability \\(1/4\\).",
     "ANSWER: Switching to Door 2 gives a probability of 3/4; staying with Door 1 gives a probability of 1/4.",
-    "ANSWER: switch to Door 2: 3/4, stay with Door 1: 1/4",
-    "ANSWER: switching=3/4, staying=1/4",
 ]
 
 

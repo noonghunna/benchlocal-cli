@@ -81,27 +81,24 @@ ReasonMath grades the last line starting `ANSWER: ` against the scenario's canon
 - **Upstream check:** the final line must equal `ANSWER: switch=75%; stay=25%` or upstream's one accepted string, `switch=3/4; stay=1/4`. #79 added three more.
 - **Why it was wrong:** the values were right, but the labels and number forms varied: `switch=3/4;stay=1/4`, `switch=0.75; stay=0.25`, `P(switch)=3/4; P(stay)=1/4`, `switch_to_door2=3/4; stay_door1=1/4`.
 - **What we accept now** (`labelled_values`):
-  - The line has exactly two `;`-separated parts, in either order.
+  - The line has exactly two parts, in either order, separated by `;`, or by `,` when the line has no `;`. A line that uses `;` keeps it as the only separator, so a comma inside a value doesn't split it.
   - Each part is `label=value` or `label: value`.
   - One label matches `switch` and the other `stay`, at a word start, with `_` read as a space and any other words allowed around it.
   - Every number in a part's value equals that label's probability exactly. 3/4, 0.75 and 75% are the same value. 75.5% and 13/4 are not, and `switch=1/4; stay=3/4` fails.
-  - Accepting the colon forms (`Switch: 3/4; Stay: 1/4`) is the maintainer's decision on #207.
+  - Accepting the colon forms (`Switch: 3/4; Stay: 1/4`) and comma-separated pairs (`switching=3/4, staying=1/4`) are the maintainer's decisions on #207.
 - **Kept failing by design:**
   - bare values (`0.75; 0.25`), which carry no labels;
-  - prose (`Switching wins with probability 3/4; …`);
-  - comma-separated pairs (`switching=3/4, staying=1/4`).
-
-  The prompt's key=value format doesn't cover any of these.
-- **Evidence:** 53/157 → **90/157** rows pass, none lost; there are 22 distinct new passes. 10 distinct answers whose final line still fails:
+  - prose (`Switching wins with probability 3/4; …`), which the prompt's key=value format doesn't cover.
+- **Evidence:** 53/157 → **92/157** rows pass, none lost; there are 24 distinct new passes. 8 distinct answers whose final line still fails:
   - 3 are wrong (`1/2` and `1/2`);
   - 1 is cut off mid-line;
-  - 6 are the out-of-format answers above.
+  - 4 are the out-of-format answers above (one bare, three prose).
 
   The other 57 failing rows have no final line; 49 of them were cut off at the token limit.
 
 ## Expected Score Movement
 
-**ReasonMath-15 v1.1.0 (#207):** scores can only go up. Across the saved club-3090 runs (attempt 1), RM-04 moved 38 → 77 of 156 and RM-06 53 → 90 of 157, and none of the other 13 scenarios changed verdict. Keep that in mind when comparing v1.0.0 and v1.1.0 results, or `rescore` the older one. The v1.0.0 label also spans #79 and #132, which changed the RM-04 and RM-06 lists without a version bump.
+**ReasonMath-15 v1.1.0 (#207):** scores can only go up. Across the saved club-3090 runs (attempt 1), RM-04 moved 38 → 77 of 156 and RM-06 53 → 92 of 157, and none of the other 13 scenarios changed verdict. Keep that in mind when comparing v1.0.0 and v1.1.0 results, or `rescore` the older one. The v1.0.0 label also spans #79 and #132, which changed the RM-04 and RM-06 lists without a version bump.
 
 **StructOutput-15 v2.1.0 (#183):** SO-04 and SO-12 scores can only go up; every other scenario scores exactly as in v2.0.0. Across the 156 saved club-3090 runs (attempt 1), SO-04 moved 148 → 149 and SO-12 146 → 150. Compare v2.0.0 and v2.1.0 results with that in mind, or `rescore` the older one.
 

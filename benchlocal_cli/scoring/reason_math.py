@@ -62,12 +62,14 @@ def _value_numbers(text: str) -> list[Fraction]:
 
 
 def _labelled_values(matcher: dict, payload: str) -> bool:
-    """Each ``;``-separated part is ``label=value`` or ``label: value``. Every
-    expected value must be claimed by exactly one part whose label matches only
-    that value's pattern, and every number in the part's value must equal it."""
+    """Each part is ``label=value`` or ``label: value``, separated by ``;`` (or
+    by ``,`` when the line has no ``;``). Every expected value must be claimed
+    by exactly one part whose label matches only that value's pattern, and
+    every number in the part's value must equal it."""
     expected = matcher["values"]
     text = re.sub(r"[\s.]+$", "", _norm(payload))
-    parts = [part.strip() for part in text.split(";") if part.strip()]
+    pair_separator = ";" if ";" in text else ","
+    parts = [part.strip() for part in text.split(pair_separator) if part.strip()]
     if len(parts) != len(expected):
         return False
     claimed: set[int] = set()

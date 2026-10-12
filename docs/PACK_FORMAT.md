@@ -204,7 +204,7 @@ The generated ReasonMath-15 pack uses the two-axis form of `exact_string`:
 The last line starting `ANSWER: ` passes in either of two cases:
 - It equals `canonical_answer` or an `accepted_answers` entry. The comparison ignores case, whitespace runs, spacing around `;` / `=` / `:`, and a trailing period.
 - The optional `answer_matcher` accepts it. Its patterns run on the lowercased line.
-  - `labelled_values`: each `;`-separated part is `label=value` or `label: value`. Each `values[].label` regex must match exactly one part, and every number in that part must equal `value` exactly, as a fraction, decimal or percentage.
+  - `labelled_values`: each part is `label=value` or `label: value`, separated by `;`, or by `,` when the line has no `;`. Each `values[].label` regex must match exactly one part, and every number in that part must equal `value` exactly, as a fraction, decimal or percentage.
   - `no_solution_claim`: `claim` matches and `negation` doesn't. It fails if all `order_items` appear in one run separated only by non-letters.
 
 An unknown matcher kind is a `verifier_fail`. `checkpoints` feed the diagnostic trace axis only (#207).
