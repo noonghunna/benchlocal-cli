@@ -496,6 +496,11 @@ function flattenFields(value, prefix = "") {
   return [];
 }
 
+// #140: scenarios whose prompt states the answer's top-level shape (DE-07:
+// "Extract as an array of person objects."). Hand-set, not inferred (see
+// scoring/data_extract.py); kept here so regeneration cannot drop it.
+const DE_DECLARES_TOP_LEVEL_SHAPE = new Set(["DE-07"]);
+
 function buildDataExtract() {
   const pack = "DataExtract-15";
   const source = readText(VENDOR, pack, "lib", "benchmark.ts");
@@ -517,6 +522,9 @@ function buildDataExtract() {
       asserts.push({ kind: "no_extra_fields", allowed: fields });
     }
     const scenario = baseScenario(system, spec, "data_extract", asserts);
+    if (DE_DECLARES_TOP_LEVEL_SHAPE.has(spec.id)) {
+      scenario.declares_top_level_shape = true;
+    }
     scenario.expected = expected;
     return scenario;
   });
