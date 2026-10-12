@@ -15,7 +15,7 @@ Out of scope: sandbox-only packs (`bugfind-15`, `hermesagent-20`, `cli-40`, `aid
 | Pack | Upstream behavior | Local status after this audit | Residual risk |
 | --- | --- | --- | --- |
 | ToolCall-15 | True multi-turn tool loop with dynamic tool results and per-scenario `evaluate(state)`. Dependent chains stop after the first correct call until a tool result is available. | The scorer keeps the PR #31 dependent-prefix approximation, and `tools/build-packs.js` now preserves `dependent: true` for TC-03, TC-07, TC-08, and TC-15 so regeneration no longer erases it. | Still a single-response approximation; it cannot validate second-turn argument propagation from tool results. |
-| ReasonMath-15 | Two-axis scoring: final `ANSWER: ` line versus canonical/accepted/partial answers, plus trace checkpoints. The upstream composite uses a score >= 85 pass threshold. | `reason_math.py` retains the upstream-style answer axis, trace axis, and 70/30 composite in `verifier_trace`, but BenchLocal pass/fail is answer-authoritative: a full 2/2 answer passes and trace remains diagnostic. | This intentionally differs from the upstream composite threshold because notation-specific checkpoint matching can miss equivalent reasoning. Partial and wrong answers still fail regardless of trace score. |
+| ReasonMath-15 | Two-axis scoring: final `ANSWER: ` line versus canonical/accepted/partial answers, plus trace checkpoints. The upstream composite uses a score >= 85 pass threshold. | `reason_math.py` retains the upstream-style answer axis, trace axis, and 70/30 composite in `verifier_trace`, but BenchLocal pass/fail is answer-authoritative: a full 2/2 answer passes and trace remains diagnostic. **v1.1.0 (#207):** the final line is compared with spacing around `;` / `=` / `:` and a trailing period normalized, and RM-04 and RM-06 are also judged by meaning (`answer_matcher`). | This intentionally differs from the upstream composite threshold because notation-specific checkpoint matching can miss equivalent reasoning. Partial and wrong answers still fail regardless of trace score. RM-04 and RM-06 deliberately deviate from upstream's answer lists — see *Deliberate deviations from upstream* below. |
 | InstructFollow-15 | Fifteen scenario-specific evaluators with exact counts, ordering, closed-set membership, punctuation, paragraph/list shape, and negative constraints. | **v2.0.0 (#143):** IF-05–IF-09, IF-11 and IF-13 — which used to pass any non-empty answer (`format_regex: .+`) — run line-for-line Python ports of upstream's evaluators (`scoring/instruct_follow_upstream.py`) with upstream's pass rule (score >= 85). Parity with the vendored TypeScript is tested on 404 recorded cases and re-checked live under node (`tests/test_upstream_verifier_parity.py`). | The other eight scenarios keep the earlier shallow assertions (e.g. IF-01 checks a numbered-list regex and a word cap, not upstream's four constraints). IF-11 deliberately deviates from upstream — see *Deliberate deviations from upstream* below. |
 | StructOutput-15 | Upstream sandbox verifier checks exact JSON/CSV values, plus scenario-specific YAML/TOML/SQL/ICS/XML/Markdown/Mermaid/HTML/BSON rules and output-discipline scoring. | **v2.0.0 (#143):** SO-04 (TOML), SO-05 (SQL), SO-06 (ICS), SO-09 (XML), SO-11 (Mermaid), SO-12 (HTML) and SO-15 (BSON boundary) — formerly `format_regex: .+` — run Python ports of `verification/core.mjs` plus `lib/benchmark.ts` axis scoring (`scoring/struct_output_upstream.py`); pass = score >= 85, i.e. parseable, correct, and no wrapper prose (a single code fence is allowed). Same parity tests as InstructFollow. | The other eight scenarios keep parse/header approximations; JSON/CSV checks are still partial rather than exact. SO-11 deliberately deviates from upstream, and since **v2.1.0 (#183)** SO-04 and SO-12 also accept renderings upstream's regexes reject — see *Deliberate deviations from upstream* below. SO-09 (XML) and SO-11 stay unparseable when wrapped in a code fence, as upstream: their checks are anchored at the start of the answer and the system prompt forbids fences. |
 | DataExtract-15 | Parses JSON, compares every expected atomic field, handles arrays with scenario anchors, applies numeric tolerance, and records compliance notes for shape/extra/missing fields. `pass` means score >= 85. | `data_extract.py` now uses the pack's `expected` payload when present and applies upstream-style recursive scoring with object-array anchors and verifier traces. Legacy field-level assertions remain supported for ad hoc scenarios. | The local result is still binary, so upstream partial status is represented as failure with `upstream_style_score` in `verifier_trace`. |
@@ -59,7 +59,46 @@ Twelve of the fourteen #143 scenarios were exact ports; parity with the vendored
 - **What we accept now** (`html.parser`, attributes ignored, whitespace collapsed): the answer (or the inside of a single code fence) is one closed `table` and nothing else but whitespace, so a table quoted inside leaked reasoning is not accepted; its `caption` child reads `2025 Quarterly Revenue`; its `thead` has `th` cells Quarter, Revenue, Growth in order; its `tbody` has the four data rows in order with exactly the prompt's values. Body cells may be `td` or `th` (a row header is proper use of `th`). Table end tags HTML lets an author omit (`</td>`, `</th>`, `</tr>`) may be omitted. A caption placed inside `thead`, or given as an attribute, still fails.
 - **Evidence:** 146/156 → **150/156** attempt-1 runs pass, no run lost. The 4 new distinct passes: `scope="col"` headers, `th` row headers (plain and `scope="row"`), and both together. The 5 distinct answers still failing: a degenerate answer, leaked reasoning, a caption inside `thead`, a caption given as a table attribute, and one borderline — `&minus;21.4%` (U+2212) where the prompt gives `-21.4%`, kept failing because the values are compared exactly.
 
+### ReasonMath final-line spellings (v1.1.0, #207)
+
+ReasonMath grades the last line starting `ANSWER: ` against the scenario's canonical answer and accepted answers. Upstream ignores only case and whitespace runs. Since v1.1.0, both sides are also compared with the spacing around `;`, `=` and `:` normalized and a trailing period dropped. The same normalization is applied to both sides, so every answer that matched before still matches. Across the 2,049 saved rows of the other 13 scenarios, no verdict changed. RM-04 and RM-06 additionally carry an `answer_matcher`, described below. Counts are attempt-1 rows with a stored response across 160 saved club-3090 runs, re-graded with master's scorer and with this one.
+
+### RM-04 — inconsistent constraints (v1.1.0, #207)
+
+- **Prompt:** five houses, five colours, four clues that cannot all hold. The system prompt says: "If the constraints are inconsistent, say so explicitly in the final answer."
+- **Upstream check:** the final line must equal `ANSWER: status=unsat` or one of upstream's five accepted strings. Two local rounds (#79, #132) added six more.
+- **Why it was wrong:** any other wording of the right answer failed, down to punctuation. `Constraints are inconsistent.` failed because the list has it only without the period, and `the constraints are inconsistent` because the list has it only with one.
+- **What we accept now** (`no_solution_claim`): a final line that says no valid order exists. That means it contains `inconsistent`, `unsat`/`unsatisfiable`, `contradictory`, or `no` (optionally followed by `valid`, `consistent` or `possible`) followed by `solution`, `order`, `ordering` or `arrangement`. Two cases still fail:
+  - a negated claim (`not inconsistent`);
+  - a line that also gives an order, meaning all five colours in one run with only punctuation between them (`white, red, green, blue, yellow`, `red -> blue -> …`).
+
+  Colours named inside an explanation (`Red-Blue are consecutive`) are not an order.
+- **Evidence:** 38/156 → **77/156** rows pass, none lost. Each of the 27 distinct new passes states that no valid order exists. The 3 distinct answers whose final line still fails each give an order (the same order in two casings, and two orders at once). The other 76 failing rows have no final line; 66 of them were cut off at the token limit.
+
+### RM-06 — four-door Monty Hall (v1.1.0, #207)
+
+- **Prompt:** a four-door Monty Hall variant asking for the probability of winning by switching and by staying. The system prompt asks for semicolon-separated `key=value` pairs when there is more than one value.
+- **Upstream check:** the final line must equal `ANSWER: switch=75%; stay=25%` or upstream's one accepted string, `switch=3/4; stay=1/4`. #79 added three more.
+- **Why it was wrong:** the values were right, but the labels and number forms varied: `switch=3/4;stay=1/4`, `switch=0.75; stay=0.25`, `P(switch)=3/4; P(stay)=1/4`, `switch_to_door2=3/4; stay_door1=1/4`.
+- **What we accept now** (`labelled_values`):
+  - The line has exactly two parts, in either order, separated by `;`, or by `,` when the line has no `;`. A line that uses `;` keeps it as the only separator, so a comma inside a value doesn't split it.
+  - Each part is `label=value` or `label: value`.
+  - One label matches `switch` and the other `stay`, at a word start, with `_` read as a space and any other words allowed around it.
+  - Every number in a part's value equals that label's probability exactly. 3/4, 0.75 and 75% are the same value. 75.5% and 13/4 are not, and `switch=1/4; stay=3/4` fails.
+  - Accepting the colon forms (`Switch: 3/4; Stay: 1/4`) and comma-separated pairs (`switching=3/4, staying=1/4`) are the maintainer's decisions on #207.
+- **Kept failing by design:**
+  - bare values (`0.75; 0.25`), which carry no labels;
+  - prose (`Switching wins with probability 3/4; …`), which the prompt's key=value format doesn't cover.
+- **Evidence:** 53/157 → **92/157** rows pass, none lost; there are 24 distinct new passes. 8 distinct answers whose final line still fails:
+  - 3 are wrong (`1/2` and `1/2`);
+  - 1 is cut off mid-line;
+  - 4 are the out-of-format answers above (one bare, three prose).
+
+  The other 57 failing rows have no final line; 49 of them were cut off at the token limit.
+
 ## Expected Score Movement
+
+**ReasonMath-15 v1.1.0 (#207):** scores can only go up. Across the saved club-3090 runs (attempt 1), RM-04 moved 38 → 77 of 156 and RM-06 53 → 92 of 157, and none of the other 13 scenarios changed verdict. Keep that in mind when comparing v1.0.0 and v1.1.0 results, or `rescore` the older one. The v1.0.0 label also spans #79 and #132, which changed the RM-04 and RM-06 lists without a version bump.
 
 **StructOutput-15 v2.1.0 (#183):** SO-04 and SO-12 scores can only go up; every other scenario scores exactly as in v2.0.0. Across the 156 saved club-3090 runs (attempt 1), SO-04 moved 148 → 149 and SO-12 146 → 150. Compare v2.0.0 and v2.1.0 results with that in mind, or `rescore` the older one.
 

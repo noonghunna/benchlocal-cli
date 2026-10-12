@@ -40,10 +40,12 @@ upstream these changes first:
 |---|---|---|
 | `vendor/DataExtract-15/lib/benchmark.ts` + `benchlocal.pack.json` | All 15 prompts declare `Fields and JSON types:`; version 1.1.0 | The upstream prompts leave field types undeclared while six expected values contradict the pack's own numeric-strip rule (audit of 2026-08-12, #123/#124/#127 thread) |
 | `vendor/StructOutput-15/lib/benchmark.ts` + `benchlocal.pack.json` | SO-07 prompt names the required `user`/`metadata` top-level keys; version 2.1.0 | Upstream prompt never names the wrapper the schema requires (#124); the version marks local verifier changes: 2.0.0 the ported checks (#143), 2.1.0 SO-04 / SO-12 judged by structure (#183) |
+| `vendor/ReasonMath-15/benchlocal.pack.json` | version 1.1.0 | Marks a local verifier change: RM-04 / RM-06 judged by meaning, final-line spacing normalized (#207) |
 | `vendor/CLI-40/verification/scenario-data.json` | CLI-13/CLI-17 success/failure case text | Carries the d4a2fae fairness edits that originally landed in the JSONL only |
 
 Regeneration must stay idempotent: `node tools/build-packs.js --all`
 from a clean tree produces no diff. `tools/build-packs.js` carries the
 local knobs that keep it that way (`RM_ACCEPTED_ANSWER_OVERRIDES` for
-#132's RM-04 variants, `samplingMaxTokens`/`timeoutBaselineTokens` for
+#132's RM-04 variants, `RM_ANSWER_MATCHERS` for #207's RM-04 / RM-06
+matchers, `samplingMaxTokens`/`timeoutBaselineTokens` for
 #105's reasonmath timeout budget).
