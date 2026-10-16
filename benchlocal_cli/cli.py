@@ -1837,8 +1837,12 @@ def main(argv: list[str] | None = None) -> int:
                     args.thinking_override = True
                 elif baseline.get("thinking_mode") == "force-off":
                     args.thinking_override = False
-            if args.reasoning_effort is None:
-                args.reasoning_effort = baseline.get("reasoning_effort")
+            # A thinking-off baseline records the `none` it sent, which is its off
+            # switch, not an effort to think at: carry it only into a thinking-off retry.
+            baseline_effort = baseline.get("reasoning_effort")
+            off_switch = baseline_effort == "none" and baseline.get("thinking_mode") == "force-off"
+            if args.reasoning_effort is None and not (off_switch and args.thinking_override is not False):
+                args.reasoning_effort = baseline_effort
             for key, value in (baseline.get("sampling_overrides") or {}).items():
                 attr = "repeat_penalty" if key == "repeat_penalty" else key.replace("-", "_")
                 if hasattr(args, attr) and getattr(args, attr) is None:

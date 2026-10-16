@@ -24,6 +24,7 @@ from benchlocal_cli.runner import (
     _repeat_variance,
     _utc_now,
     load_pack,
+    recorded_reasoning_effort,
     resolve_thinking_enabled,
 )
 from benchlocal_cli.selection import selection_for_packs, validate_selection
@@ -310,7 +311,11 @@ def _build_result(
         thinking_enabled=bool(thinking_override),
         thinking_mode=str(config.get("thinking_mode") or "pack-defaults"),
         thinking_control=str(config.get("thinking_control") or "enable_thinking"),
-        reasoning_effort=config.get("reasoning_effort"),
+        reasoning_effort=recorded_reasoning_effort(
+            config.get("thinking_control") or "enable_thinking",
+            config.get("thinking_mode") or "pack-defaults",
+            config.get("reasoning_effort"),
+        ),
         warnings=_unique_warnings(warnings, validity_warnings),
         duration_s=_duration_between(started_at, finished_at),
         thinking_validity=thinking_validity or None,
