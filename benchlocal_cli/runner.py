@@ -281,6 +281,24 @@ def _apply_thinking_control(
     sampling["chat_template_kwargs"] = kwargs
 
 
+def recorded_reasoning_effort(
+    thinking_control: str | None,
+    thinking_mode: str | None,
+    reasoning_effort: str | float | None,
+) -> str | float | None:
+    """The top-level `reasoning_effort` a result records: the effort its requests carried.
+
+    Only the effort control sends one. A thinking-off run on it sends `none` with
+    every request (`_apply_thinking_control`), so it records `none`, not the effort a
+    thinking run would have sent (`high` unless --reasoning-effort says otherwise).
+    """
+    if thinking_control != THINKING_CONTROL_EFFORT:
+        return None
+    if thinking_mode == "force-off":
+        return "none"
+    return reasoning_effort
+
+
 def _request_thinking_enabled(sampling: dict, control: str, fallback: bool) -> bool:
     kwargs = dict(sampling.get("chat_template_kwargs") or {})
     if control == THINKING_CONTROL_EFFORT:
@@ -1284,10 +1302,8 @@ class Runner:
                 thinking_enabled=self.thinking_enabled,
                 thinking_mode=self.thinking_mode,
                 thinking_control=self.thinking_control,
-                reasoning_effort=(
-                    self.reasoning_effort
-                    if self.thinking_control == THINKING_CONTROL_EFFORT
-                    else None
+                reasoning_effort=recorded_reasoning_effort(
+                    self.thinking_control, self.thinking_mode, self.reasoning_effort
                 ),
                 warnings=warnings,
                 duration_s=_duration_between(started_at, finished_at),
@@ -3413,3 +3429,4 @@ class Runner:
             tool_calls=tool_calls or [],
             conversation=conversation or [],
         )
+
