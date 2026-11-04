@@ -40,7 +40,7 @@ Pack selection in each mode follows Codex design-review feedback (2026-05-09) �
 
 ## Sampling
 
-By default, packs sample at their declared per-pack temperature — the deterministic packs use **temperature 0** (greedy) for reproducible, cross-rig-comparable scoring. This is the **canonical** baseline.
+By default, packs sample at their declared per-pack temperature — the deterministic packs use **temperature 0** (greedy) for reproducible, cross-rig-comparable scoring. This is the **canonical** baseline. A request with thinking on takes the thinking sampler instead (`temperature=1.0`; see [Reasoning models](#reasoning-models)) unless the pack declares its own, as HermesAgent-20 does (temperature 0). Thinking is on by default for InstructFollow-15, ReasonMath-15, BugFind-15 and the reasoning packs, so their default runs are sampled; pass `--no-thinking` or `--temperature 0` to keep them greedy.
 
 Two opt-in flags evaluate a model at a non-default temperature. Both label the run's sampler in the summary header — `[SAMPLING: server defaults — temperature=0.7, top_p=0.8, …]` or `[SAMPLING: temperature=0.7, top_p=0.8]` — record it in the JSON (`sampling_source`, `sampling_overrides`, `server_defaults`), and add a warning to compare only with runs under the same sampler. Both block `--exit-on-regression`: sampled runs are not deterministic, so a regression gate needs the packs' fixed sampler:
 
