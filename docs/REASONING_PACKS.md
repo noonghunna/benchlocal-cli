@@ -6,8 +6,14 @@ private discipline.
 
 These are the **only two packs that route through the `code-reasoning`
 sandbox** (60 records total), and the only two with out-of-band reasoning.
-Both run `temperature: 0`, so re-running is deterministic and yields the same
-records — more `n` requires more scenarios, not more runs.
+Both declare `temperature: 0`, but both think by default, and a request with
+thinking on takes the thinking sampler instead (`temperature 1.0`, `top_p 0.95`,
+`top_k 20`, `min_p 0`; README "Reasoning models"), since neither pack declares a
+`thinking_sampler` of its own. With `--sampling-from-server`, which club-3090's
+`quality-test.sh` passes by default, the server's own sampler applies. Either
+way the answers are sampled, so two runs can differ, and repeats (`--repeat N`)
+add `n` as well as more scenarios. A run is greedy only with thinking off
+(`--no-thinking`) or with an explicit `--temperature 0`.
 
 ## They are NOT built by `tools/build-packs.js`
 
