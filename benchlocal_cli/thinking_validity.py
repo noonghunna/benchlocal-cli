@@ -21,6 +21,15 @@ conditionally, so partial presence is legitimate). A requested arm where FEWER
 than SPARSE_BELOW of responses reasoned is flagged `sparse` — a warning, never a
 --strict-thinking failure: it is the model's choice, but the arm's scores were
 mostly produced without reasoning and should not be read as a thinking arm.
+
+A pack whose agent calls the model ITSELF (hermesagent-20, from inside its
+sandbox) shows the runner no responses at all, so the checks above can't judge
+it. Its scenarios still carry the sandbox usage proxy's token tally. A disabled
+arm whose tally reports reasoning tokens is flagged `agent-reasoning`: a warning,
+never a --strict-thinking failure, because the tally can't say which of the
+agent's calls reasoned, so it isn't the evidence `contaminated` rests on. The
+tally folds a zero into "missing", so there is no negative evidence: a requested
+arm stays unjudged, and so does a disabled arm whose tally shows no reasoning.
 """
 
 from __future__ import annotations
@@ -87,6 +96,20 @@ def response_has_reasoning(raw_response: Any) -> bool | None:
 SPARSE_BELOW = 0.5
 
 
+def agent_reasoning_tokens(run: Any) -> int | None:
+    """Reasoning tokens the sandbox usage proxy tallied for calls the agent made
+    itself (club-3090#1396 folds them into the scenario's result), 0 when it
+    tallied calls but no reasoning, None when the scenario shows no agent calls."""
+    result = getattr(run, "result", None)
+    completion = getattr(result, "tokens_completion", None)
+    if isinstance(completion, bool) or not isinstance(completion, int) or completion <= 0:
+        return None
+    reasoning = getattr(result, "tokens_reasoning", None)
+    if isinstance(reasoning, bool) or not isinstance(reasoning, int) or reasoning < 0:
+        return 0
+    return reasoning
+
+
 def pack_thinking_validity(pack_result: Any) -> dict | None:
     """Inspect a finished pack's responses against what was requested.
 
@@ -97,29 +120,51 @@ def pack_thinking_validity(pack_result: Any) -> dict | None:
     expected_on = bool(getattr(pack_result, "thinking_enabled", False))
     inspected = 0
     with_reasoning = 0
+    agent_scenarios = 0
+    agent_with_reasoning = 0
+    agent_tokens = 0
     for run in getattr(pack_result, "scenarios", []) or []:
         observed = response_has_reasoning(getattr(run, "raw_response", None))
         if observed is None:
+            # No runner-visible response: the agent may have called the model
+            # itself. Only a disabled arm can use that tally (see module doc).
+            tokens = None if expected_on else agent_reasoning_tokens(run)
+            if tokens is not None:
+                agent_scenarios += 1
+                if tokens > 0:
+                    agent_with_reasoning += 1
+                    agent_tokens += tokens
             continue
         inspected += 1
         if observed:
             with_reasoning += 1
-    if inspected == 0:
-        return None
-    if expected_on and with_reasoning == 0:
-        status = "silent"
-    elif expected_on and with_reasoning / inspected < SPARSE_BELOW:
-        status = "sparse"
-    elif not expected_on and with_reasoning > 0:
-        status = "contaminated"
-    else:
-        status = "ok"
-    return {
-        "expected": "on" if expected_on else "off",
-        "responses": inspected,
-        "with_reasoning": with_reasoning,
-        "status": status,
-    }
+    if inspected:
+        if expected_on and with_reasoning == 0:
+            status = "silent"
+        elif expected_on and with_reasoning / inspected < SPARSE_BELOW:
+            status = "sparse"
+        elif not expected_on and with_reasoning > 0:
+            status = "contaminated"
+        else:
+            status = "ok"
+        # Reasoning the runner saw itself outranks the agent tally.
+        if status != "ok" or not agent_with_reasoning:
+            return {
+                "expected": "on" if expected_on else "off",
+                "responses": inspected,
+                "with_reasoning": with_reasoning,
+                "status": status,
+            }
+    if agent_with_reasoning:
+        return {
+            "expected": "off",
+            "responses": agent_scenarios,
+            "with_reasoning": agent_with_reasoning,
+            "status": "agent-reasoning",
+            "source": "agent-usage",
+            "reasoning_tokens": agent_tokens,
+        }
+    return None
 
 
 def thinking_validity_for_packs(
@@ -163,6 +208,14 @@ def validity_warning(pack_id: str, observation: Mapping[str, Any]) -> str | None
             "does not force a <think> block), not a misconfiguration — but most of this "
             "pack's results were produced WITHOUT reasoning, so it is not a clean "
             "thinking arm."
+        )
+    if status == "agent-reasoning":
+        return (
+            f"{pack_id}: thinking was disabled, but the agent's own model calls reported "
+            f"{observation.get('reasoning_tokens')} reasoning tokens in {with_reasoning} of "
+            f"{responses} scenarios (the sandbox's usage tally). The agent calls the model "
+            "from inside its sandbox, so the runner can't see which calls ignored the "
+            "off-switch: read this pack's no-thinking score as partly a thinking score."
         )
     if status == "contaminated":
         return (
