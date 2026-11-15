@@ -313,3 +313,96 @@ def test_strict_thinking_does_not_fail_on_sparse(monkeypatch):
     monkeypatch.setattr(Runner, "run", lambda self, *a, **k: sparse)
     args = ["run", "--scenario", "structoutput-15/SO-01", "--endpoint", "http://mock", "--model", "mock"]
     assert main(args + ["--strict-thinking"]) == 0
+
+
+# --- agent-made calls (hermesagent-20) -------------------------------------
+#
+# HermesAgent calls the model from inside its sandbox, so the runner never sees a
+# response: raw_response is {"multi_turn": True, "responses": []} and the check
+# above skipped the pack, while the sandbox's usage proxy still tallied reasoning
+# tokens. A thinking-off 8-pack stamped validity=valid with 603 reasoning tokens
+# in hermesagent-20 (club-3090#2011).
+
+def _agent_run(scenario_id, completion, reasoning):
+    run = _run(scenario_id, {"multi_turn": True, "responses": [], "final_verifier_payload": {}})
+    run.result = ScenarioResult(
+        scenario_id, True, "passed", "ok", 1.0,
+        tokens_completion=completion, tokens_reasoning=reasoning,
+    )
+    return run
+
+
+def test_off_arm_flags_agent_reasoning_from_sandbox_usage():
+    runs = [
+        _agent_run("HA-01", 600, 210),
+        _agent_run("HA-02", 500, None),   # the proxy folds a 0 count into None
+        _agent_run("HA-03", 700, 393),
+        _agent_run("HA-04", None, None),  # the agent made no call at all
+    ]
+    observation = pack_thinking_validity(_pack("hermesagent-20", False, runs))
+    assert observation == {
+        "expected": "off",
+        "responses": 3,
+        "with_reasoning": 2,
+        "status": "agent-reasoning",
+        "source": "agent-usage",
+        "reasoning_tokens": 603,
+    }
+
+
+def test_agent_usage_without_reasoning_is_not_judged():
+    # A missing count can't be told from a zero, so there is no evidence either way.
+    runs = [_agent_run("HA-01", 600, None), _agent_run("HA-02", 500, None)]
+    assert pack_thinking_validity(_pack("hermesagent-20", False, runs)) is None
+
+
+def test_on_arm_ignores_agent_usage():
+    # No negative evidence exists, so a thinking arm can't be called silent or sparse.
+    runs = [_agent_run("HA-01", 600, None), _agent_run("HA-02", 500, 40)]
+    assert pack_thinking_validity(_pack("hermesagent-20", True, runs)) is None
+
+
+def test_runner_visible_contamination_outranks_agent_usage():
+    runs = [_run("a", _response(reasoning="server forced this")), _agent_run("b", 500, 90)]
+    assert pack_thinking_validity(_pack("p-off", False, runs))["status"] == "contaminated"
+
+
+def test_agent_reasoning_warning_text_and_resume_strip():
+    from benchlocal_cli.persistence import _strip_validity_warnings
+
+    observation = {
+        "status": "agent-reasoning", "responses": 20, "with_reasoning": 5,
+        "source": "agent-usage", "reasoning_tokens": 603,
+    }
+    warning = validity_warning("hermesagent-20", observation)
+    # The resume path strips validity warnings by this exact prefix.
+    assert warning.startswith("hermesagent-20: thinking was")
+    assert "5 of 20" in warning
+    assert "603 reasoning tokens" in warning
+    assert "CONTAMINATED" not in warning
+    assert _strip_validity_warnings([warning, "kept"], {"hermesagent-20"}) == ["kept"]
+
+
+def test_strict_thinking_does_not_fail_on_agent_reasoning(monkeypatch):
+    """The runner can't see which agent calls reasoned: warn, never exit 4."""
+    from benchlocal_cli.cli import main
+    from benchlocal_cli.types import RunResult
+
+    agent = RunResult(
+        schema_version="1",
+        runner_version="test",
+        endpoint="http://mock",
+        model="mock",
+        mode="custom",
+        started_at="2026-11-15T00:00:00Z",
+        finished_at="2026-11-15T00:00:01Z",
+        packs=[],
+        totals={"passed": 1, "total": 1, "score": 1.0},
+        thinking_validity={"hermesagent-20": {
+            "expected": "off", "responses": 20, "with_reasoning": 5,
+            "status": "agent-reasoning", "source": "agent-usage", "reasoning_tokens": 603,
+        }},
+    )
+    monkeypatch.setattr(Runner, "run", lambda self, *a, **k: agent)
+    args = ["run", "--scenario", "structoutput-15/SO-01", "--endpoint", "http://mock", "--model", "mock"]
+    assert main(args + ["--strict-thinking"]) == 0
